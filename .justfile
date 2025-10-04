@@ -1,4 +1,3 @@
-registry := "registry.territoriolinux.es"
 user     := "atareao"
 name     := `basename ${PWD}`
 version  := `git tag -l  | tail -n1`
@@ -21,11 +20,11 @@ back:
 
 build:
     @docker build \
-        --tag={{registry}}/{{user}}/{{name}}:{{version}} \
-        --tag={{registry}}/{{user}}/{{name}}:latest .
+        --tag={{user}}/{{name}}:{{version}} \
+        --tag={{user}}/{{name}}:latest .
 
 push:
-    @docker image push --all-tags {{registry}}/{{user}}/{{name}}
+    @docker image push --all-tags {{user}}/{{name}}
 
 [working-directory("./backend")]
 revert:
