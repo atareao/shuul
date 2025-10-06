@@ -14,6 +14,10 @@ use serde::Serialize;
 
 use super::Data;
 
+#[derive(Debug, Clone)]
+pub enum CustomResponse {
+    Api(ApiResponse),
+}
 
 #[derive(Debug, Serialize, Clone)]
 pub struct ApiResponse {
@@ -49,7 +53,6 @@ impl IntoResponse for ApiResponse {
 impl IntoResponse for CustomResponse {
     fn into_response(self) -> Response {
         match self {
-            CustomResponse::Pdf((headers, body)) => (headers, body).into_response(),
             CustomResponse::Api(api_response) => api_response.into_response(),
         }
     }

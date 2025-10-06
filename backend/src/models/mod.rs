@@ -1,4 +1,6 @@
 mod user;
+mod rule;
+mod record;
 mod api_response;
 mod data;
 
