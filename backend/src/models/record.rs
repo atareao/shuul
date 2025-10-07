@@ -71,6 +71,22 @@ impl Record{
             .fetch_one(pool)
             .await
     }
+    pub async fn read_by_ip(pool: &PgPool, ip_address: &str) -> Result<Record, Error> {
+        let sql = "SELECT * FROM records WHERE ip = $1";
+        query(sql)
+            .bind(ip_address)
+            .map(Self::from_row)
+            .fetch_one(pool)
+            .await
+    }
+    pub async fn read_by_fqdn(pool: &PgPool, fqdn: &str) -> Result<Record, Error> {
+        let sql = "SELECT * FROM records WHERE fqdn = $1";
+        query(sql)
+            .bind(fqdn)
+            .map(Self::from_row)
+            .fetch_one(pool)
+            .await
+    }
     pub async fn read_all(pool: &PgPool) -> Result<Vec<Record>, Error> {
         let sql = "SELECT * FROM records";
         query(sql)
