@@ -49,7 +49,6 @@ use models::{
     AppState,
     Error,
 };
-use axum_client_ip::ClientIpSource;
 
 const STATIC_DIR: &str = "static";
 
@@ -118,7 +117,6 @@ async fn main() -> Result<(), Error> {
         .nest("/api/v1", api_routes)
         .fallback_service(ServeDir::new(STATIC_DIR)
             .fallback(ServeFile::new("static/index.html")))
-            .layer(ClientIpSource::RightmostXForwardedFor.into_extension())
         .layer(TraceLayer::new_for_http())
         .layer(cors);
 
