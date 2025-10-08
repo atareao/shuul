@@ -5,7 +5,7 @@ mod api_response;
 mod data;
 
 pub use data::Data;
-pub use api_response::{ApiResponse, CustomResponse};
+pub use api_response::{ApiResponse, EmptyResponse};
 pub use user::{User, TokenClaims, UserSchema, UserRegister};
 pub type Error = Box<dyn std::error::Error>;
 

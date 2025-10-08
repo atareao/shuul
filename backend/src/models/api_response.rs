@@ -1,8 +1,5 @@
 use axum::{
-    http::{
-        StatusCode,
-        HeaderMap,
-    },
+    http::StatusCode,
     Json,
     body::Body,
     response::{
@@ -17,7 +14,29 @@ use super::Data;
 #[derive(Debug, Clone)]
 pub enum CustomResponse {
     Api(ApiResponse),
+    Empty(EmptyResponse),
 }
+
+#[derive(Debug, Clone)]
+pub struct EmptyResponse {
+    pub status: StatusCode,
+    pub message: String,
+}
+impl EmptyResponse {
+    pub fn create(status: StatusCode, message: &str) -> Response<Body> {
+        Response::builder()
+            .status(status) 
+            .body(Body::from(message.to_string())) // Cuerpo de la respuesta
+            .unwrap()
+    }
+}
+
+impl IntoResponse for EmptyResponse {
+    fn into_response(self) -> Response {
+        EmptyResponse::create(self.status, self.message.as_str())
+    }
+}
+
 
 #[derive(Debug, Serialize, Clone)]
 pub struct ApiResponse {
@@ -53,6 +72,7 @@ impl IntoResponse for ApiResponse {
 impl IntoResponse for CustomResponse {
     fn into_response(self) -> Response {
         match self {
+            CustomResponse::Empty(empty_response) => empty_response.into_response(),
             CustomResponse::Api(api_response) => api_response.into_response(),
         }
     }

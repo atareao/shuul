@@ -4,8 +4,7 @@ version = "0.1.0"
 edition = "2024"
 
 [dependencies]
-axum = { version = "0.8.6", features = ["macros", "json"] }
-axum-client-ip = "1.1.3"
+axum = { version = "0.8.6", features = ["macros", "json", "original-uri"] }
 axum-extra = { version = "0.10.3", features = ["cookie"] }
 bcrypt = "0.17.1"
 bytes = { version = "1.10.1", features = ["serde"] }
