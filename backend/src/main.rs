@@ -32,7 +32,11 @@ use tracing_subscriber::{
     util::SubscriberInitExt
 };
 use tower_http::services::{ServeDir, ServeFile};
-use tracing::info;
+use tracing::{
+    info,
+    debug,
+};
+use maxminddb::Reader;
 use std::{
     str::FromStr,
     env::var,
@@ -66,7 +70,10 @@ async fn main() -> Result<(), Error> {
     info!("DB url: {}", db_url);
     let port = var("PORT").unwrap_or("3000".to_string());
     info!("Port: {}", port);
+    let maxmind_db_path = var("MAXMIND_DB_PATH").unwrap_or("geo/GeoLite2-City.mmdb".to_string());
+    info!("Maxmin DB Path: {}", maxmind_db_path);
     let secret = var("SECRET").unwrap_or("esto-es-un-secreto".to_string());
+    debug!("Secret: {}", secret);
 
 
     if !sqlx::Postgres::database_exists(&db_url).await.unwrap(){
@@ -111,6 +118,7 @@ async fn main() -> Result<(), Error> {
             pool,
             secret,
             static_dir: STATIC_DIR.to_string(),
+            maxmind_db: Reader::open_readfile(maxmind_db_path).unwrap(),
     }));
 
     let app = Router::new()

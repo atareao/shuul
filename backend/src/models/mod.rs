@@ -3,6 +3,7 @@ mod rule;
 mod record;
 mod api_response;
 mod data;
+mod ipdata;
 
 pub use data::Data;
 pub use api_response::{ApiResponse, EmptyResponse};
@@ -10,10 +11,11 @@ pub use user::{User, TokenClaims, UserSchema, UserRegister};
 pub type Error = Box<dyn std::error::Error>;
 
 use sqlx::postgres::PgPool;
+use maxminddb::Reader;
 
-#[derive(Clone)]
 pub struct AppState {
     pub pool: PgPool,
     pub secret: String,
     pub static_dir: String,
+    pub maxmind_db: Reader<Vec<u8>>,
 }
