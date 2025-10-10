@@ -6,10 +6,18 @@ use axum::{
         StatusCode,
         header::HeaderMap,
     },
+    extract::State,
 };
-use http::Uri;
-use tracing::info;
-use crate::models::{EmptyResponse, AppState};
+use tracing::{
+    debug,
+};
+use crate::models::{
+    AppState,
+    EmptyResponse,
+    NewRecord,
+    Record,
+    Rule
+};
 use std::sync::Arc;
 
 
@@ -19,38 +27,30 @@ pub fn zuul_router() -> Router<Arc<AppState>> {
 }
 
 async fn zuul(
+    State(app_state): State<Arc<AppState>>,
     headers: HeaderMap,
 ) -> impl IntoResponse {
-    let method = headers.get("x-forwarded-method")
-        .map(|s| s.to_str())
-        .and_then(|result| result.ok())
-        .unwrap_or("");
-    let protocol = headers.get("x-forwarded-proto")
-        .map(|s| s.to_str())
-        .and_then(|result| result.ok())
-        .unwrap_or("");
-    let host = headers.get("x-forwarded-host")
-        .map(|s| s.to_str())
-        .and_then(|result| result.ok())
-        .unwrap_or("");
-    let uri = headers.get("x-forwarded-uri")
-        .map(|s| s.to_str())
-        .and_then(|result| result.ok())
-        .unwrap_or("")
-        .parse::<Uri>()
+    let mut record = NewRecord::from_request(
+        &headers,
+        &app_state.maxmind_db
+    );
+    debug!("Captured record: {:?}", record);
+    let rules = Rule::read_all_active(&app_state.pool)
+        .await
         .unwrap_or_default();
-    let ip = headers.get("x-forwarded-for")
-        .map(|s| s.to_str())
-        .and_then(|result| result.ok())
-        .unwrap_or("");
-    info!("headers: {:?}", headers);
-    info!("method: {:?}", method);
-    info!("protocol: {}", protocol);
-    info!("host: {}", host);
-    info!("uri: {}", uri);
-    info!("host: {}", uri.host().unwrap_or_default());
-    info!("path: {}", uri.path());
-    info!("query: {}", uri.query().unwrap_or(""));
-    info!("ip: {}", ip);
+    for rule in rules {
+        if rule.matches(&record) {
+            debug!("Matched rule with rule: {:?}", rule);
+            record.rule_id = Some(rule.id);
+            let record = Record::create(&app_state.pool, record).await;
+            debug!("Created record: {:?}", record);
+            if rule.allow {
+                return EmptyResponse::create(StatusCode::OK, "Ok");
+            }
+            return EmptyResponse::create(StatusCode::FORBIDDEN, "Ko");
+        }
+    }
+    let record = Record::create(&app_state.pool, record).await;
+    debug!("Created record withour rule: {:?}", record);
     EmptyResponse::create(StatusCode::OK, "Ok")
 }

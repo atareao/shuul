@@ -6,6 +6,7 @@ CREATE TABLE IF NOT EXISTS rules (
     protocol VARCHAR,
     fqdn VARCHAR,
     path VARCHAR,
+    query VARCHAR,
     city_name VARCHAR,
     country_name VARCHAR,
     country_code VARCHAR,

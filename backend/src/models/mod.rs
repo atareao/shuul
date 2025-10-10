@@ -7,6 +7,8 @@ mod ipdata;
 
 pub use data::Data;
 pub use ipdata::IPData;
+pub use rule::{Rule, NewRule};
+pub use record::{Record, NewRecord};
 pub use api_response::{ApiResponse, EmptyResponse};
 pub use user::{User, TokenClaims, UserSchema, UserRegister};
 pub type Error = Box<dyn std::error::Error>;

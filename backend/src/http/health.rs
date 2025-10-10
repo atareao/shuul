@@ -2,10 +2,7 @@ use axum::{
     routing,
     Router,
     response::IntoResponse,
-    http::{
-        StatusCode,
-        Uri,
-    },
+    http::StatusCode,
 };
 use crate::models::{Data, ApiResponse, AppState};
 use std::sync::Arc;

@@ -4,6 +4,7 @@ CREATE TABLE IF NOT EXISTS records (
     protocol VARCHAR,
     fqdn VARCHAR,
     path VARCHAR,
+    query VARCHAR,
     city_name VARCHAR,
     country_name VARCHAR,
     country_code VARCHAR,

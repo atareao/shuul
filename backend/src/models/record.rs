@@ -1,6 +1,11 @@
 use serde::{Serialize, Deserialize};
 use chrono::{DateTime, Utc};
 use sqlx::{postgres::{PgPool, PgRow}, query, Row, Error};
+use http::Uri;
+use maxminddb::Reader;
+use tracing::debug;
+
+use crate::models::IPData;
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
 pub struct Record{
@@ -9,10 +14,11 @@ pub struct Record{
     pub protocol: Option<String>,
     pub fqdn: Option<String>,
     pub path: Option<String>,
+    pub query: Option<String>,
     pub city_name: Option<String>,
     pub country_name: Option<String>,
     pub country_code: Option<String>,
-    rule_id: i32,
+    pub rule_id: Option<i32>,
     created_at: DateTime<Utc>,
 }
 
@@ -22,10 +28,64 @@ pub struct NewRecord{
     pub protocol: Option<String>,
     pub fqdn: Option<String>,
     pub path: Option<String>,
+    pub query: Option<String>,
     pub city_name: Option<String>,
     pub country_name: Option<String>,
     pub country_code: Option<String>,
-    pub rule_id: i32,
+    pub rule_id: Option<i32>,
+}
+
+impl NewRecord{
+    pub fn from_request(headers: &http::HeaderMap, maxmind_db: &Reader<Vec<u8>>) -> Self {
+        let method = headers.get("x-forwarded-method")
+            .map(|s| s.to_str())
+            .and_then(|result| result.ok())
+            .unwrap_or("");
+        debug!("method from proxy: {:?}", method);
+        let protocol = headers.get("x-forwarded-proto")
+            .map(|s| s.to_str())
+            .and_then(|result| result.ok())
+            .unwrap_or("");
+        debug!("protocol from proxy: {:?}", protocol);
+        let host = headers.get("x-forwarded-host")
+            .map(|s| s.to_str())
+            .and_then(|result| result.ok())
+            .unwrap_or("");
+        debug!("host from proxy: {:?}", host);
+        let uri = headers.get("x-forwarded-uri")
+            .map(|s| s.to_str())
+            .and_then(|result| result.ok())
+            .unwrap_or("")
+            .parse::<Uri>()
+            .unwrap_or_default();
+        debug!("uri from proxy: {:?}", uri);
+        let ip = headers.get("x-forwarded-for")
+            .map(|s| s.to_str())
+            .and_then(|result| result.ok())
+            .unwrap_or("");
+        debug!("ip from proxy: {:?}", ip);
+        let ip_data = IPData::complete(maxmind_db, ip);
+        debug!("ip data: {:?}", &ip_data);
+        let ip_address = if ip.is_empty() { None } else { Some(ip.to_string()) };
+        let protocol = uri.scheme_str().and_then(|s| if s.is_empty() { None } else { Some(s.to_string()) });
+        let fqdn = uri.host().and_then(|s| if s.is_empty() { None } else { Some(s.to_string()) });
+        let path = if uri.path().is_empty() { None } else { Some(uri.path().to_string()) };
+        let query = uri.query().and_then(|s| if s.is_empty() { None } else { Some(s.to_string()) });
+        let city_name = ip_data.city_name.and_then(|s| if s.is_empty() { None } else { Some(s.to_string()) });
+        let country_name = ip_data.country_name.and_then(|s| if s.is_empty() { None } else { Some(s.to_string()) });
+        let country_code = ip_data.country_code.and_then(|s| if s.is_empty() { None } else { Some(s.to_string()) });
+        NewRecord {
+            ip_address,
+            protocol,
+            fqdn,
+            path,
+            query,
+            city_name,
+            country_name,
+            country_code,
+            rule_id: None,
+        }
+    }
 }
 
 impl Record{
@@ -36,6 +96,7 @@ impl Record{
             protocol: row.get("protocol"),
             fqdn: row.get("fqdn"),
             path: row.get("path"),
+            query: row.get("query"),
             city_name: row.get("city_name"),
             country_name: row.get("country_name"),
             country_code: row.get("country_code"),
@@ -44,7 +105,7 @@ impl Record{
         }
     }
 
-    pub async fn create( pool: &PgPool, record: Record) -> Result<Record, Error> {
+    pub async fn create( pool: &PgPool, record: NewRecord) -> Result<Record, Error> {
 
         let sql = "INSERT INTO records (ip_address, protocol, fqdn, path, city_name, country_name, country_code, rule_id, created_at) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9) RETURNING *";
         let now = Utc::now();
