@@ -156,7 +156,34 @@ impl Record{
             .await
     }
 
-    pub async fn select_by_country(pool: &PgPool) -> Result<Vec<(String, i64)>, Error> {
+    pub async fn read_filtered(
+        pool: &PgPool,
+        ip_address: Option<&str>,
+        fqdn: Option<&str>
+    ) -> Result<Vec<Record>, Error> {
+        let mut sql = "SELECT * FROM records WHERE 1=1".to_string();
+        let mut param_index = 1;
+        if ip_address.is_some() {
+            sql.push_str(&format!(" AND ip_address = ${}", param_index));
+            param_index += 1;
+        }
+        if fqdn.is_some() {
+            sql.push_str(&format!(" AND fqdn = ${}", param_index));
+        }
+        let mut query = query(&sql);
+        if let Some(ip) = ip_address {
+            query = query.bind(ip);
+        }
+        if let Some(fqdn) = fqdn {
+            query = query.bind(fqdn);
+        }
+        query
+            .map(Self::from_row)
+            .fetch_all(pool)
+            .await
+    }
+
+    pub async fn group_by_country(pool: &PgPool) -> Result<Vec<(String, i64)>, Error> {
         let sql = "SELECT country_name, COUNT(*) as count FROM records GROUP BY country_name";
         query(sql)
             .map(|row: PgRow| {
@@ -168,7 +195,7 @@ impl Record{
             .await
     }
 
-    pub async fn select_by_city(pool: &PgPool) -> Result<Vec<(String, i64)>, Error> {
+    pub async fn group_by_city(pool: &PgPool) -> Result<Vec<(String, i64)>, Error> {
         let sql = "SELECT city_name, COUNT(*) as count FROM records GROUP BY city_name";
         query(sql)
             .map(|row: PgRow| {

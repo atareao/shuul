@@ -2,6 +2,7 @@ mod health;
 mod user;
 mod zuul;
 mod util;
+mod record;
 
 pub use health::health_router;
 pub use zuul::zuul_router;
