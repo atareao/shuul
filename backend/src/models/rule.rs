@@ -2,6 +2,7 @@ use serde::{Serialize, Deserialize};
 use chrono::{DateTime, Utc};
 use sqlx::{postgres::{PgPool, PgRow}, query, Row, Error};
 use regex::Regex;
+use tracing::debug;
 
 use crate::models::NewRecord;
 
@@ -38,6 +39,22 @@ pub struct NewRule{
     pub active: bool,
 }
 
+#[derive(Debug, Serialize, Deserialize, Clone)]
+pub struct UpdateRule{
+    pub id: i32,
+    pub norder: i32,
+    pub allow: bool,
+    pub ip_address: Option<String>,
+    pub protocol: Option<String>,
+    pub fqdn: Option<String>,
+    pub path: Option<String>,
+    pub query: Option<String>,
+    pub city_name: Option<String>,
+    pub country_name: Option<String>,
+    pub country_code: Option<String>,
+    pub active: bool,
+}
+
 impl Rule{
     fn from_row(row: PgRow) -> Self{
         Self{
@@ -59,9 +76,10 @@ impl Rule{
     }
 
     pub fn matches(&self, record: &NewRecord) -> bool {
+        debug!("Matching rule: {:?} for record: {:?}", self, record);
         if let Some(regex) = &self.ip_address &&
                 let Some(value) = record.ip_address.as_ref() &&
-                Regex::new(regex).unwrap().is_match(value) {
+                !Regex::new(regex).unwrap().is_match(value) {
             return false;
         }
         if let Some(regex) = &self.protocol && 
@@ -102,10 +120,10 @@ impl Rule{
         true
     }
 
-    pub async fn create( pool: &PgPool, rule: Rule) -> Result<Rule, Error> {
+    pub async fn create( pool: &PgPool, rule: NewRule) -> Result<Rule, Error> {
 
         let sql = "INSERT INTO rules (norder, allow, ip_address,
-            protocol, fqdn, path, qury, city_name, country_name, country_code,
+            protocol, fqdn, path, query, city_name, country_name, country_code,
             active, created_at, updated_at) VALUES ($1, $2, $3, $4, $5, $6, $7,
             $8, $9, $10, $11, $12, $13) RETURNING *";
         let now = Utc::now();
@@ -128,7 +146,7 @@ impl Rule{
             .await
     }
 
-    pub async fn update(pool: &PgPool, rule: Rule) -> Result<Rule, Error>{
+    pub async fn update(pool: &PgPool, rule: UpdateRule) -> Result<Rule, Error>{
         let sql = "UPDATE rules set
                 norder = $1,
                 allow = $2,
@@ -176,6 +194,16 @@ impl Rule{
     pub async fn read_all(pool: &PgPool) -> Result<Vec<Rule>, Error> {
         let sql = "SELECT * FROM rules";
         query(sql)
+            .map(Self::from_row)
+            .fetch_all(pool)
+            .await
+    }
+
+    pub async fn read_paged(pool: &PgPool, limit: i32, offset: i32) -> Result<Vec<Rule>, Error> {
+        let sql = "SELECT * FROM rules ORDER BY norder ASC LIMIT $1 OFFSET $2";
+        query(sql)
+            .bind(limit)
+            .bind(offset)
             .map(Self::from_row)
             .fetch_all(pool)
             .await

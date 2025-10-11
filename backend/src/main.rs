@@ -31,7 +31,6 @@ use tracing_subscriber::{
     EnvFilter, layer::SubscriberExt,
     util::SubscriberInitExt
 };
-use tower_http::services::{ServeDir, ServeFile};
 use tracing::{
     info,
     debug,
@@ -48,14 +47,14 @@ use http::{
     zuul_router,
     util_router,
     api_user_router,
+    record_router,
+    rule_router,
 };
 use dotenv::dotenv;
 use models::{
     AppState,
     Error,
 };
-
-const STATIC_DIR: &str = "static";
 
 #[tokio::main]
 async fn main() -> Result<(), Error> {
@@ -116,17 +115,16 @@ async fn main() -> Result<(), Error> {
         .nest("/health", health_router())
         .nest("/auth", user_router())
         .nest("/users", api_user_router())
+        .nest("/records", record_router())
+        .nest("/rules", rule_router())
         .with_state(Arc::new(AppState {
             pool,
             secret,
-            static_dir: STATIC_DIR.to_string(),
             maxmind_db: Reader::open_readfile(maxmind_db_path).unwrap(),
     }));
 
     let app = Router::new()
         .nest("/api/v1", api_routes)
-        .fallback_service(ServeDir::new(STATIC_DIR)
-            .fallback(ServeFile::new("static/index.html")))
         .layer(TraceLayer::new_for_http())
         .layer(cors);
 

@@ -39,7 +39,7 @@ async fn complete_ip(
         ApiResponse::new(
             StatusCode::OK,
             "Ok",
-            Data::One(serde_json::to_value(ip_data).unwrap())
+            Data::Some(serde_json::to_value(ip_data).unwrap_or_default())
         )
     }else{
         ApiResponse::new(

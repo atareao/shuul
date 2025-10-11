@@ -66,7 +66,7 @@ pub async fn login(State(app_state): State<Arc<AppState>>, Json(user_schema): Js
     })
     .map(|token| {
         let value = serde_json::json!({"token": token});
-        ApiResponse::new(StatusCode::OK, "Ok", Data::One(value))
+        ApiResponse::new(StatusCode::OK, "Ok", Data::Some(value))
     })
 }
 
@@ -78,7 +78,7 @@ pub async fn register(
     match User::create(&app_state.pool, &user_data.username, &user_data.email, &user_data.password).await {
         Ok(user) => {
             debug!("User created: {:?}", user);
-            ApiResponse::new(StatusCode::CREATED, "User created", Data::One(serde_json::to_value(user).unwrap()))
+            ApiResponse::new(StatusCode::CREATED, "User created", Data::Some(serde_json::to_value(user).unwrap()))
         },
         Err(e) => {
             error!("Error creating user: {:?}", e);
@@ -111,14 +111,11 @@ pub async fn read(
 ) -> impl IntoResponse {
     match User::read_all(&app_state.pool).await {
         Ok(values) => {
-            let values = values.into_iter().map(|r| {
-                serde_json::to_value(r).unwrap()
-            }).collect::<Vec<_>>();
             debug!("Users: {:?}", values);
             ApiResponse::new(
                 StatusCode::OK,
                 "Users",
-                Data::Some(values),
+                Data::Some(serde_json::to_value(values).unwrap_or_default()),
             )
         }
         Err(e) => {

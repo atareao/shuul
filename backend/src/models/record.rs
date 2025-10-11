@@ -132,52 +132,60 @@ impl Record{
             .fetch_one(pool)
             .await
     }
-    pub async fn read_by_ip(pool: &PgPool, ip_address: &str) -> Result<Record, Error> {
-        let sql = "SELECT * FROM records WHERE ip = $1";
-        query(sql)
-            .bind(ip_address)
-            .map(Self::from_row)
-            .fetch_one(pool)
-            .await
-    }
-    pub async fn read_by_fqdn(pool: &PgPool, fqdn: &str) -> Result<Record, Error> {
-        let sql = "SELECT * FROM records WHERE fqdn = $1";
-        query(sql)
-            .bind(fqdn)
-            .map(Self::from_row)
-            .fetch_one(pool)
-            .await
-    }
-    pub async fn read_all(pool: &PgPool) -> Result<Vec<Record>, Error> {
-        let sql = "SELECT * FROM records";
-        query(sql)
+
+    pub async fn read_paged(
+        pool: &PgPool,
+        ip_address: Option<String>,
+        protocol: Option<String>,
+        fqdn: Option<String>,
+        path: Option<String>,
+        query_for_request: Option<String>,
+        city_name: Option<String>,
+        country_name: Option<String>,
+        country_code: Option<String>,
+        limit: i32,
+        offset: i32,
+    ) -> Result<Vec<Record>, Error> {
+        let filters = vec![
+            ("ip_address", ip_address),
+            ("protocol", protocol),
+            ("fqdn", fqdn),
+            ("path", path),
+            ("query", query_for_request), // Mapea 'query_for_request' a 'query'
+            ("city_name", city_name),
+            ("country_name", country_name),
+            ("country_code", country_code),
+        ];
+        let active_filters: Vec<(&str, String)> = filters
+            .into_iter()
+            .filter_map(|(col, val)| val.map(|v| (col, v)))
+            .collect();
+        let mut sql = "SELECT * FROM records WHERE 1=1".to_string();
+        for (i, (col, _)) in active_filters.iter().enumerate() {
+            let param_index = i + 1;
+            sql.push_str(&format!(" AND {} LIKE ${}", col, param_index));
+        }
+        let limit_index = active_filters.len() + 1;
+        let offset_index = limit_index + 1;
+        sql.push_str(&format!(" ORDER BY created_at ASC LIMIT ${} OFFSET ${}", limit_index, offset_index));
+        let mut query = query(&sql);
+        for (_, value) in active_filters {
+            query = query.bind(value);
+        }
+        query
+            .bind(limit)
+            .bind(offset)
             .map(Self::from_row)
             .fetch_all(pool)
             .await
     }
 
-    pub async fn read_filtered(
-        pool: &PgPool,
-        ip_address: Option<&str>,
-        fqdn: Option<&str>
-    ) -> Result<Vec<Record>, Error> {
-        let mut sql = "SELECT * FROM records WHERE 1=1".to_string();
-        let mut param_index = 1;
-        if ip_address.is_some() {
-            sql.push_str(&format!(" AND ip_address = ${}", param_index));
-            param_index += 1;
-        }
-        if fqdn.is_some() {
-            sql.push_str(&format!(" AND fqdn = ${}", param_index));
-        }
-        let mut query = query(&sql);
-        if let Some(ip) = ip_address {
-            query = query.bind(ip);
-        }
-        if let Some(fqdn) = fqdn {
-            query = query.bind(fqdn);
-        }
-        query
+    pub async fn delete_before(pool: &PgPool, days: i32) -> Result<Vec<Record>, Error> {
+        let sql = "DELETE FROM records WHERE created_at > $1 RETURNING *";
+        let now = Utc::now()
+            .checked_sub_signed(chrono::Duration::days(days.into())).unwrap();
+        query(sql)
+            .bind(now)
             .map(Self::from_row)
             .fetch_all(pool)
             .await
@@ -207,16 +215,15 @@ impl Record{
             .await
     }
 
-    pub async fn delete_before(pool: &PgPool, days: i32) -> Result<Vec<Record>, Error> {
-        let sql = "DELETE FROM records WHERE created_at > $1 RETURNING *";
-        let now = Utc::now()
-            .checked_sub_signed(chrono::Duration::days(days.into())).unwrap();
-        query(sql)
-            .bind(now)
-            .map(Self::from_row)
-            .fetch_all(pool)
-            .await
+    pub async fn count_all(pool: &PgPool) -> Result<i32, Error> {
+        let sql = "SELECT COUNT(*) as count FROM records";
+        let row: (i32,) = query(sql)
+            .map(|row: PgRow| {
+                let count: i32 = row.get("count");
+                (count,)
+            })
+            .fetch_one(pool)
+            .await?;
+        Ok(row.0)
     }
-
 }
-

@@ -51,6 +51,6 @@ async fn zuul(
         }
     }
     let record = Record::create(&app_state.pool, record).await;
-    debug!("Created record withour rule: {:?}", record);
+    debug!("Created record without rule: {:?}", record);
     EmptyResponse::create(StatusCode::OK, "Ok")
 }
