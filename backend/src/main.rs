@@ -31,6 +31,7 @@ use tracing_subscriber::{
     EnvFilter, layer::SubscriberExt,
     util::SubscriberInitExt
 };
+use tower_http::services::{ServeDir, ServeFile};
 use tracing::{
     info,
     debug,
@@ -55,6 +56,8 @@ use models::{
     AppState,
     Error,
 };
+
+const STATIC_DIR: &str = "static";
 
 #[tokio::main]
 async fn main() -> Result<(), Error> {
@@ -121,10 +124,13 @@ async fn main() -> Result<(), Error> {
             pool,
             secret,
             maxmind_db: Reader::open_readfile(maxmind_db_path).unwrap(),
+            static_dir: STATIC_DIR.to_string(),
     }));
 
     let app = Router::new()
         .nest("/api/v1", api_routes)
+        .fallback_service(ServeDir::new(STATIC_DIR)
+            .fallback(ServeFile::new("static/index.html")))
         .layer(TraceLayer::new_for_http())
         .layer(cors);
 

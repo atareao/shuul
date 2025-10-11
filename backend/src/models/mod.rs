@@ -20,4 +20,5 @@ pub struct AppState {
     pub pool: PgPool,
     pub secret: String,
     pub maxmind_db: Reader<Vec<u8>>,
+    pub static_dir: String,
 }
