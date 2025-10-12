@@ -15,9 +15,14 @@ import { AuthContextProvider } from "@/components/auth_context";
 import ModeContext, { ModeContextProvider } from "@/components/mode_context";
 import PublicLayout from "@/layouts/public_layout";
 import AdminLayout from "@/layouts/admin_layout";
-import HomePage from "@/pages/home_page";
-import LoginPage from "@/pages/login_page";
-import HelpPage from "@/pages/help_page";
+import HomePage from "@/pages/public/home_page";
+import LoginPage from "@/pages/public/login_page";
+import LogoutPage from "@/pages/admin/logout_page";
+import DashboardPage from "@/pages/admin/dashboard_page"
+import RulesPage from "@/pages/admin/rules_page"
+import RecordsPage from "@/pages/admin/records_page"
+import ChartsPage from "@/pages/admin/charts_page"
+import UsersPage from "@/pages/admin/users_page"
 import '@/App.css'
 
 i18n
@@ -59,7 +64,13 @@ export default class App extends React.Component {
                                                 <Route path="login" element={<LoginPage />} />
                                             </Route>
                                             <Route path="/admin" element={<AdminLayout />} >
-                                                <Route index element={<HelpPage />} />
+                                                <Route index element={<DashboardPage />} />
+                                                <Route path="logout" element={<LogoutPage />} />
+                                                <Route path="dashboard" element={<DashboardPage />} />
+                                                <Route path="rules" element={<RulesPage />} />
+                                                <Route path="records" element={<RecordsPage />} />
+                                                <Route path="charts" element={<ChartsPage />} />
+                                                <Route path="users" element={<UsersPage />} />
                                             </Route>
                                         </Routes>
                                     </BrowserRouter>

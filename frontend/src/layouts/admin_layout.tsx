@@ -24,13 +24,23 @@ function getItem(
     key: React.Key,
     icon?: React.ReactNode,
     children?: MenuItem[],
+    navigateTo?: string,
 ): MenuItem {
     return {
         key,
         icon,
         children,
         label,
+        navigateTo,
     } as MenuItem;
+}
+
+const navigations:{[key: string]: string}  = {
+    1: "/admin/dashboard",
+    2: "/admin/rules",
+    3: "/admin/records",
+    4: "/admin/charts",
+    5: "/admin/users",
 }
 
 const items: MenuItem[] = [
@@ -62,22 +72,30 @@ class InnerAdminLayout extends react.Component<Props, State> {
         this.setState({ collapsed });
     }
 
+    handleMenuClick = (e: any) => {
+        console.log(e)
+        this.props.navigate(navigations[e.key]);
+    }
 
     render = () => {
         console.log("AdminLayout");
         return (
             <AuthContext.Consumer>
                 {({ isLoggedIn, role}) => {
-                    /*
                     if( isLoggedIn === false || role !== ROLE){
                         return <Navigate to="/login" />;
                     }
-                    */
                     return (
                         <Layout style={{ minHeight: '100vh' }}>
                             <Sider collapsible collapsed={this.state.collapsed} onCollapse={(value) => this.setCollapsed(value)}>
                                 <div className="demo-logo-vertical" />
-                                <Menu theme="dark" defaultSelectedKeys={['1']} mode="inline" items={items} />
+                                <Menu
+                                    theme="dark"
+                                    defaultSelectedKeys={['1']}
+                                    mode="inline"
+                                    items={items}
+                                    onClick={(e) => {this.handleMenuClick(e)}}
+                                />
                             </Sider>
                             <Layout>
                                 <Header
@@ -91,7 +109,7 @@ class InnerAdminLayout extends react.Component<Props, State> {
                                 >
                                     <Button
                                         variant="solid"
-                                        onClick={() => this.props.navigate('/login')}
+                                        onClick={() => this.props.navigate('/admin/logout')}
                                     >
                                         <LogoutOutlined />
                                     </Button>

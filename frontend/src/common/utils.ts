@@ -1,6 +1,6 @@
-import { BASE_URL } from '../constants';
-import Response from '../models/response';
-import { Dictionary } from './types';
+import { BASE_URL } from '@/constants';
+import type Response from '@/models/response';
+import type { Dictionary } from '@/common/types';
 
 
 export const loadData = async (endpoint: string, params?: Dictionary<string | number>) => {
@@ -24,7 +24,7 @@ export const loadData = async (endpoint: string, params?: Dictionary<string | nu
     } catch (error) {
         console.error('Error:', error);
         const msg = `Error: ${error}`;
-        return new Response(500, msg);
+        return {status: 500, message: msg} as Response<null>;
     }
 }
 export const loadDataWithParams = async (endpoint: string, params: Dictionary<string>) => {
@@ -40,7 +40,7 @@ export const loadDataWithParams = async (endpoint: string, params: Dictionary<st
     } catch (error) {
         console.error('Error:', error);
         const msg = `Error: ${error}`;
-        return new Response(500, msg);
+        return {status: 500, message: msg} as Response<null>;
     }
 }
 
@@ -57,7 +57,7 @@ export const loadKeyValue = async (reference: string) => {
     } catch (error) {
         console.error('Error:', error);
         const msg = `Error: ${error}`;
-        return new Response(500, msg);
+        return {status: 500, message: msg} as Response<null>;
     }
 }
 
