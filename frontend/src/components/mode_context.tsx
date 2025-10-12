@@ -1,12 +1,12 @@
 import React from 'react';
 
 export interface ModeContextInterface {
-    mode: string
-    toggleMode: Function
+    isDarkMode: boolean;
+    toggleMode: Function;
 }
 
 const ModeContext = React.createContext<ModeContextInterface>({
-    mode: "dark",
+    isDarkMode: true,
     toggleMode: Function,
 });
 
@@ -16,7 +16,7 @@ interface Props {
 }
 
 interface State {
-    mode: string
+    isDarkMode: boolean;
 }
 
 export class ModeContextProvider extends React.Component<Props, State> {
@@ -25,7 +25,7 @@ export class ModeContextProvider extends React.Component<Props, State> {
         console.log("Constructing AuthContextProvider");
         super(props);
         this.state = {
-            mode: this.retrieveMode()
+            isDarkMode: this.retrieveMode()
         }
     }
 
@@ -33,24 +33,24 @@ export class ModeContextProvider extends React.Component<Props, State> {
         console.log("Retrieving mode");
         let mode = localStorage.getItem("mode");
         if (mode === undefined || mode === null) {
-            return "light";
+            return true;
         }
-        return mode;
+        return mode == "dark";
     }
 
     toggleMode = () => {
-        const oldState = this.state.mode;
-        const newState = this.state.mode === "light"?"dark":"light";
-        this.setState({ mode: newState });
-        localStorage.setItem("mode", newState);
-        console.log(`Change mode from ${oldState} to ${newState}`);
+        const oldState = this.state.isDarkMode;
+        const newState = !this.state.isDarkMode;
+        this.setState({ isDarkMode:  newState});
+        localStorage.setItem("mode", newState?"dark":"light");
+        console.log(`Change isDarkMode from ${oldState} to ${newState}`);
     }
 
     render() {
-        console.log(`Rendering ModeContextProvider ${this.state.mode}`);
+        console.log(`Rendering ModeContextProvider ${this.state.isDarkMode}`);
         return (
             <ModeContext.Provider value={{
-                mode: this.state.mode,
+                isDarkMode: this.state.isDarkMode,
                 toggleMode: this.toggleMode,
             }}>
                 {this.props.children}
