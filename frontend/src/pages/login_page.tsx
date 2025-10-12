@@ -1,10 +1,12 @@
 import React from 'react';
 import SignIn from "../components/signin";
 import { Navigate } from "react-router";
+import { Flex } from 'antd';
+
 import AuthContext from '@/components/auth_context';
 import { BASE_URL } from '@/constants';
 import { jwtDecode } from 'jwt-decode';
-import { Flex } from 'antd';
+import Logo from "@/assets/logo.svg";
 
 
 interface State {
@@ -103,21 +105,24 @@ export default class LoginPage extends React.Component<{}, State> {
         console.log("Rendering login page");
         if (this.context.isLoggedIn) {
             console.log(`Role: ${this.context.role}`);
-            if(this.context.role === "admin") {
+            if (this.context.role === "admin") {
                 return (
                     <Navigate to="/admin/" />
                 );
             }
             return (
-                    <Navigate to="/" />
+                <Navigate to="/" />
             );
         } else {
             return (
                 <Flex justify="center" align="center">
-                    <SignIn
-                        onSubmit={this.handleSubmit}
-                        responseMessage={this.state.responseMessage}
-                    />
+                    <Flex gap="middle" align="center" vertical>
+                        <img src={Logo} alt="Logo" style={{ width: 200, marginBottom: 20 }} />
+                        <SignIn
+                            onSubmit={this.handleSubmit}
+                            responseMessage={this.state.responseMessage}
+                        />
+                    </Flex>
                 </Flex>
             );
         }
