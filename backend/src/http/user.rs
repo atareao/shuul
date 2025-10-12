@@ -25,10 +25,25 @@ pub fn user_router() -> Router<Arc<AppState>> {
 pub fn api_user_router() -> Router<Arc<AppState>> {
     Router::new()
         .route("/", routing::get(read))
+        .route("/any", routing::get(any_user_exists))
 }
 
 
 type Result = std::result::Result<ApiResponse, ApiResponse>;
+
+pub async fn any_user_exists(State(app_state): State<Arc<AppState>>) -> impl IntoResponse {
+    match User::any_user_exists(&app_state.pool).await {
+        Ok(exists) => {
+            debug!("Any user exists: {:?}", exists);
+            let value = serde_json::json!({ "any_user_exists": exists });
+            ApiResponse::new(StatusCode::OK, "Ok", Data::Some(value))
+        }
+        Err(e) => {
+            error!("Error checking if any user exists: {:?}", e);
+            ApiResponse::new(StatusCode::BAD_REQUEST, "Error checking if any user exists", Data::None)
+        }
+    }
+}
 
 pub async fn login(State(app_state): State<Arc<AppState>>, Json(user_schema): Json<UserSchema>) -> Result {
     //) -> Result<Json<serde_json::Value>,(StatusCode, Json<serde_json::Value>)>{
@@ -75,7 +90,7 @@ pub async fn register(
     Json(user_data): Json<UserRegister>,
 ) -> impl IntoResponse {
     debug!("User data: {:?}", user_data);
-    match User::create(&app_state.pool, &user_data.username, &user_data.email, &user_data.password).await {
+    match User::create(&app_state.pool, &user_data.username, &user_data.email, &user_data.password, &user_data.role).await {
         Ok(user) => {
             debug!("User created: {:?}", user);
             ApiResponse::new(StatusCode::CREATED, "User created", Data::Some(serde_json::to_value(user).unwrap()))

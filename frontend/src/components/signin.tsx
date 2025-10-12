@@ -52,33 +52,33 @@ class InnerSignIn extends React.Component<Props, State> {
         console.log("Rendering sign in form");
         const { t } = this.props;
         return (
-            <form onSubmit={this.handleSubmit}>
-                <Card title="Login" style={{ width: 300 }}>
-                    <Input
-                        id="email"
-                        type="email"
-                        required
-                        placeholder={t('Email')}
-                        value={this.state.email}
-                        onChange={this.handleEmailChange}
-                    />
-                    <br />
-                    <br />
-                    <Input
-                        id="password"
-                        type="password"
-                        required
-                        placeholder={t('Password')}
-                        value={this.state.password}
-                        onChange={this.handlePasswordChange}
-                    />
-                    <br />
-                    <br />
-                    <Button>
-                        {t('Sign in')}
-                    </Button>
-                </Card>
-            </form>
+            <Card title="Login" style={{ width: 300 }}>
+                <Input
+                    id="email"
+                    type="email"
+                    required
+                    placeholder={t('Email')}
+                    value={this.state.email}
+                    onChange={this.handleEmailChange}
+                />
+                <br />
+                <br />
+                <Input
+                    id="password"
+                    type="password"
+                    required
+                    placeholder={t('Password')}
+                    value={this.state.password}
+                    onChange={this.handlePasswordChange}
+                />
+                <br />
+                <br />
+                <Button
+                    onClick={this.handleSubmit}
+                >
+                    {t('Sign in')}
+                </Button>
+            </Card>
         );
     }
 }
