@@ -68,9 +68,11 @@ class InnerAdminLayout extends react.Component<Props, State> {
         return (
             <AuthContext.Consumer>
                 {({ isLoggedIn, role}) => {
+                    /*
                     if( isLoggedIn === false || role !== ROLE){
                         return <Navigate to="/login" />;
                     }
+                    */
                     return (
                         <Layout style={{ minHeight: '100vh' }}>
                             <Sider collapsible collapsed={this.state.collapsed} onCollapse={(value) => this.setCollapsed(value)}>
