@@ -1,15 +1,15 @@
 mod user;
 mod rule;
 mod record;
-mod api_response;
+mod response;
 mod data;
 mod ipdata;
 
 pub use data::Data;
 pub use ipdata::IPData;
 pub use rule::{Rule, NewRule, UpdateRule};
-pub use record::{Record, NewRecord};
-pub use api_response::{ApiResponse, EmptyResponse};
+pub use record::{Record, NewRecord, ReadRecordParams};
+pub use response::{ApiResponse, EmptyResponse, PagedResponse, Pagination};
 pub use user::{User, TokenClaims, UserSchema, UserRegister};
 pub type Error = Box<dyn std::error::Error>;
 

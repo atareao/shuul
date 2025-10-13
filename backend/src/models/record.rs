@@ -35,6 +35,23 @@ pub struct NewRecord{
     pub rule_id: Option<i32>,
 }
 
+#[derive(Debug, Deserialize)]
+pub struct ReadRecordParams {
+    pub id: Option<i32>,
+    pub ip_address: Option<String>,
+    pub protocol: Option<String>,
+    pub fqdn: Option<String>,
+    pub path: Option<String>,
+    pub query: Option<String>,
+    pub city_name: Option<String>,
+    pub country_name: Option<String>,
+    pub country_code: Option<String>,
+    pub page: Option<u32>,
+    pub limit: Option<u32>,
+}
+use crate::constants::DEFAULT_PAGE;
+use crate::constants::DEFAULT_LIMIT;
+
 impl NewRecord{
     pub fn from_request(headers: &http::HeaderMap, maxmind_db: &Reader<Vec<u8>>) -> Self {
         let method = headers.get("x-forwarded-method")
@@ -133,32 +150,60 @@ impl Record{
             .await
     }
 
-    pub async fn read_paged(
+    pub async fn count_paged(
         pool: &PgPool,
-        ip_address: Option<String>,
-        protocol: Option<String>,
-        fqdn: Option<String>,
-        path: Option<String>,
-        query_for_request: Option<String>,
-        city_name: Option<String>,
-        country_name: Option<String>,
-        country_code: Option<String>,
-        limit: i32,
-        offset: i32,
-    ) -> Result<Vec<Record>, Error> {
+        params: &ReadRecordParams,
+
+    ) -> Result<i64, Error> {
         let filters = vec![
-            ("ip_address", ip_address),
-            ("protocol", protocol),
-            ("fqdn", fqdn),
-            ("path", path),
-            ("query", query_for_request), // Mapea 'query_for_request' a 'query'
-            ("city_name", city_name),
-            ("country_name", country_name),
-            ("country_code", country_code),
+            ("ip_address", &params.ip_address),
+            ("protocol", &params.protocol),
+            ("fqdn", &params.fqdn),
+            ("path", &params.path),
+            ("query", &params.query), // Mapea 'query_for_request' a 'query'
+            ("city_name", &params.city_name),
+            ("country_name", &params.country_name),
+            ("country_code", &params.country_code),
         ];
         let active_filters: Vec<(&str, String)> = filters
             .into_iter()
-            .filter_map(|(col, val)| val.map(|v| (col, v)))
+            .filter_map(|(col, val)| val.as_ref().map(|v| (col, v.to_string())))
+            .collect();
+        let mut sql = "SELECT COUNT(*) total FROM records WHERE 1=1".to_string();
+        for (i, (col, _)) in active_filters.iter().enumerate() {
+            let param_index = i + 1;
+            sql.push_str(&format!(" AND {} LIKE ${}", col, param_index));
+        }
+        let mut query = query(&sql);
+        for (_, value) in active_filters {
+            query = query.bind(value);
+        }
+        query
+            .map(|row: PgRow| {
+                let count: i64 = row.get("total");
+                count
+            })
+            .fetch_one(pool)
+            .await
+    }
+
+    pub async fn read_paged(
+        pool: &PgPool,
+        params: &ReadRecordParams,
+    ) -> Result<Vec<Record>, Error> {
+        let filters = vec![
+            ("ip_address", &params.ip_address),
+            ("protocol", &params.protocol),
+            ("fqdn", &params.fqdn),
+            ("path", &params.path),
+            ("query", &params.query), // Mapea 'query_for_request' a 'query'
+            ("city_name", &params.city_name),
+            ("country_name", &params.country_name),
+            ("country_code", &params.country_code),
+        ];
+        let active_filters: Vec<(&str, String)> = filters
+            .into_iter()
+            .filter_map(|(col, val)| val.as_ref().map(|v| (col, v.to_string())))
             .collect();
         let mut sql = "SELECT * FROM records WHERE 1=1".to_string();
         for (i, (col, _)) in active_filters.iter().enumerate() {
@@ -172,6 +217,8 @@ impl Record{
         for (_, value) in active_filters {
             query = query.bind(value);
         }
+        let limit = params.limit.unwrap_or(DEFAULT_LIMIT) as i32;
+        let offset = ((params.page.unwrap_or(DEFAULT_PAGE) - 1) as i32) * limit;
         query
             .bind(limit)
             .bind(offset)
