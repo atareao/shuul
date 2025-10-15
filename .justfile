@@ -11,11 +11,11 @@ dev:
     cd backend && RUST_LOG=debug cargo run
 
 [working-directory("./frontend")]
-front:
+frontend:
     @pnpm run dev
 
 [working-directory("./backend")]
-back:
+backend:
     RUST_LOG=debug cargo run
 
 build:

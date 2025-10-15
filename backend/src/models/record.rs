@@ -48,6 +48,8 @@ pub struct ReadRecordParams {
     pub country_code: Option<String>,
     pub page: Option<u32>,
     pub limit: Option<u32>,
+    pub sort_by: Option<String>,
+    pub asc: Option<bool>,
 }
 use crate::constants::DEFAULT_PAGE;
 use crate::constants::DEFAULT_LIMIT;
@@ -212,7 +214,16 @@ impl Record{
         }
         let limit_index = active_filters.len() + 1;
         let offset_index = limit_index + 1;
-        sql.push_str(&format!(" ORDER BY created_at ASC LIMIT ${} OFFSET ${}", limit_index, offset_index));
+        let sort_by = params.sort_by.as_deref().unwrap_or("created_at");
+        if ["created_at", "ip_address", "protocol", "fqdn", "path",
+                "city_name", "country_name", "country_code"].contains(&sort_by) {
+            if params.asc.unwrap_or(true) {
+                sql.push_str(&format!(" ORDER BY {} ASC", sort_by));
+            } else {
+                sql.push_str(&format!(" ORDER BY {} DESC", sort_by));
+            }
+        }
+        sql.push_str(&format!(" LIMIT ${} OFFSET ${}", limit_index, offset_index));
         let mut query = query(&sql);
         for (_, value) in active_filters {
             query = query.bind(value);

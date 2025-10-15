@@ -149,6 +149,8 @@ export class InnerPage extends react.Component<Props, State> {
         const params: Dictionary<string | number> = {
             page: this.state.tableParams.pagination?.current || 1,
             limit: this.state.tableParams.pagination?.pageSize || 10,
+            sort_by: this.state.tableParams.sortField?.toString() || 'created_at',
+            asc: this.state.tableParams.sortOrder === 'ascend' ? 'true' : 'false',
         };
         const responseJson = await loadData<Record[]>("records", params);
         console.log(`Response: ${JSON.stringify(responseJson)}`);
