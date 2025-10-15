@@ -2,11 +2,23 @@ import react from "react";
 import { useNavigate } from 'react-router';
 import { useTranslation } from "react-i18next";
 import { Flex, Typography, Table } from 'antd';
-import type { TableProps } from 'antd';
+import type { GetProp, TableProps } from 'antd';
+import type { SorterResult } from 'antd/es/table/interface';
 const { Text } = Typography;
 
 import { loadData } from '@/common/utils';
-import type Record  from "@/models/record";
+import type { Dictionary } from '@/common/types';
+import type Record from "@/models/record";
+
+type ColumnsType<T extends object = object> = TableProps<T>['columns'];
+type TablePaginationConfig = Exclude<GetProp<TableProps, 'pagination'>, boolean>;
+
+interface TableParams {
+    pagination?: TablePaginationConfig;
+    sortField?: SorterResult<any>['field'];
+    sortOrder?: SorterResult<any>['order'];
+    filters?: Parameters<GetProp<TableProps, 'onChange'>>[1];
+}
 
 interface Props {
     navigate: any
@@ -14,8 +26,9 @@ interface Props {
 }
 
 interface State {
-    records: Record[]
-    loading: boolean
+    records: Record[];
+    loading: boolean;
+    tableParams: TableParams;
 }
 
 export class InnerPage extends react.Component<Props, State> {
@@ -25,62 +38,80 @@ export class InnerPage extends react.Component<Props, State> {
         this.state = {
             records: [],
             loading: false,
+            tableParams: {
+                pagination: {
+                    current: 1,
+                    pageSize: 10,
+                }
+            },
         }
     }
 
-    columns: TableProps<Record>['columns'] = [
+    columns: ColumnsType<Record> = [
         {
             title: this.props.t("Date"),
             dataIndex: 'created_at',
             key: 'created_at',
+            sorter: true,
             render: (text) => <Text>{text}</Text>,
         },
         {
             title: this.props.t("IP"),
             dataIndex: 'ip_address',
             key: 'ip_address',
+            sorter: true,
             render: (text) => <Text>{text}</Text>,
         },
         {
             title: this.props.t("Protocol"),
             dataIndex: 'protocol',
             key: 'protocol',
+            sorter: true,
             render: (text) => <Text>{text}</Text>,
         },
         {
             title: this.props.t("FQDN"),
             dataIndex: 'fqdn',
             key: 'fqdn',
+            sorter: true,
             render: (text) => <Text>{text}</Text>,
         },
         {
             title: this.props.t("Path"),
             dataIndex: 'path',
             key: 'path',
+            sorter: true,
             render: (text) => <Text>{text}</Text>,
         },
         {
             title: this.props.t("Query"),
             dataIndex: 'query',
             key: 'query',
+            sorter: true,
             render: (text) => <Text>{text}</Text>,
         },
         {
             title: this.props.t("City name"),
             dataIndex: 'city_name',
             key: 'city_name',
+            sorter: true,
             render: (text) => <Text>{text}</Text>,
         },
         {
             title: this.props.t("County name"),
             dataIndex: 'country_name',
             key: 'country_name',
+            sorter: true,
             render: (text) => <Text>{text}</Text>,
         },
         {
             title: this.props.t("County code"),
             dataIndex: 'country_code',
             key: 'country_code',
+            sorter: true,
+            filters: [
+                { text: 'Spain', value: 'ES' }
+            ],
             render: (text) => <Text>{text}</Text>,
         },
         {
@@ -91,13 +122,62 @@ export class InnerPage extends react.Component<Props, State> {
         },
     ];
 
-    componentDidMount = async () => {
-        console.log("Mounting page");
-        const responseJson = await loadData("records" );
-        if (responseJson.status === 200 && responseJson.data) {
-            this.setState({ records: responseJson.data, loading: false });
-        }
+    setTableParams = (tableParams: TableParams) => {
+        this.setState({ ...this.state, tableParams });
+    }
+    setData = (records: Record[]) => {
+        this.setState({ ...this.state, records });
+    }
 
+    handleTableChange: TableProps<Record>['onChange'] = (
+        pagination: any,
+        filters: any,
+        sorter: any) => {
+        this.setTableParams({
+            pagination,
+            filters,
+            sortOrder: Array.isArray(sorter) ? undefined : sorter.order,
+            sortField: Array.isArray(sorter) ? undefined : sorter.field,
+        });
+        if (pagination.pageSize !== this.state.tableParams.pagination?.pageSize) {
+            this.setData([]);
+        }
+    }
+
+    fetchData = async () => {
+        console.log("Fetching data");
+        const params: Dictionary<string | number> = {
+            page: this.state.tableParams.pagination?.current || 1,
+            limit: this.state.tableParams.pagination?.pageSize || 10,
+        };
+        const responseJson = await loadData<Record[]>("records", params);
+        console.log(`Response: ${JSON.stringify(responseJson)}`);
+        if (responseJson.status === 200 && responseJson.data) {
+            this.setState({
+                records: responseJson.data,
+                loading: false,
+                tableParams: {
+                    ...this.state.tableParams,
+                    pagination: {
+                        current: responseJson.pagination?.page  || 1,
+                        pageSize: responseJson.pagination?.limit || 10,
+                        total: responseJson.pagination?.records || 0,
+                    }
+                }
+            });
+        }
+    }
+
+
+    componentDidMount = async () => {
+        await this.fetchData();
+    }
+
+    componentDidUpdate = async (_prevProps: Props, prevState: State) => {
+        if(prevState.tableParams.pagination?.current !== this.state.tableParams.pagination?.current ||
+                this.state.tableParams.pagination?.pageSize !== prevState.tableParams.pagination?.pageSize) {
+            await this.fetchData();
+        }
     }
 
     render = () => {
@@ -111,7 +191,11 @@ export class InnerPage extends react.Component<Props, State> {
                 <div style={{ height: 20 }} />
                 <Table<Record>
                     columns={this.columns}
+                    rowKey={record => record.id.toString()}
                     dataSource={this.state.records}
+                    pagination={this.state.tableParams.pagination}
+                    loading={this.state.loading}
+                    onChange={this.handleTableChange}
                 />
             </Flex>
 

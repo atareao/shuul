@@ -1,5 +1,5 @@
 export interface Dictionary<T> {
-    [name: string]: T;
+    [name: string]: T | undefined | null;
 }
 
 export interface Validation {
@@ -18,7 +18,10 @@ export interface ReferencedItem {
     reference: string;
 }
 
-export enum Language {
-    ES = "es",
-    EN = "en",
-}
+export type LanguageCode = "es" | "en";
+
+// Define el objeto de constantes para usar como valores
+export const Language = {
+    ES: "es" as LanguageCode,
+    EN: "en" as LanguageCode,
+};
