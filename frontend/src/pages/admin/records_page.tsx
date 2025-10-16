@@ -1,9 +1,11 @@
 import react from "react";
 import { useNavigate } from 'react-router';
 import { useTranslation } from "react-i18next";
-import { Flex, Typography, Table } from 'antd';
-import type { GetProp, TableProps } from 'antd';
-import type { SorterResult } from 'antd/es/table/interface';
+import { Flex, Typography, Table, Button, Input, Space } from 'antd';
+import type { GetProp, TableProps, InputRef, TableColumnType, TableColumnsType } from 'antd';
+import type { SorterResult, FilterDropdownProps } from 'antd/es/table/interface';
+import { SearchOutlined } from '@ant-design/icons';
+import Highlighter from 'react-highlight-words';
 const { Text } = Typography;
 
 import { loadData } from '@/common/utils';
@@ -20,6 +22,9 @@ interface TableParams {
     filters?: Parameters<GetProp<TableProps, 'onChange'>>[1];
 }
 
+type RecordIndex = keyof Record;
+
+
 interface Props {
     navigate: any
     t: any
@@ -29,9 +34,12 @@ interface State {
     records: Record[];
     loading: boolean;
     tableParams: TableParams;
+    searchText?: string;
+    searchedColumn?: RecordIndex;
 }
 
 export class InnerPage extends react.Component<Props, State> {
+    searchInput: InputRef = react.createRef<InputRef>();
 
     constructor(props: Props) {
         super(props);
@@ -46,6 +54,103 @@ export class InnerPage extends react.Component<Props, State> {
             },
         }
     }
+
+    handleSearch = (
+        selectedKeys: string[],
+        confirm: FilterDropdownProps['confirm'],
+        recordIndex: RecordIndex,
+    ) => {
+        confirm();
+        this.setState({
+            searchText: selectedKeys[0],
+            searchedColumn: recordIndex,
+        });
+    };
+
+    handleReset = (clearFilters: () => void) => {
+        clearFilters();
+        this.setState({
+            searchText: "",
+        });
+    };
+
+    getColumnSearchProps = (dataIndex: RecordIndex): TableColumnType<Record> => ({
+        filterDropdown: ({ setSelectedKeys, selectedKeys, confirm, clearFilters, close }) => (
+            <div style={{ padding: 8 }} onKeyDown={(e) => e.stopPropagation()}>
+                <Input
+                    ref={searchInput}
+                    placeholder={`Search ${dataIndex}`}
+                    value={selectedKeys[0]}
+                    onChange={(e) => setSelectedKeys(e.target.value ? [e.target.value] : [])}
+                    onPressEnter={() => this.handleSearch(selectedKeys as string[], confirm, dataIndex)}
+                    style={{ marginBottom: 8, display: 'block' }}
+                />
+                <Space>
+                    <Button
+                        type="primary"
+                        onClick={() => this.handleSearch(selectedKeys as string[], confirm, dataIndex)}
+                        icon={<SearchOutlined />}
+                        size="small"
+                        style={{ width: 90 }}
+                    >
+                        Search
+                    </Button>
+                    <Button
+                        onClick={() => clearFilters && this.handleReset(clearFilters)}
+                        size="small"
+                        style={{ width: 90 }}
+                    >
+                        Reset
+                    </Button>
+                    <Button
+                        type="link"
+                        size="small"
+                        onClick={() => {
+                            confirm({ closeDropdown: false });
+                            this.setState({ searchText: (selectedKeys as string[])[0], searchedColumn: dataIndex });
+                        }}
+                    >
+                        Filter
+                    </Button>
+                    <Button
+                        type="link"
+                        size="small"
+                        onClick={() => {
+                            close();
+                        }}
+                    >
+                        close
+                    </Button>
+                </Space>
+            </div>
+        ),
+        filterIcon: (filtered: boolean) => (
+            <SearchOutlined style={{ color: filtered ? '#1677ff' : undefined }} />
+        ),
+        onFilter: (value, record) =>
+            record[dataIndex]
+                .toString()
+                .toLowerCase()
+                .includes((value as string).toLowerCase()),
+        filterDropdownProps: {
+            onOpenChange(open) {
+                if (open) {
+                    setTimeout(() => searchInput.current?.select(), 100);
+                }
+            },
+        },
+        render: (text) =>
+            searchedColumn === dataIndex ? (
+                <Highlighter
+                    highlightStyle={{ backgroundColor: '#ffc069', padding: 0 }}
+                    searchWords={[searchText]}
+                    autoEscape
+                    textToHighlight={text ? text.toString() : ''}
+                />
+            ) : (
+                text
+            ),
+    });
 
     columns: ColumnsType<Record> = [
         {
@@ -109,9 +214,6 @@ export class InnerPage extends react.Component<Props, State> {
             dataIndex: 'country_code',
             key: 'country_code',
             sorter: true,
-            filters: [
-                { text: 'Spain', value: 'ES' }
-            ],
             render: (text) => <Text>{text}</Text>,
         },
         {
@@ -152,6 +254,10 @@ export class InnerPage extends react.Component<Props, State> {
             sort_by: this.state.tableParams.sortField?.toString() || 'created_at',
             asc: this.state.tableParams.sortOrder === 'ascend' ? 'true' : 'false',
         };
+        const countryCode = this.state.tableParams.filters?.country_code?.toString() || "";
+        if (countryCode.length > 0) {
+            params['country_code'] = countryCode;
+        }
         const responseJson = await loadData<Record[]>("records", params);
         console.log(`Response: ${JSON.stringify(responseJson)}`);
         if (responseJson.status === 200 && responseJson.data) {
@@ -161,7 +267,7 @@ export class InnerPage extends react.Component<Props, State> {
                 tableParams: {
                     ...this.state.tableParams,
                     pagination: {
-                        current: responseJson.pagination?.page  || 1,
+                        current: responseJson.pagination?.page || 1,
                         pageSize: responseJson.pagination?.limit || 10,
                         total: responseJson.pagination?.records || 0,
                     }
@@ -176,8 +282,11 @@ export class InnerPage extends react.Component<Props, State> {
     }
 
     componentDidUpdate = async (_prevProps: Props, prevState: State) => {
-        if(prevState.tableParams.pagination?.current !== this.state.tableParams.pagination?.current ||
-                this.state.tableParams.pagination?.pageSize !== prevState.tableParams.pagination?.pageSize) {
+        if (prevState.tableParams.pagination?.current !== this.state.tableParams.pagination?.current ||
+            this.state.tableParams.pagination?.pageSize !== prevState.tableParams.pagination?.pageSize ||
+            this.state.tableParams.sortField !== prevState.tableParams.sortField ||
+            this.state.tableParams.sortOrder !== prevState.tableParams.sortOrder
+        ) {
             await this.fetchData();
         }
     }
