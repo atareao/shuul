@@ -35,6 +35,7 @@ const COLUMNS: string[] = ["created_at", "ip_address", "protocol", "fqdn",
     "path", "query", "city_name", "country_name", "country_code", "rule_id"];
 
 export class InnerPage extends react.Component<Props, State> {
+    columns: ColumnsType<Record>;
 
     constructor(props: Props) {
         super(props);
@@ -52,6 +53,7 @@ export class InnerPage extends react.Component<Props, State> {
             filters: initialFilters,
         }
         console.log("Initial state:", this.state);
+        this.columns = this.getColumns();
     }
 
     getColumns = (): ColumnsType<Record> => {
@@ -120,7 +122,9 @@ export class InnerPage extends react.Component<Props, State> {
             sort_by: this.state.tableParams.sortField?.toString() || 'created_at',
             asc: this.state.tableParams.sortOrder === 'ascend' ? 'true' : 'false',
         };
-        Object.entries(this.state.filters).forEach(([key, value]) => {
+        console.log("Current filters:", this.state.filters);
+        this.state.filters.forEach((value, key) => {
+            console.log(`Filter entry: ${key} -> ${value}`);
             if (value && value.length > 0) {
                 params[key] = value;
             }
@@ -168,13 +172,13 @@ export class InnerPage extends react.Component<Props, State> {
         if (this.state.loading) {
             <Text>{this.props.t("Loading...")}</Text>
         }
-        const columns = this.getColumns();
+        //const columns = this.getColumns();
         return (
             <Flex vertical justify="center" align="center" >
                 <Text>{title}</Text>
                 <div style={{ height: 20 }} />
                 <Table<Record>
-                    columns={columns}
+                    columns={this.columns}
                     rowKey={record => record.id.toString()}
                     dataSource={this.state.records}
                     pagination={this.state.tableParams.pagination}
