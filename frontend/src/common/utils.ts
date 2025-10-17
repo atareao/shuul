@@ -70,3 +70,21 @@ export const loadData = async <T>(
         };
     }
 };
+
+export const mapsEqual = (map1: Map<string, string>, map2: Map<string, string>): boolean => {
+    // 1. Si el tamaño es diferente, son distintos.
+    if (map1.size !== map2.size) {
+        return false;
+    }
+
+    // 2. Itera sobre el primer mapa y compara los valores en el segundo.
+    for (const [key, val] of map1.entries()) {
+        // Si la clave no existe o el valor es diferente, son distintos.
+        if (val !== map2.get(key)) {
+            return false;
+        }
+    }
+
+    // 3. Si la iteración termina, son iguales.
+    return true;
+};

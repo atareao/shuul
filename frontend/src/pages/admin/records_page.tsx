@@ -1,14 +1,12 @@
 import react from "react";
 import { useNavigate } from 'react-router';
 import { useTranslation } from "react-i18next";
-import { Flex, Typography, Table, Button, Input, Space } from 'antd';
-import type { GetProp, TableProps, InputRef, TableColumnType, TableColumnsType } from 'antd';
-import type { SorterResult, FilterDropdownProps } from 'antd/es/table/interface';
-import { SearchOutlined } from '@ant-design/icons';
-import Highlighter from 'react-highlight-words';
+import { Flex, Typography, Table, Input } from 'antd';
+import type { GetProp, TableProps } from 'antd';
+import type { SorterResult } from 'antd/es/table/interface';
 const { Text } = Typography;
 
-import { loadData } from '@/common/utils';
+import { loadData, mapsEqual } from '@/common/utils';
 import type { Dictionary } from '@/common/types';
 import type Record from "@/models/record";
 
@@ -19,10 +17,7 @@ interface TableParams {
     pagination?: TablePaginationConfig;
     sortField?: SorterResult<any>['field'];
     sortOrder?: SorterResult<any>['order'];
-    filters?: Parameters<GetProp<TableProps, 'onChange'>>[1];
 }
-
-type RecordIndex = keyof Record;
 
 
 interface Props {
@@ -34,15 +29,17 @@ interface State {
     records: Record[];
     loading: boolean;
     tableParams: TableParams;
-    searchText?: string;
-    searchedColumn?: RecordIndex;
+    filters: Map<string, string>;
 }
+const COLUMNS: string[] = ["created_at", "ip_address", "protocol", "fqdn",
+    "path", "query", "city_name", "country_name", "country_code", "rule_id"];
 
 export class InnerPage extends react.Component<Props, State> {
-    searchInput: InputRef = react.createRef<InputRef>();
 
     constructor(props: Props) {
         super(props);
+        const initialFilters = new Map<string, string>();
+        COLUMNS.forEach(col => initialFilters.set(col, ""));
         this.state = {
             records: [],
             loading: false,
@@ -50,179 +47,50 @@ export class InnerPage extends react.Component<Props, State> {
                 pagination: {
                     current: 1,
                     pageSize: 10,
-                }
+                },
             },
+            filters: initialFilters,
         }
+        console.log("Initial state:", this.state);
     }
 
-    handleSearch = (
-        selectedKeys: string[],
-        confirm: FilterDropdownProps['confirm'],
-        recordIndex: RecordIndex,
-    ) => {
-        confirm();
-        this.setState({
-            searchText: selectedKeys[0],
-            searchedColumn: recordIndex,
-        });
-    };
-
-    handleReset = (clearFilters: () => void) => {
-        clearFilters();
-        this.setState({
-            searchText: "",
-        });
-    };
-
-    getColumnSearchProps = (dataIndex: RecordIndex): TableColumnType<Record> => ({
-        filterDropdown: ({ setSelectedKeys, selectedKeys, confirm, clearFilters, close }) => (
-            <div style={{ padding: 8 }} onKeyDown={(e) => e.stopPropagation()}>
-                <Input
-                    ref={searchInput}
-                    placeholder={`Search ${dataIndex}`}
-                    value={selectedKeys[0]}
-                    onChange={(e) => setSelectedKeys(e.target.value ? [e.target.value] : [])}
-                    onPressEnter={() => this.handleSearch(selectedKeys as string[], confirm, dataIndex)}
-                    style={{ marginBottom: 8, display: 'block' }}
-                />
-                <Space>
-                    <Button
-                        type="primary"
-                        onClick={() => this.handleSearch(selectedKeys as string[], confirm, dataIndex)}
-                        icon={<SearchOutlined />}
-                        size="small"
-                        style={{ width: 90 }}
-                    >
-                        Search
-                    </Button>
-                    <Button
-                        onClick={() => clearFilters && this.handleReset(clearFilters)}
-                        size="small"
-                        style={{ width: 90 }}
-                    >
-                        Reset
-                    </Button>
-                    <Button
-                        type="link"
-                        size="small"
-                        onClick={() => {
-                            confirm({ closeDropdown: false });
-                            this.setState({ searchText: (selectedKeys as string[])[0], searchedColumn: dataIndex });
-                        }}
-                    >
-                        Filter
-                    </Button>
-                    <Button
-                        type="link"
-                        size="small"
-                        onClick={() => {
-                            close();
-                        }}
-                    >
-                        close
-                    </Button>
-                </Space>
-            </div>
-        ),
-        filterIcon: (filtered: boolean) => (
-            <SearchOutlined style={{ color: filtered ? '#1677ff' : undefined }} />
-        ),
-        onFilter: (value, record) =>
-            record[dataIndex]
-                .toString()
-                .toLowerCase()
-                .includes((value as string).toLowerCase()),
-        filterDropdownProps: {
-            onOpenChange(open) {
-                if (open) {
-                    setTimeout(() => searchInput.current?.select(), 100);
-                }
-            },
-        },
-        render: (text) =>
-            searchedColumn === dataIndex ? (
-                <Highlighter
-                    highlightStyle={{ backgroundColor: '#ffc069', padding: 0 }}
-                    searchWords={[searchText]}
-                    autoEscape
-                    textToHighlight={text ? text.toString() : ''}
-                />
-            ) : (
-                text
-            ),
-    });
-
-    columns: ColumnsType<Record> = [
-        {
-            title: this.props.t("Date"),
-            dataIndex: 'created_at',
-            key: 'created_at',
-            sorter: true,
-            render: (text) => <Text>{text}</Text>,
-        },
-        {
-            title: this.props.t("IP"),
-            dataIndex: 'ip_address',
-            key: 'ip_address',
-            sorter: true,
-            render: (text) => <Text>{text}</Text>,
-        },
-        {
-            title: this.props.t("Protocol"),
-            dataIndex: 'protocol',
-            key: 'protocol',
-            sorter: true,
-            render: (text) => <Text>{text}</Text>,
-        },
-        {
-            title: this.props.t("FQDN"),
-            dataIndex: 'fqdn',
-            key: 'fqdn',
-            sorter: true,
-            render: (text) => <Text>{text}</Text>,
-        },
-        {
-            title: this.props.t("Path"),
-            dataIndex: 'path',
-            key: 'path',
-            sorter: true,
-            render: (text) => <Text>{text}</Text>,
-        },
-        {
-            title: this.props.t("Query"),
-            dataIndex: 'query',
-            key: 'query',
-            sorter: true,
-            render: (text) => <Text>{text}</Text>,
-        },
-        {
-            title: this.props.t("City name"),
-            dataIndex: 'city_name',
-            key: 'city_name',
-            sorter: true,
-            render: (text) => <Text>{text}</Text>,
-        },
-        {
-            title: this.props.t("County name"),
-            dataIndex: 'country_name',
-            key: 'country_name',
-            sorter: true,
-            render: (text) => <Text>{text}</Text>,
-        },
-        {
-            title: this.props.t("County code"),
-            dataIndex: 'country_code',
-            key: 'country_code',
-            sorter: true,
-            render: (text) => <Text>{text}</Text>,
-        },
-        {
-            title: this.props.t("Rule ID"),
-            dataIndex: 'rule_id',
-            key: 'rule_id',
-            render: (text) => <Text>{text}</Text>,
-        },
-    ];
+    getColumns = (): ColumnsType<Record> => {
+        return COLUMNS.map((col) => {
+            const filterValue = this.state.filters.get(col) || "";
+            return {
+                title: <Input
+                    key={`filter-input-${col}-${this.state.filters.get(col)}`}
+                    placeholder={col}
+                    defaultValue={filterValue}
+                    onKeyUp={(e) => {
+                        if(e.key === "Enter") {
+                            const value = (e.target as HTMLInputElement).value;
+                            console.log(`Filter ${col} by value: ${value}`);
+                            console.log(this.state.filters);
+                            console.log(e);
+                            this.setState((prevState) => {
+                                const newFilters = new Map(prevState.filters);
+                                newFilters.set(col, value);
+                                console.log(newFilters);
+                                return {
+                                    filters: newFilters
+                                }
+                            },
+                                ()=>{
+                                    console.log(`Actualizado con Enter: ${Array.from(this.state.filters.entries())}`);
+                                    this.fetchData();
+                                }
+                            );
+                        }; // Handled in onPressEnter
+                    }}
+                />,
+                dataIndex: col,
+                key: col,
+                sorter: true,
+                render: (text) => <Text>{text}</Text>,
+            }
+        })
+    }
 
     setTableParams = (tableParams: TableParams) => {
         this.setState({ ...this.state, tableParams });
@@ -233,11 +101,9 @@ export class InnerPage extends react.Component<Props, State> {
 
     handleTableChange: TableProps<Record>['onChange'] = (
         pagination: any,
-        filters: any,
         sorter: any) => {
         this.setTableParams({
             pagination,
-            filters,
             sortOrder: Array.isArray(sorter) ? undefined : sorter.order,
             sortField: Array.isArray(sorter) ? undefined : sorter.field,
         });
@@ -254,10 +120,12 @@ export class InnerPage extends react.Component<Props, State> {
             sort_by: this.state.tableParams.sortField?.toString() || 'created_at',
             asc: this.state.tableParams.sortOrder === 'ascend' ? 'true' : 'false',
         };
-        const countryCode = this.state.tableParams.filters?.country_code?.toString() || "";
-        if (countryCode.length > 0) {
-            params['country_code'] = countryCode;
-        }
+        Object.entries(this.state.filters).forEach(([key, value]) => {
+            if (value && value.length > 0) {
+                params[key] = value;
+            }
+        });
+        console.log(`Fetch params: ${JSON.stringify(params)}`);
         const responseJson = await loadData<Record[]>("records", params);
         console.log(`Response: ${JSON.stringify(responseJson)}`);
         if (responseJson.status === 200 && responseJson.data) {
@@ -282,10 +150,14 @@ export class InnerPage extends react.Component<Props, State> {
     }
 
     componentDidUpdate = async (_prevProps: Props, prevState: State) => {
+        console.log("Component did update");
+        console.log("filters", prevState.filters, this.state.filters)
+        const filtersHaveChanged = !mapsEqual(prevState.filters, this.state.filters);
         if (prevState.tableParams.pagination?.current !== this.state.tableParams.pagination?.current ||
             this.state.tableParams.pagination?.pageSize !== prevState.tableParams.pagination?.pageSize ||
             this.state.tableParams.sortField !== prevState.tableParams.sortField ||
-            this.state.tableParams.sortOrder !== prevState.tableParams.sortOrder
+            this.state.tableParams.sortOrder !== prevState.tableParams.sortOrder ||
+            filtersHaveChanged
         ) {
             await this.fetchData();
         }
@@ -296,12 +168,13 @@ export class InnerPage extends react.Component<Props, State> {
         if (this.state.loading) {
             <Text>{this.props.t("Loading...")}</Text>
         }
+        const columns = this.getColumns();
         return (
             <Flex vertical justify="center" align="center" >
                 <Text>{title}</Text>
                 <div style={{ height: 20 }} />
                 <Table<Record>
-                    columns={this.columns}
+                    columns={columns}
                     rowKey={record => record.id.toString()}
                     dataSource={this.state.records}
                     pagination={this.state.tableParams.pagination}
