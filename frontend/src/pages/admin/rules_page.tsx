@@ -4,12 +4,14 @@ import { useTranslation } from "react-i18next";
 import { Flex, Typography, Table, Input, Button } from 'antd';
 import type { GetProp, TableProps, TableColumnsType } from 'antd';
 import type { SorterResult } from 'antd/es/table/interface';
+import { EditFilled, DeleteFilled } from '@ant-design/icons';
 const { Text } = Typography;
 
 import { loadData, mapsEqual, toCapital } from '@/common/utils';
 import type { Dictionary } from '@/common/types';
 import type Rule from "@/models/rule";
-import RuleDialog from "@/components/rule_dialog";
+import RuleEditDialog from "@/components/rule_edit_dialog";
+import RuleDeleteDialog from "@/components/rule_delete_dialog";
 
 type TablePaginationConfig = Exclude<GetProp<TableProps, 'pagination'>, boolean>;
 
@@ -30,8 +32,11 @@ interface State {
     loading: boolean;
     tableParams: TableParams;
     filters: Map<string, string>;
-    ruleDialogOpen: boolean;
+    selectedRule?: Rule,
+    ruleEditDialogOpen: boolean,
+    ruleDeleteDialogOpen: boolean,
 }
+
 const COLUMNS: string[] = ["active", "allow", "weight", "ip_address",
     "protocol", "fqdn", "path", "query", "city_name", "country_name",
     "country_code"];
@@ -53,7 +58,8 @@ export class InnerPage extends react.Component<Props, State> {
                 },
             },
             filters: initialFilters,
-            ruleDialogOpen: false,
+            ruleEditDialogOpen: false,
+            ruleDeleteDialogOpen: false,
         }
         console.log("Initial state:", this.state);
         this.columns = this.getColumns();
@@ -121,6 +127,32 @@ export class InnerPage extends react.Component<Props, State> {
         columns.push({
             title: <Text>Edit</Text>,
             key: "operation-edit",
+            render: (rule: Rule) => (
+                <Flex justify="center" align="center">
+                    <Button
+                        onClick={async () => {
+                            console.log("Edit rule", rule);
+                            this.setState({
+                                selectedRule: rule,
+                                ruleEditDialogOpen: true
+                            });
+                        }}
+                    >
+                        <EditFilled />
+                    </Button>
+                    <Button
+                        onClick={async () => {
+                            console.log("Delete rule", rule);
+                            this.setState({
+                                selectedRule: rule,
+                                ruleDeleteDialogOpen: true
+                            });
+                        }}
+                    >
+                        <DeleteFilled />
+                    </Button>
+                </Flex>
+            )
         });
         return columns;
     }
@@ -150,6 +182,8 @@ export class InnerPage extends react.Component<Props, State> {
             this.setData([]);
         }
     }
+
+
 
     fetchData = async () => {
         console.log("Fetching data");
@@ -205,21 +239,6 @@ export class InnerPage extends react.Component<Props, State> {
         }
     }
 
-    onRuleDialogClose = (rule?: Rule) => {
-        console.log("Rule dialog closed", rule);
-        if(rule){
-            this.setState({
-                ruleDialogOpen: false,
-                rules: [
-                    ...this.state.rules.filter((r) => r.id !== rule.id),
-                    rule
-                ],
-            });
-        }else{
-            this.setState({ruleDialogOpen: false});
-        }
-    }
-
     render = () => {
         const title = this.props.t("Rules");
         if (this.state.loading) {
@@ -227,9 +246,50 @@ export class InnerPage extends react.Component<Props, State> {
         }
         return (
             <>
-                <RuleDialog
-                    onClose={this.onRuleDialogClose}
-                    isOpen={this.state.ruleDialogOpen}
+                {this.state.selectedRule &&
+                    <RuleDeleteDialog
+                        rule={this.state.selectedRule}
+                        onClose={(deleted: boolean, rule) => {
+                            console.log("nada", deleted)
+                            if (rule) {
+                                this.setState({
+                                    ruleDeleteDialogOpen: false,
+                                    selectedRule: undefined,
+                                    rules: [
+                                        ...this.state.rules.filter((r) => r.id !== rule.id),
+                                    ],
+                                });
+                            }else{
+                                this.setState({
+                                    ruleDeleteDialogOpen: false,
+                                    selectedRule: undefined,
+                                });
+                            }
+                        }}
+                        isOpen={this.state.ruleDeleteDialogOpen}
+                    />
+                }
+                <RuleEditDialog
+                    rule={this.state.selectedRule}
+                    onClose={(rule?: Rule) =>{
+                        console.log("edit", rule);
+                        if (rule) {
+                            this.setState({
+                                ruleEditDialogOpen: false,
+                                selectedRule: undefined,
+                                rules: [
+                                    ...this.state.rules.filter((r) => r.id !== rule.id),
+                                    rule
+                                ],
+                            });
+                        }else{
+                            this.setState({
+                                ruleEditDialogOpen: false,
+                                selectedRule: undefined,
+                            });
+                        }
+                    }}
+                    isOpen={this.state.ruleEditDialogOpen}
                 />
                 <Flex vertical justify="center" align="center" gap="middle" >
                     <Flex justify="center" align="center" gap="middle" >
@@ -238,7 +298,7 @@ export class InnerPage extends react.Component<Props, State> {
                             type="primary"
                             onClick={() => {
                                 console.log("Clicked Add Rule button");
-                                this.setState({ ruleDialogOpen: true });
+                                this.setState({ ruleEditDialogOpen: true });
                             }}
                         >
                             {this.props.t("Add Rule")}
