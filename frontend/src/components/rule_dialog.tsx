@@ -6,6 +6,7 @@ import { Modal, Flex, Typography, Input, InputNumber, Switch } from "antd";
 const { Text } = Typography;
 
 import type Rule from "@/models/rule";
+import { BASE_URL } from '@/constants';
 
 interface State {
     rule?: Rule;
@@ -24,17 +25,20 @@ class InnerDialog extends React.Component<Props, State> {
     constructor(props: Props) {
         super(props);
         this.state = {
-            rule: this.props.rule,
+            rule: this.props.rule !== undefined ? this.props.rule : this.fields.reduce((acc: any, field: any) => {
+                acc[field.key] = field.default;
+                return acc
+            }, {}),
             isOpen: this.props.isOpen !== undefined ? this.props.isOpen : false,
         }
     }
 
     getValue = (key: string) => {
         const keyName = key as keyof Rule;
-        if(this.state.rule) {
+        if (this.state.rule) {
             return this.state.rule[keyName];
         }
-        return this.state.rule?this.state.rule[keyName]:this.fields.find(field => field.key === key)?.default;
+        return this.state.rule ? this.state.rule[keyName] : this.fields.find(field => field.key === key)?.default;
     }
 
     fields = [
@@ -61,6 +65,55 @@ class InnerDialog extends React.Component<Props, State> {
         );
     }
 
+    fetchData = async () => {
+        console.log("fetch data");
+        const isNew = this.props.rule === undefined;
+        console.log("Is new rule:", isNew);
+        const url = new URL(`${BASE_URL}/api/v1/rules`).toString();
+        console.log("Request URL:", url);
+        const body = this.fields.reduce((acc: any, field: any) => {
+            acc[field.key] = this.getValue(field.key);
+            return acc;
+        }, {})
+        console.log("Initial request body:", body);
+        if (isNew) {
+            body["id"] = this.state.rule?.id;
+        }
+        const string_body = JSON.stringify(body);
+        console.log("Request body:", string_body);
+        try {
+            const response = await fetch(url, {
+                method: isNew ? 'POST' : 'PATCH',
+                headers: {
+                    "Content-Type": "application/json",
+                },
+                body: string_body,
+            })
+            if (!response.ok) {
+                let errorBody: { message?: string } = {};
+                try {
+                    // Intentar leer el cuerpo del error si está en formato JSON
+                    errorBody = await response.json();
+                } catch (e) {
+                    // Si falla al parsear, ignorar y usar un mensaje por defecto
+                }
+
+                return {
+                    status: response.status,
+                    message: errorBody.message || `Error HTTP: ${response.status} - ${response.statusText}`
+                };
+            }
+        } catch (error) {
+            const msg = error instanceof Error ? error.message : String(error);
+            console.error('Network Error or Fetch Failure:', msg, error);
+
+            return {
+                status: 500,
+                message: `Network or Unknown Error: ${msg}`
+            };
+        }
+    }
+
 
 
     componentDidUpdate(prevProps: Props) {
@@ -75,7 +128,9 @@ class InnerDialog extends React.Component<Props, State> {
             <Modal
                 title={title}
                 open={this.state.isOpen}
-                onOk={() => {
+                onOk={async () => {
+                    const response = await this.fetchData();
+                    console.log("Response after fetchData:", response);
                     this.setState({ isOpen: false });
                     this.props.onClose();
                 }}
