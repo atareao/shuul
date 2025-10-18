@@ -9,7 +9,7 @@ use crate::models::NewRecord;
 #[derive(Debug, Serialize, Deserialize, Clone)]
 pub struct Rule{
     pub id: i32,
-    pub norder: i32,
+    pub weight: i32,
     pub allow: bool,
     pub ip_address: Option<String>,
     pub protocol: Option<String>,
@@ -26,7 +26,7 @@ pub struct Rule{
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
 pub struct NewRule{
-    pub norder: i32,
+    pub weight: i32,
     pub allow: bool,
     pub ip_address: Option<String>,
     pub protocol: Option<String>,
@@ -42,7 +42,7 @@ pub struct NewRule{
 #[derive(Debug, Serialize, Deserialize, Clone)]
 pub struct UpdateRule{
     pub id: i32,
-    pub norder: i32,
+    pub weight: i32,
     pub allow: bool,
     pub ip_address: Option<String>,
     pub protocol: Option<String>,
@@ -59,7 +59,7 @@ impl Rule{
     fn from_row(row: PgRow) -> Self{
         Self{
             id: row.get("id"),
-            norder: row.get("norder"),
+            weight: row.get("weight"),
             allow: row.get("allow"),
             ip_address: row.get("ip_address"),
             protocol: row.get("protocol"),
@@ -122,13 +122,13 @@ impl Rule{
 
     pub async fn create( pool: &PgPool, rule: NewRule) -> Result<Rule, Error> {
 
-        let sql = "INSERT INTO rules (norder, allow, ip_address,
+        let sql = "INSERT INTO rules (weight, allow, ip_address,
             protocol, fqdn, path, query, city_name, country_name, country_code,
             active, created_at, updated_at) VALUES ($1, $2, $3, $4, $5, $6, $7,
             $8, $9, $10, $11, $12, $13) RETURNING *";
         let now = Utc::now();
         query(sql)
-            .bind(rule.norder)
+            .bind(rule.weight)
             .bind(rule.allow)
             .bind(rule.ip_address)
             .bind(rule.protocol)
@@ -148,7 +148,7 @@ impl Rule{
 
     pub async fn update(pool: &PgPool, rule: UpdateRule) -> Result<Rule, Error>{
         let sql = "UPDATE rules set
-                norder = $1,
+                weight = $1,
                 allow = $2,
                 ip_address = $3,
                 protocol = $4,
@@ -164,7 +164,7 @@ impl Rule{
             RETURNING *";
         let now = Utc::now();
         query(sql)
-            .bind(rule.norder)
+            .bind(rule.weight)
             .bind(rule.allow)
             .bind(rule.ip_address)
             .bind(rule.protocol)
@@ -200,7 +200,7 @@ impl Rule{
     }
 
     pub async fn read_paged(pool: &PgPool, limit: i32, offset: i32) -> Result<Vec<Rule>, Error> {
-        let sql = "SELECT * FROM rules ORDER BY norder ASC LIMIT $1 OFFSET $2";
+        let sql = "SELECT * FROM rules ORDER BY weight ASC LIMIT $1 OFFSET $2";
         query(sql)
             .bind(limit)
             .bind(offset)
@@ -210,7 +210,7 @@ impl Rule{
     }
 
     pub async fn read_all_active(pool: &PgPool) -> Result<Vec<Rule>, Error> {
-        let sql = "SELECT * FROM rules WHERE active = TRUE ORDER BY norder ASC";
+        let sql = "SELECT * FROM rules WHERE active = TRUE ORDER BY weight ASC";
         query(sql)
             .map(Self::from_row)
             .fetch_all(pool)

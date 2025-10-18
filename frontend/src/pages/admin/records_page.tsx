@@ -6,7 +6,7 @@ import type { GetProp, TableProps } from 'antd';
 import type { SorterResult } from 'antd/es/table/interface';
 const { Text } = Typography;
 
-import { loadData, mapsEqual } from '@/common/utils';
+import { loadData, mapsEqual, toCapital } from '@/common/utils';
 import type { Dictionary } from '@/common/types';
 import type Record from "@/models/record";
 
@@ -60,35 +60,51 @@ export class InnerPage extends react.Component<Props, State> {
         return COLUMNS.map((col) => {
             const filterValue = this.state.filters.get(col) || "";
             return {
-                title: <Input
-                    key={`filter-input-${col}-${this.state.filters.get(col)}`}
-                    placeholder={col}
-                    defaultValue={filterValue}
-                    onKeyUp={(e) => {
-                        if(e.key === "Enter") {
-                            const value = (e.target as HTMLInputElement).value;
-                            console.log(`Filter ${col} by value: ${value}`);
-                            console.log(this.state.filters);
-                            console.log(e);
-                            this.setState((prevState) => {
-                                const newFilters = new Map(prevState.filters);
-                                newFilters.set(col, value);
-                                console.log(newFilters);
-                                return {
-                                    filters: newFilters
-                                }
-                            },
-                                ()=>{
-                                    console.log(`Actualizado con Enter: ${Array.from(this.state.filters.entries())}`);
-                                    this.fetchData();
-                                }
-                            );
-                        }; // Handled in onPressEnter
-                    }}
-                />,
+                title:
+                    <Flex vertical justify="flex-end" align="left" gap="middle" >
+                        <Text>{toCapital(col.replaceAll("_", " "))}</Text>
+                        <Input
+                            key={`filter-input-${col}-${this.state.filters.get(col)}`}
+                            placeholder={col}
+                            defaultValue={filterValue}
+                            onKeyUp={(e) => {
+                                if (e.key === "Enter") {
+                                    const value = (e.target as HTMLInputElement).value;
+                                    console.log(`Filter ${col} by value: ${value}`);
+                                    console.log(this.state.filters);
+                                    console.log(e);
+                                    this.setState((prevState) => {
+                                        const newFilters = new Map(prevState.filters);
+                                        newFilters.set(col, value.trim().replaceAll("*", "%"));
+                                        console.log(newFilters);
+                                        return {
+                                            filters: newFilters
+                                        }
+                                    },
+                                        () => {
+                                            console.log(`Actualizado con Enter: ${Array.from(this.state.filters.entries())}`);
+                                        }
+                                    );
+                                }; // Handled in onPressEnter
+                            }}
+                        />
+                    </Flex>,
                 dataIndex: col,
                 key: col,
-                sorter: true,
+                sorter: (a, b) => {
+                    const columnName = col as keyof Record;
+                    if (!a && !b) return 0; // Both are undefined/null, consider them equal
+                    if (!a) return 1; // Undefined 'a' goes to the end (or -1 if you prefer it at the start)
+                    if (!b) return -1; // Undefined 'b' goes to the end (or 1 if you prefer it at the start)
+                    const valA = a[columnName];
+                    const valB = b[columnName];
+                    if (valA === valB) return 0; // Equality
+                    if (!valA && !valB) return 0; // Both are undefined/null, consider them equal
+                    if (!valA) return 1; // Undefined 'a' goes to the end (or -1 if you prefer it at the start)
+                    if (!valB) return -1; // Undefined 'b' goes to the end (or 1 if you prefer it at the start)
+                    return valA > valB ? 1 : -1;
+                },
+                ellipsis: true,
                 render: (text) => <Text>{text}</Text>,
             }
         })
@@ -101,9 +117,15 @@ export class InnerPage extends react.Component<Props, State> {
         this.setState({ ...this.state, records });
     }
 
-    handleTableChange: TableProps<Record>['onChange'] = (
+    handleTableChange: TableProps<Record>['onChange'] = async (
         pagination: any,
-        sorter: any) => {
+        filters: any,
+        sorter: any,
+        extra: any,
+    ) => {
+        console.log(`pagination: ${JSON.stringify(pagination)}`);
+        console.log(`filters: ${JSON.stringify(filters)}`);
+        console.log(`extra: ${JSON.stringify(extra)}`);
         this.setTableParams({
             pagination,
             sortOrder: Array.isArray(sorter) ? undefined : sorter.order,
@@ -155,7 +177,8 @@ export class InnerPage extends react.Component<Props, State> {
 
     componentDidUpdate = async (_prevProps: Props, prevState: State) => {
         console.log("Component did update");
-        console.log("filters", prevState.filters, this.state.filters)
+        console.log(`sortOrder: prev=${prevState.tableParams.sortOrder} curr=${this.state.tableParams.sortOrder}`);
+        console.log(`sortField: prev=${prevState.tableParams.sortField} curr=${this.state.tableParams.sortField}`);
         const filtersHaveChanged = !mapsEqual(prevState.filters, this.state.filters);
         if (prevState.tableParams.pagination?.current !== this.state.tableParams.pagination?.current ||
             this.state.tableParams.pagination?.pageSize !== prevState.tableParams.pagination?.pageSize ||

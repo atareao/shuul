@@ -1,6 +1,6 @@
 CREATE TABLE IF NOT EXISTS rules (
     id SERIAL PRIMARY KEY,
-    norder INT NOT NULL,
+    weight INT NOT NULL,
     allow BOOLEAN NOT NULL,
     ip_address VARCHAR,
     protocol VARCHAR,

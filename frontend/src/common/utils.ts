@@ -88,3 +88,9 @@ export const mapsEqual = (map1: Map<string, string>, map2: Map<string, string>):
     // 3. Si la iteración termina, son iguales.
     return true;
 };
+
+export const toCapital = (s: string): string => {
+    return s.toLowerCase()
+        .split(' ')
+        .map(word => word.charAt(0).toUpperCase() + word.substring(1)).join(' ');
+}
