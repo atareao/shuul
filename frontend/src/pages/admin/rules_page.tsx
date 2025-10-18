@@ -205,8 +205,19 @@ export class InnerPage extends react.Component<Props, State> {
         }
     }
 
-    onRuleDialogClose = () => {
-        this.setState({ ruleDialogOpen: false });
+    onRuleDialogClose = (rule?: Rule) => {
+        console.log("Rule dialog closed", rule);
+        if(rule){
+            this.setState({
+                ruleDialogOpen: false,
+                rules: [
+                    ...this.state.rules.filter((r) => r.id !== rule.id),
+                    rule
+                ],
+            });
+        }else{
+            this.setState({ruleDialogOpen: false});
+        }
     }
 
     render = () => {

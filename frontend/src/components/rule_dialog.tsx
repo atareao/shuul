@@ -9,7 +9,7 @@ import type Rule from "@/models/rule";
 import { BASE_URL } from '@/constants';
 
 interface State {
-    rule?: Rule;
+    rule: Rule;
     isOpen: boolean;
 }
 
@@ -18,7 +18,7 @@ interface Props {
     isOpen?: boolean;
     navigate: any;
     t: any;
-    onClose: () => void;
+    onClose: (rule?: Rule) => void;
 }
 
 class InnerDialog extends React.Component<Props, State> {
@@ -26,7 +26,7 @@ class InnerDialog extends React.Component<Props, State> {
         super(props);
         this.state = {
             rule: this.props.rule !== undefined ? this.props.rule : this.fields.reduce((acc: any, field: any) => {
-                acc[field.key] = field.default;
+                acc[field.key] = field.value;
                 return acc
             }, {}),
             isOpen: this.props.isOpen !== undefined ? this.props.isOpen : false,
@@ -34,25 +34,21 @@ class InnerDialog extends React.Component<Props, State> {
     }
 
     getValue = (key: string) => {
-        const keyName = key as keyof Rule;
-        if (this.state.rule) {
-            return this.state.rule[keyName];
-        }
-        return this.state.rule ? this.state.rule[keyName] : this.fields.find(field => field.key === key)?.default;
+        return this.state.rule[key as keyof Rule];
     }
 
     fields = [
-        { key: 'active', label: this.props.t('Active'), type: 'switch', default: true },
-        { key: 'allow', label: this.props.t('Allow'), type: 'switch', default: false },
-        { key: 'weight', label: this.props.t('Weight'), type: 'inputnumber', default: 100 },
-        { key: 'ip_address', label: this.props.t('IP Address'), type: 'input', default: "" },
-        { key: 'protocol', label: this.props.t('Protocol'), type: 'input', default: "" },
-        { key: 'fqdn', label: this.props.t('FQDN'), type: 'input', default: "" },
-        { key: 'path', label: this.props.t('Path'), type: 'input', default: "" },
-        { key: 'query', label: this.props.t('Query'), type: 'input', default: "" },
-        { key: 'city_name', label: this.props.t('City Name'), type: 'input', default: "" },
-        { key: 'country_name', label: this.props.t('Contry Name'), type: 'input', default: "" },
-        { key: 'couunty_code', label: this.props.t('Contry Code'), type: 'input', default: "" },
+        { key: 'active', label: this.props.t('Active'), type: 'boolean', value: true },
+        { key: 'allow', label: this.props.t('Allow'), type: 'boolean', value: false },
+        { key: 'weight', label: this.props.t('Weight'), type: 'number', value: 100 },
+        { key: 'ip_address', label: this.props.t('IP Address'), type: 'string', value: "" },
+        { key: 'protocol', label: this.props.t('Protocol'), type: 'string', value: "" },
+        { key: 'fqdn', label: this.props.t('FQDN'), type: 'string', value: "" },
+        { key: 'path', label: this.props.t('Path'), type: 'string', value: "" },
+        { key: 'query', label: this.props.t('Query'), type: 'string', value: "" },
+        { key: 'city_name', label: this.props.t('City Name'), type: 'string', value: "" },
+        { key: 'country_name', label: this.props.t('Contry Name'), type: 'string', value: "" },
+        { key: 'couunty_code', label: this.props.t('Contry Code'), type: 'string', value: "" },
     ]
 
     onChange = (key: string, value: any) => {
@@ -72,7 +68,7 @@ class InnerDialog extends React.Component<Props, State> {
         const url = new URL(`${BASE_URL}/api/v1/rules`).toString();
         console.log("Request URL:", url);
         const body = this.fields.reduce((acc: any, field: any) => {
-            acc[field.key] = this.getValue(field.key);
+            acc[field.key] = this.state.rule[field.key as keyof Rule];
             return acc;
         }, {})
         console.log("Initial request body:", body);
@@ -97,12 +93,18 @@ class InnerDialog extends React.Component<Props, State> {
                 } catch (e) {
                     // Si falla al parsear, ignorar y usar un mensaje por defecto
                 }
-
                 return {
                     status: response.status,
                     message: errorBody.message || `Error HTTP: ${response.status} - ${response.statusText}`
                 };
             }
+            const content = await response.json();
+            console.log("Fetch successful:", content);
+            this.props.onClose(content.data);
+            this.setState({ rule: {
+                ...this.state.rule,
+                ...content.data
+            } });
         } catch (error) {
             const msg = error instanceof Error ? error.message : String(error);
             console.error('Network Error or Fetch Failure:', msg, error);
@@ -129,10 +131,7 @@ class InnerDialog extends React.Component<Props, State> {
                 title={title}
                 open={this.state.isOpen}
                 onOk={async () => {
-                    const response = await this.fetchData();
-                    console.log("Response after fetchData:", response);
-                    this.setState({ isOpen: false });
-                    this.props.onClose();
+                    await this.fetchData();
                 }}
                 onCancel={() => {
                     this.setState({ isOpen: false });
@@ -145,13 +144,13 @@ class InnerDialog extends React.Component<Props, State> {
                     {this.fields && this.fields.map((field) => (
                         <Flex key={field.key}>
                             <Text style={{ width: 200 }}>{field.label}</Text>
-                            {field.type === 'switch' &&
+                            {field.type === 'boolean' &&
                                 <Switch
                                     defaultChecked={this.getValue(field.key) as boolean}
                                     onChange={(checked) => this.onChange(field.key, checked)}
                                 />
                             }
-                            {field.type === 'input' &&
+                            {field.type === 'string' &&
                                 <Input
                                     style={{ width: '100%' }}
                                     defaultValue={this.getValue(field.key) as string}
@@ -159,7 +158,7 @@ class InnerDialog extends React.Component<Props, State> {
                                     onChange={(e) => this.onChange(field.key, e.target.value)}
                                 />
                             }
-                            {field.type === 'inputnumber' &&
+                            {field.type === 'number' &&
                                 <InputNumber
                                     style={{ width: '100%' }}
                                     defaultValue={this.getValue(field.key) as number}
@@ -178,7 +177,7 @@ class InnerDialog extends React.Component<Props, State> {
 interface RuleDialogProps {
     rule?: Rule;
     isOpen?: boolean;
-    onClose: () => void;
+    onClose: (rule?: Rule) => void;
 }
 
 export default function RuleDialog(props: RuleDialogProps) {

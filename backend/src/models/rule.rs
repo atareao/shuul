@@ -54,6 +54,27 @@ pub struct UpdateRule{
     pub country_code: Option<String>,
     pub active: bool,
 }
+#[derive(Debug, Deserialize)]
+pub struct ReadRuleParams {
+    pub id: Option<i32>,
+    pub weight: Option<i32>,
+    pub allow: Option<bool>,
+    pub ip_address: Option<String>,
+    pub protocol: Option<String>,
+    pub fqdn: Option<String>,
+    pub path: Option<String>,
+    pub query: Option<String>,
+    pub city_name: Option<String>,
+    pub country_name: Option<String>,
+    pub country_code: Option<String>,
+    pub active: Option<bool>,
+    pub page: Option<u32>,
+    pub limit: Option<u32>,
+    pub sort_by: Option<String>,
+    pub asc: Option<bool>,
+}
+use crate::constants::DEFAULT_PAGE;
+use crate::constants::DEFAULT_LIMIT;
 
 impl Rule{
     fn from_row(row: PgRow) -> Self{
@@ -182,6 +203,92 @@ impl Rule{
             .await
     }
 
+    pub async fn count_paged(
+        pool: &PgPool,
+        params: &ReadRuleParams,
+
+    ) -> Result<i64, Error> {
+        let filters = vec![
+            ("ip_address", &params.ip_address),
+            ("protocol", &params.protocol),
+            ("fqdn", &params.fqdn),
+            ("path", &params.path),
+            ("query", &params.query), // Mapea 'query_for_request' a 'query'
+            ("city_name", &params.city_name),
+            ("country_name", &params.country_name),
+            ("country_code", &params.country_code),
+        ];
+        let active_filters: Vec<(&str, String)> = filters
+            .into_iter()
+            .filter_map(|(col, val)| val.as_ref().map(|v| (col, v.to_string())))
+            .collect();
+        let mut sql = "SELECT COUNT(*) total FROM rules WHERE 1=1".to_string();
+        for (i, (col, _)) in active_filters.iter().enumerate() {
+            let param_index = i + 1;
+            sql.push_str(&format!(" AND {} LIKE ${}", col, param_index));
+        }
+        let mut query = query(&sql);
+        for (_, value) in active_filters {
+            query = query.bind(value);
+        }
+        query
+            .map(|row: PgRow| {
+                let count: i64 = row.get("total");
+                count
+            })
+            .fetch_one(pool)
+            .await
+    }
+
+    pub async fn read_paged(
+        pool: &PgPool,
+        params: &ReadRuleParams,
+    ) -> Result<Vec<Rule>, Error> {
+        let filters = vec![
+            ("ip_address", &params.ip_address),
+            ("protocol", &params.protocol),
+            ("fqdn", &params.fqdn),
+            ("path", &params.path),
+            ("query", &params.query), // Mapea 'query_for_request' a 'query'
+            ("city_name", &params.city_name),
+            ("country_name", &params.country_name),
+            ("country_code", &params.country_code),
+        ];
+        let active_filters: Vec<(&str, String)> = filters
+            .into_iter()
+            .filter_map(|(col, val)| val.as_ref().map(|v| (col, v.to_string())))
+            .collect();
+        let mut sql = "SELECT * FROM rules WHERE 1=1".to_string();
+        for (i, (col, _)) in active_filters.iter().enumerate() {
+            let param_index = i + 1;
+            sql.push_str(&format!(" AND {} LIKE ${}", col, param_index));
+        }
+        let limit_index = active_filters.len() + 1;
+        let offset_index = limit_index + 1;
+        let sort_by = params.sort_by.as_deref().unwrap_or("ip_address");
+        if ["ip_address", "protocol", "fqdn", "path", "city_name",
+                "country_name", "country_code"].contains(&sort_by) {
+            if params.asc.unwrap_or(true) {
+                sql.push_str(&format!(" ORDER BY {} ASC", sort_by));
+            } else {
+                sql.push_str(&format!(" ORDER BY {} DESC", sort_by));
+            }
+        }
+        sql.push_str(&format!(" LIMIT ${} OFFSET ${}", limit_index, offset_index));
+        let mut query = query(&sql);
+        for (_, value) in active_filters {
+            query = query.bind(value);
+        }
+        let limit = params.limit.unwrap_or(DEFAULT_LIMIT) as i32;
+        let offset = ((params.page.unwrap_or(DEFAULT_PAGE) - 1) as i32) * limit;
+        query
+            .bind(limit)
+            .bind(offset)
+            .map(Self::from_row)
+            .fetch_all(pool)
+            .await
+    }
+
     pub async fn read(pool: &PgPool, id: i32) -> Result<Rule, Error> {
         let sql = "SELECT * FROM rules WHERE id = $1";
         query(sql)
@@ -194,16 +301,6 @@ impl Rule{
     pub async fn read_all(pool: &PgPool) -> Result<Vec<Rule>, Error> {
         let sql = "SELECT * FROM rules";
         query(sql)
-            .map(Self::from_row)
-            .fetch_all(pool)
-            .await
-    }
-
-    pub async fn read_paged(pool: &PgPool, limit: i32, offset: i32) -> Result<Vec<Rule>, Error> {
-        let sql = "SELECT * FROM rules ORDER BY weight ASC LIMIT $1 OFFSET $2";
-        query(sql)
-            .bind(limit)
-            .bind(offset)
             .map(Self::from_row)
             .fetch_all(pool)
             .await

@@ -19,10 +19,16 @@ use crate::models::{
     Rule,
     NewRule,
     UpdateRule,
+    ReadRuleParams,
     Data,
-    ApiResponse
+    ApiResponse,
+    PagedResponse,
+    EmptyResponse,
+    Pagination,
 };
 use std::sync::Arc;
+use crate::constants::DEFAULT_PAGE;
+use crate::constants::DEFAULT_LIMIT;
 
 
 pub fn rule_router() -> Router<Arc<AppState>> {
@@ -50,41 +56,60 @@ pub async fn create_handler(
     }
 }
 
-#[derive(Debug, Deserialize)]
-pub struct ReadParams {
-    id: Option<i32>,
-    limit: Option<i32>,
-    offset: Option<i32>,
-}
 pub async fn read_handler(
     State(app_state): State<Arc<AppState>>,
-    Query(params): Query<ReadParams>,
+    Query(params): Query<ReadRuleParams>,
 ) -> impl IntoResponse {
     debug!("Params: {:?}", params);
     if let Some(id) = params.id {
         match Rule::read(&app_state.pool, id).await {
             Ok(rule) => {
                 debug!("Rule: {:?}", rule);
-                ApiResponse::new(StatusCode::OK, "Rule", Data::Some(serde_json::to_value(rule).unwrap()))
+                ApiResponse::new(
+                    StatusCode::OK,
+                    "Rule", 
+                    Data::Some(serde_json::to_value(rule).unwrap())
+                ).into_response()
             },
             Err(e) => {
                 error!("Error reading rule: {:?}", e);
-                ApiResponse::new(StatusCode::BAD_REQUEST, "Error reading rule", Data::None)
+                ApiResponse::new(
+                    StatusCode::BAD_REQUEST,
+                    "Error reading record",
+                    Data::None).into_response()
             }
         }
     }else{
-        let limit = params.limit.unwrap_or(100);
-        let offset = params.offset.unwrap_or(0);
-        match Rule::read_paged(&app_state.pool, limit, offset).await {
-            Ok(rules) => {
-                debug!("Rules: {:?}", rules);
-                ApiResponse::new(StatusCode::OK, "Rules", Data::Some(serde_json::to_value(rules).unwrap()))
-            },
-            Err(e) => {
-                error!("Error reading rules: {:?}", e);
-                ApiResponse::new(StatusCode::BAD_REQUEST, "Error reading rules", Data::None)
-            }
+        if let Ok(records) = Rule::read_paged(&app_state.pool, &params).await &&
+                let Ok(count) = Rule::count_paged(&app_state.pool, &params).await {
+            let limit = params.limit.unwrap_or(DEFAULT_LIMIT);
+            let offset = params.page.unwrap_or(DEFAULT_PAGE) - 1;
+            let total_pages = (count as f32 / limit as f32).ceil() as u32;
+            let pagination = Pagination {
+                page: offset + 1,
+                limit,
+                pages: total_pages,
+                records: count,
+                prev: if offset > 0 {
+                    Some(format!("/records?page={}&limit={}", offset, limit))
+                }else{
+                    None
+                },
+                next: if (offset + 1) < total_pages {
+                    Some(format!("/records?page={}&limit={}", offset + 2, limit))
+                }else{
+                    None
+                },
+            };
+            return PagedResponse::new(StatusCode::OK, "Records", 
+                Data::Some(serde_json::to_value(records).unwrap()),
+                pagination)
+                .into_response();
         }
+        EmptyResponse{
+            status: StatusCode::BAD_REQUEST,
+            message: "Error reading records".to_string(),
+        }.into_response()
     }
 }
 
