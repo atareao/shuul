@@ -1,13 +1,17 @@
-use serde::{Serialize, Deserialize};
 use chrono::{DateTime, Utc};
-use sqlx::{postgres::{PgPool, PgRow}, query, Row, Error};
 use regex::Regex;
+use serde::{Deserialize, Serialize};
+use sqlx::{
+    Error, Row,
+    postgres::{PgPool, PgRow},
+    query,
+};
 use tracing::debug;
 
 use crate::models::NewRecord;
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
-pub struct Rule{
+pub struct Rule {
     pub id: i32,
     pub weight: i32,
     pub allow: bool,
@@ -25,7 +29,7 @@ pub struct Rule{
 }
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
-pub struct NewRule{
+pub struct NewRule {
     pub weight: i32,
     pub allow: bool,
     pub ip_address: Option<String>,
@@ -40,7 +44,7 @@ pub struct NewRule{
 }
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
-pub struct UpdateRule{
+pub struct UpdateRule {
     pub id: i32,
     pub weight: i32,
     pub allow: bool,
@@ -73,12 +77,12 @@ pub struct ReadRuleParams {
     pub sort_by: Option<String>,
     pub asc: Option<bool>,
 }
-use crate::constants::DEFAULT_PAGE;
 use crate::constants::DEFAULT_LIMIT;
+use crate::constants::DEFAULT_PAGE;
 
-impl Rule{
-    fn from_row(row: PgRow) -> Self{
-        Self{
+impl Rule {
+    fn from_row(row: PgRow) -> Self {
+        Self {
             id: row.get("id"),
             weight: row.get("weight"),
             allow: row.get("allow"),
@@ -98,51 +102,58 @@ impl Rule{
 
     pub fn matches(&self, record: &NewRecord) -> bool {
         debug!("Matching rule: {:?} for record: {:?}", self, record);
-        if let Some(regex) = &self.ip_address &&
-                let Some(value) = record.ip_address.as_ref() &&
-                !Regex::new(regex).unwrap().is_match(value) {
+        if let Some(regex) = &self.ip_address
+            && let Some(value) = record.ip_address.as_ref()
+            && !Regex::new(regex).unwrap().is_match(value)
+        {
             return false;
         }
-        if let Some(regex) = &self.protocol && 
-                let Some(value) = record.protocol.as_ref() &&
-                !Regex::new(regex).unwrap().is_match(value) {
+        if let Some(regex) = &self.protocol
+            && let Some(value) = record.protocol.as_ref()
+            && !Regex::new(regex).unwrap().is_match(value)
+        {
             return false;
         }
-        if let Some(regex) = &self.fqdn &&
-                let Some(value) = record.fqdn.as_ref() &&
-                !Regex::new(regex).unwrap().is_match(value) {
+        if let Some(regex) = &self.fqdn
+            && let Some(value) = record.fqdn.as_ref()
+            && !Regex::new(regex).unwrap().is_match(value)
+        {
             return false;
         }
-        if let Some(regex) = &self.path &&
-                let Some(value) = record.path.as_ref() &&
-                !Regex::new(regex).unwrap().is_match(value) {
+        if let Some(regex) = &self.path
+            && let Some(value) = record.path.as_ref()
+            && !Regex::new(regex).unwrap().is_match(value)
+        {
             return false;
         }
-        if let Some(regex) = &self.query &&
-                let Some(value) = record.query.as_ref() &&
-                !Regex::new(regex).unwrap().is_match(value) {
+        if let Some(regex) = &self.query
+            && let Some(value) = record.query.as_ref()
+            && !Regex::new(regex).unwrap().is_match(value)
+        {
             return false;
         }
-        if let Some(regex) = &self.city_name &&
-                let Some(value) = record.city_name.as_ref() &&
-                !Regex::new(regex).unwrap().is_match(value) {
+        if let Some(regex) = &self.city_name
+            && let Some(value) = record.city_name.as_ref()
+            && !Regex::new(regex).unwrap().is_match(value)
+        {
             return false;
         }
-        if let Some(regex) = &self.country_name &&
-                let Some(value) = record.country_name.as_ref() &&
-                !Regex::new(regex).unwrap().is_match(value) {
+        if let Some(regex) = &self.country_name
+            && let Some(value) = record.country_name.as_ref()
+            && !Regex::new(regex).unwrap().is_match(value)
+        {
             return false;
         }
-        if let Some(regex) = &self.country_code &&
-                let Some(value) = record.country_code.as_ref() &&
-                !Regex::new(regex).unwrap().is_match(value) {
+        if let Some(regex) = &self.country_code
+            && let Some(value) = record.country_code.as_ref()
+            && !Regex::new(regex).unwrap().is_match(value)
+        {
             return false;
         }
         true
     }
 
-    pub async fn create( pool: &PgPool, rule: NewRule) -> Result<Rule, Error> {
-
+    pub async fn create(pool: &PgPool, rule: NewRule) -> Result<Rule, Error> {
         let sql = "INSERT INTO rules (weight, allow, ip_address,
             protocol, fqdn, path, query, city_name, country_name, country_code,
             active, created_at, updated_at) VALUES ($1, $2, $3, $4, $5, $6, $7,
@@ -167,7 +178,7 @@ impl Rule{
             .await
     }
 
-    pub async fn update(pool: &PgPool, rule: UpdateRule) -> Result<Rule, Error>{
+    pub async fn update(pool: &PgPool, rule: UpdateRule) -> Result<Rule, Error> {
         let sql = "UPDATE rules set
                 weight = $1,
                 allow = $2,
@@ -203,11 +214,7 @@ impl Rule{
             .await
     }
 
-    pub async fn count_paged(
-        pool: &PgPool,
-        params: &ReadRuleParams,
-
-    ) -> Result<i64, Error> {
+    pub async fn count_paged(pool: &PgPool, params: &ReadRuleParams) -> Result<i64, Error> {
         let filters = vec![
             ("ip_address", &params.ip_address),
             ("protocol", &params.protocol),
@@ -240,10 +247,7 @@ impl Rule{
             .await
     }
 
-    pub async fn read_paged(
-        pool: &PgPool,
-        params: &ReadRuleParams,
-    ) -> Result<Vec<Rule>, Error> {
+    pub async fn read_paged(pool: &PgPool, params: &ReadRuleParams) -> Result<Vec<Rule>, Error> {
         let filters = vec![
             ("ip_address", &params.ip_address),
             ("protocol", &params.protocol),
@@ -265,9 +269,18 @@ impl Rule{
         }
         let limit_index = active_filters.len() + 1;
         let offset_index = limit_index + 1;
-        let sort_by = params.sort_by.as_deref().unwrap_or("ip_address");
-        if ["ip_address", "protocol", "fqdn", "path", "city_name",
-                "country_name", "country_code"].contains(&sort_by) {
+        if let Some(sort_by) = params.sort_by.as_ref()
+            && [
+                "ip_address",
+                "protocol",
+                "fqdn",
+                "path",
+                "city_name",
+                "country_name",
+                "country_code",
+            ]
+            .contains(&sort_by.as_str())
+        {
             if params.asc.unwrap_or(true) {
                 sql.push_str(&format!(" ORDER BY {} ASC", sort_by));
             } else {
@@ -298,20 +311,9 @@ impl Rule{
             .await
     }
 
-    pub async fn read_all(pool: &PgPool) -> Result<Vec<Rule>, Error> {
-        let sql = "SELECT * FROM rules";
-        query(sql)
-            .map(Self::from_row)
-            .fetch_all(pool)
-            .await
-    }
-
     pub async fn read_all_active(pool: &PgPool) -> Result<Vec<Rule>, Error> {
         let sql = "SELECT * FROM rules WHERE active = TRUE ORDER BY weight ASC";
-        query(sql)
-            .map(Self::from_row)
-            .fetch_all(pool)
-            .await
+        query(sql).map(Self::from_row).fetch_all(pool).await
     }
 
     pub async fn delete(pool: &PgPool, id: i32) -> Result<Rule, Error> {
