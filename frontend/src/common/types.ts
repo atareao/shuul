@@ -25,3 +25,12 @@ export const Language = {
     ES: "es" as LanguageCode,
     EN: "en" as LanguageCode,
 };
+
+export type CrudAction = "create" | "read" | "update" | "delete";
+
+export const Crud = {
+    CREATE: "create" as CrudAction,
+    READ:   "read"   as CrudAction,
+    UPDATE: "update" as CrudAction,
+    DELETE: "delete" as CrudAction,
+};
