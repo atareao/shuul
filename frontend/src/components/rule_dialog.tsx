@@ -7,20 +7,18 @@ const { Text } = Typography;
 
 import type Rule from "@/models/rule";
 import { BASE_URL } from '@/constants';
-import type { CrudAction } from '@/common/types';
-import { Crud } from '@/common/types';
+import type { DialogMode } from '@/common/types';
+import { DialogModes } from '@/common/types';
 
 
 
 interface State {
-    isOpen: boolean;
     rule?: Rule,
 }
 
 interface Props {
     rule?: Rule,
-    crudAction: CrudAction;
-    isOpen?: boolean;
+    dialogMode?: DialogMode;
     onClose: (ok: boolean, rule?: Rule) => void;
     navigate: any;
     t: any;
@@ -34,7 +32,6 @@ class InnerDialog extends React.Component<Props, State> {
                 acc[field.key] = field.value;
                 return acc
             }, {}),
-            isOpen: this.props.isOpen !== undefined ? this.props.isOpen : false,
         }
     }
 
@@ -66,11 +63,11 @@ class InnerDialog extends React.Component<Props, State> {
         let method;
         let url;
         let string_body;
-        if (this.props.crudAction === Crud.DELETE) {
+        if (this.props.dialogMode === DialogModes.DELETE) {
             method = 'DELETE';
             url = new URL(`${BASE_URL}/api/v1/rules?id=${this.state.rule?.id}`).toString();
             string_body = null;
-        } else if (this.props.crudAction === Crud.UPDATE) {
+        } else if (this.props.dialogMode === DialogModes.UPDATE) {
             method = 'PATCH';
             url = new URL(`${BASE_URL}/api/v1/rules`).toString();
             const body = this.fields.reduce((acc: any, field: any) => {
@@ -80,7 +77,7 @@ class InnerDialog extends React.Component<Props, State> {
             body["id"] = this.state.rule?.id;
             string_body = JSON.stringify(body);
 
-        } else if (this.props.crudAction === Crud.CREATE) {
+        } else if (this.props.dialogMode === DialogModes.CREATE) {
             method = 'POST';
             url = new URL(`${BASE_URL}/api/v1/rules`).toString();
             const body = this.fields.reduce((acc: any, field: any) => {
@@ -88,7 +85,7 @@ class InnerDialog extends React.Component<Props, State> {
                 return acc;
             }, {})
             string_body = JSON.stringify(body);
-        } else if (this.props.crudAction === Crud.READ) {
+        } else if (this.props.dialogMode === DialogModes.READ) {
             method = 'GET';
             url = new URL(`${BASE_URL}/api/v1/rules?id=${this.state.rule?.id}`).toString();
             string_body = null;
@@ -133,17 +130,15 @@ class InnerDialog extends React.Component<Props, State> {
     }
 
     componentDidUpdate(prevProps: Props) {
-        if (prevProps.isOpen !== this.props.isOpen ||
-            prevProps.crudAction !== this.props.crudAction ||
-            (this.props.crudAction !== Crud.CREATE &&
+        if (prevProps.dialogMode !== this.props.dialogMode ||
+            (this.props.dialogMode !== DialogModes.CREATE &&
                 prevProps.rule?.id !== this.props.rule?.id)) {
-            if (this.props.rule && this.props.crudAction !== Crud.CREATE) {
+            if (this.props.rule && this.props.dialogMode !== DialogModes.CREATE) {
                 this.setState({
                     rule: {
                         ...prevProps.rule,
                         ...this.props.rule
                     },
-                    isOpen: this.props.isOpen !== undefined ? this.props.isOpen : false
                 });
             }
         }
@@ -160,33 +155,32 @@ class InnerDialog extends React.Component<Props, State> {
     }
 
     render = () => {
-        const crudAction = this.props.crudAction;
+        const dialogMode = this.props.dialogMode;
         const rule_id = this.state.rule?.id;
-        const disabled = crudAction === Crud.READ;
+        const disabled = dialogMode === DialogModes.READ;
         let title = "";
         let message = "";
-        if (crudAction === Crud.CREATE) {
+        if (dialogMode === DialogModes.CREATE) {
             title = this.props.t('Create Rule');
-        }else if (crudAction === Crud.UPDATE) {
+        }else if (dialogMode === DialogModes.UPDATE) {
             title = this.props.t('Update Rule');
-        }else if (crudAction === Crud.READ) {
+        }else if (dialogMode === DialogModes.READ) {
             title = this.props.t('View Rule');
-        }else if (crudAction === Crud.DELETE) {
+        }else if (dialogMode === DialogModes.DELETE) {
             title = this.props.t('Delete Rule');
             message = this.props.t(`Are you sure you want to delete rule "${rule_id}"?`);
         }
         return (
             <>
-                {(crudAction === Crud.DELETE) &&
+                {(dialogMode === DialogModes.DELETE) &&
                     <Modal
                         title={title}
-                        open={this.state.isOpen}
+                        open={this.props.dialogMode !== undefined}
                         onOk={async () => {
                             await this.fetchData();
                             this.props.onClose(true, this.state.rule);
                         }}
                         onCancel={() => {
-                            this.setState({ isOpen: false });
                             this.props.onClose(false, this.state.rule);
                         }}
                         okText={this.props.t('Ok')}
@@ -195,15 +189,14 @@ class InnerDialog extends React.Component<Props, State> {
                         <Text>{message}</Text>
                     </Modal>
                 }
-                {(crudAction === Crud.CREATE || crudAction === Crud.UPDATE) &&
+                {(dialogMode === DialogModes.CREATE || dialogMode === DialogModes.UPDATE) &&
                     <Modal
                         title={title}
-                        open={this.state.isOpen}
+                        open={this.props.dialogMode !== undefined}
                         onOk={async () => {
                             await this.fetchData();
                         }}
                         onCancel={() => {
-                            this.setState({ isOpen: false });
                             this.props.onClose(false);
                         }}
                         okText={this.props.t('Ok')}
@@ -250,9 +243,8 @@ class InnerDialog extends React.Component<Props, State> {
 }
 
 interface RuleDialogProps {
-    rule: Rule,
-    crudAction: CrudAction;
-    isOpen?: boolean;
+    rule?: Rule,
+    dialogMode?: DialogMode;
     onClose: (ok: boolean, rule?: Rule) => void;
 }
 
@@ -261,8 +253,7 @@ export default function RuleDialog(props: RuleDialogProps) {
     const { t } = useTranslation();
     return <InnerDialog
         rule={props.rule}
-        crudAction={props.crudAction}
-        isOpen={props.isOpen}
+        dialogMode={props.dialogMode}
         onClose={props.onClose}
         navigate={navigate}
         t={t}

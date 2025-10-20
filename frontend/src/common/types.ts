@@ -26,11 +26,12 @@ export const Language = {
     EN: "en" as LanguageCode,
 };
 
-export type CrudAction = "create" | "read" | "update" | "delete";
+export type DialogMode = "create" | "read" | "update" | "delete" | "none";
 
-export const Crud = {
-    CREATE: "create" as CrudAction,
-    READ:   "read"   as CrudAction,
-    UPDATE: "update" as CrudAction,
-    DELETE: "delete" as CrudAction,
+export const DialogModes = {
+    CREATE: "create" as DialogMode,
+    READ:   "read"   as DialogMode,
+    UPDATE: "update" as DialogMode,
+    DELETE: "delete" as DialogMode,
+    NONE:   "none"   as DialogMode,
 };

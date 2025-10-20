@@ -8,10 +8,10 @@ import { EditFilled, DeleteFilled } from '@ant-design/icons';
 const { Text } = Typography;
 
 import { loadData, mapsEqual, toCapital } from '@/common/utils';
-import type { Dictionary } from '@/common/types';
+import type { Dictionary, DialogMode } from '@/common/types';
+import { DialogModes } from '@/common/types';
 import type Rule from "@/models/rule";
-import RuleUpdateDialog from "@/components/rule_update_dialog";
-import RuleDeleteDialog from "@/components/rule_delete_dialog";
+import RuleDialog from "@/components/rule_dialog";
 
 type TablePaginationConfig = Exclude<GetProp<TableProps, 'pagination'>, boolean>;
 
@@ -33,9 +33,7 @@ interface State {
     tableParams: TableParams;
     filters: Map<string, string>;
     selectedRule?: Rule,
-    ruleCreateDialogOpen: boolean,
-    ruleUpdateDialogOpen: boolean,
-    ruleDeleteDialogOpen: boolean,
+    ruleDialogMode: DialogMode,
 }
 
 const COLUMNS: string[] = ["id", "active", "allow", "weight", "ip_address",
@@ -59,9 +57,7 @@ export class InnerPage extends react.Component<Props, State> {
                 },
             },
             filters: initialFilters,
-            ruleCreateDialogOpen: false,
-            ruleUpdateDialogOpen: false,
-            ruleDeleteDialogOpen: false,
+            ruleDialogMode: DialogModes.NONE,
         }
         console.log("Initial state:", this.state);
         this.columns = this.getColumns();
@@ -136,7 +132,7 @@ export class InnerPage extends react.Component<Props, State> {
                             console.log("Edit rule", rule);
                             this.setState({
                                 selectedRule: rule,
-                                ruleUpdateDialogOpen: true
+                                ruleDialogMode: DialogModes.UPDATE,
                             });
                         }}
                     >
@@ -147,7 +143,7 @@ export class InnerPage extends react.Component<Props, State> {
                             console.log("Delete rule", rule);
                             this.setState({
                                 selectedRule: rule,
-                                ruleDeleteDialogOpen: true
+                                ruleDialogMode: DialogModes.DELETE,
                             });
                         }}
                     >
@@ -248,55 +244,53 @@ export class InnerPage extends react.Component<Props, State> {
         }
         return (
             <>
-                {this.state.selectedRule &&
-                    <RuleDeleteDialog
+                {this.state.ruleDialogMode !== DialogModes.NONE &&
+                    <RuleDialog
                         rule={this.state.selectedRule}
-                        onClose={(deleted: boolean, rule) => {
-                            console.log("nada", deleted)
+                        dialogMode={this.state.ruleDialogMode}
+                        onClose={(ok: boolean, rule) => {
+                            console.log("nada", ok)
                             if (rule) {
-                                this.setState({
-                                    ruleDeleteDialogOpen: false,
-                                    selectedRule: undefined,
-                                    rules: [
-                                        ...this.state.rules.filter((r) => r.id !== rule.id),
-                                    ],
-                                });
+                                if (this.state.ruleDialogMode == DialogModes.DELETE) {
+                                    this.setState({
+                                        ruleDialogMode: DialogModes.NONE,
+                                        selectedRule: undefined,
+                                        rules: [
+                                            ...this.state.rules.filter((r) => r.id !== rule.id),
+                                        ],
+                                    });
+                                } else if (this.state.ruleDialogMode == DialogModes.UPDATE) {
+                                    this.setState({
+                                        ruleDialogMode: DialogModes.NONE,
+                                        selectedRule: undefined,
+                                        rules: [
+                                            ...this.state.rules.map((r) => {
+                                                if (r.id === rule.id) {
+                                                    return { ...r, ...rule };
+                                                }
+                                                return r;
+                                            })
+                                        ]
+                                    });
+                                } else if (this.state.ruleDialogMode == DialogModes.CREATE) {
+                                    this.setState({
+                                        ruleDialogMode: DialogModes.NONE,
+                                        selectedRule: undefined,
+                                        rules: [
+                                            ...this.state.rules,
+                                            rule
+                                        ]
+                                    });
+                                }
                             } else {
                                 this.setState({
-                                    ruleDeleteDialogOpen: false,
+                                    ruleDialogMode: DialogModes.NONE,
                                     selectedRule: undefined,
                                 });
                             }
-                        }}
-                        isOpen={this.state.ruleDeleteDialogOpen}
-                    />
-                }
-                {this.state.selectedRule && <RuleUpdateDialog
-                    rule={this.state.selectedRule}
-                    onClose={(rule?: Rule) => {
-                        console.log("edit", rule);
-                        if (rule) {
-                            this.setState({
-                                ruleUpdateDialogOpen: false,
-                                selectedRule: undefined,
-                                rules: [
-                                    ...this.state.rules.map((r) => {
-                                        if (r.id === rule.id) {
-                                            return {...r, ...rule};
-                                        }
-                                        return r;
-                                    })
-                                ]
-                            });
-                        } else {
-                            this.setState({
-                                ruleUpdateDialogOpen: false,
-                                selectedRule: undefined,
-                            });
                         }
-                    }}
-                    isOpen={this.state.ruleUpdateDialogOpen}
-                />
+                        }
+                    />
                 }
                 <Flex vertical justify="center" align="center" gap="middle" >
                     <Flex justify="center" align="center" gap="middle" >
@@ -305,7 +299,7 @@ export class InnerPage extends react.Component<Props, State> {
                             type="primary"
                             onClick={() => {
                                 console.log("Clicked Add Rule button");
-                                this.setState({ ruleUpdateDialogOpen: true });
+                                this.setState({ ruleDialogMode: DialogModes.CREATE });
                             }}
                         >
                             {this.props.t("Add Rule")}
