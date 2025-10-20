@@ -46,7 +46,7 @@ class InnerDialog extends React.Component<Props, State> {
         { key: 'query', label: this.props.t('Query'), type: 'string', value: "" },
         { key: 'city_name', label: this.props.t('City Name'), type: 'string', value: "" },
         { key: 'country_name', label: this.props.t('Contry Name'), type: 'string', value: "" },
-        { key: 'couunty_code', label: this.props.t('Contry Code'), type: 'string', value: "" },
+        { key: 'country_code', label: this.props.t('Contry Code'), type: 'string', value: "" },
     ]
 
 
@@ -117,7 +117,7 @@ class InnerDialog extends React.Component<Props, State> {
             }
             const content = await response.json();
             console.log("Fetch successful:", content);
-            this.props.onClose(true, this.state.rule);
+            this.props.onClose(true, content.data);
         } catch (error) {
             const msg = error instanceof Error ? error.message : String(error);
             console.error('Network Error or Fetch Failure:', msg, error);
@@ -236,7 +236,6 @@ class InnerDialog extends React.Component<Props, State> {
                         </Flex>
                     </Modal>
                 }
-
             </>
         );
     }

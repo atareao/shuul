@@ -1,10 +1,10 @@
 import react from "react";
 import { useNavigate } from 'react-router';
 import { useTranslation } from "react-i18next";
-import { Flex, Typography, Table, Input, Button } from 'antd';
+import { Flex, Typography, Table, Input, Button} from 'antd';
 import type { GetProp, TableProps, TableColumnsType } from 'antd';
 import type { SorterResult } from 'antd/es/table/interface';
-import { EditFilled, DeleteFilled } from '@ant-design/icons';
+import { EditFilled, DeleteFilled, CheckOutlined, CloseOutlined } from '@ant-design/icons';
 const { Text } = Typography;
 
 import { loadData, mapsEqual, toCapital } from '@/common/utils';
@@ -36,17 +36,13 @@ interface State {
     ruleDialogMode: DialogMode,
 }
 
-const COLUMNS: string[] = ["id", "active", "allow", "weight", "ip_address",
-    "protocol", "fqdn", "path", "query", "city_name", "country_name",
-    "country_code"];
-
 export class InnerPage extends react.Component<Props, State> {
     columns: TableColumnsType<Rule>;
 
     constructor(props: Props) {
         super(props);
         const initialFilters = new Map<string, string>();
-        COLUMNS.forEach(col => initialFilters.set(col, ""));
+        this.fields.map(field => initialFilters.set(field.key, ""));
         this.state = {
             rules: [],
             loading: false,
@@ -63,8 +59,23 @@ export class InnerPage extends react.Component<Props, State> {
         this.columns = this.getColumns();
     }
 
+    fields = [
+        { key: 'id', label: this.props.t('Id'), type: 'number', value: 0 },
+        { key: 'active', label: this.props.t('Active'), type: 'boolean', value: true },
+        { key: 'allow', label: this.props.t('Allow'), type: 'boolean', value: false },
+        { key: 'weight', label: this.props.t('Weight'), type: 'number', value: 100 },
+        { key: 'ip_address', label: this.props.t('IP Address'), type: 'string', value: "" },
+        { key: 'protocol', label: this.props.t('Protocol'), type: 'string', value: "" },
+        { key: 'fqdn', label: this.props.t('FQDN'), type: 'string', value: "" },
+        { key: 'path', label: this.props.t('Path'), type: 'string', value: "" },
+        { key: 'query', label: this.props.t('Query'), type: 'string', value: "" },
+        { key: 'city_name', label: this.props.t('City Name'), type: 'string', value: "" },
+        { key: 'country_name', label: this.props.t('Contry Name'), type: 'string', value: "" },
+        { key: 'country_code', label: this.props.t('Contry Code'), type: 'string', value: "" },
+    ]
+
     getColumns = (): TableColumnsType<Rule> => {
-        let columns = COLUMNS.map((col): {
+        let columns = this.fields.map((field): {
             title: React.ReactNode | string;
             dataIndex?: string;
             key: string;
@@ -72,41 +83,43 @@ export class InnerPage extends react.Component<Props, State> {
             ellipsis?: boolean;
             render?: (text: any) => React.ReactNode;
         } => {
-            const filterValue = this.state.filters.get(col) || "";
+            const filterValue = this.state.filters.get(field.key) || "";
             return {
                 title:
                     <Flex vertical justify="flex-end" align="left" gap="middle" >
-                        <Text>{toCapital(col.replaceAll("_", " "))}</Text>
-                        <Input
-                            key={`filter-input-${col}-${this.state.filters.get(col)}`}
-                            placeholder={col}
-                            defaultValue={filterValue}
-                            onKeyUp={(e) => {
-                                if (e.key === "Enter") {
-                                    const value = (e.target as HTMLInputElement).value;
-                                    console.log(`Filter ${col} by value: ${value}`);
-                                    console.log(this.state.filters);
-                                    console.log(e);
-                                    this.setState((prevState) => {
-                                        const newFilters = new Map(prevState.filters);
-                                        newFilters.set(col, value.trim().replaceAll("*", "%"));
-                                        console.log(newFilters);
-                                        return {
-                                            filters: newFilters
-                                        }
-                                    },
-                                        () => {
-                                            console.log(`Actualizado con Enter: ${Array.from(this.state.filters.entries())}`);
-                                        }
-                                    );
-                                }; // Handled in onPressEnter
-                            }}
-                        />
+                        <Text>{toCapital(field.key.replaceAll("_", " "))}</Text>
+                        {(field.type === 'string' || field.type === 'number') &&
+                            <Input
+                                key={`filter-input-${field.key}-${this.state.filters.get(field.key)}`}
+                                placeholder={field.key}
+                                defaultValue={filterValue}
+                                onKeyUp={(e) => {
+                                    if (e.key === "Enter") {
+                                        const value = (e.target as HTMLInputElement).value;
+                                        console.log(`Filter ${field.key} by value: ${value}`);
+                                        console.log(this.state.filters);
+                                        console.log(e);
+                                        this.setState((prevState) => {
+                                            const newFilters = new Map(prevState.filters);
+                                            newFilters.set(field.key, value.trim().replaceAll("*", "%"));
+                                            console.log(newFilters);
+                                            return {
+                                                filters: newFilters
+                                            }
+                                        },
+                                            () => {
+                                                console.log(`Actualizado con Enter: ${Array.from(this.state.filters.entries())}`);
+                                            }
+                                        );
+                                    }; // Handled in onPressEnter
+                                }}
+                            />
+                        }
                     </Flex>,
-                dataIndex: col,
-                key: col,
+                dataIndex: field.key,
+                key: field.key,
                 sorter: (a: any, b: any) => {
-                    const columnName = col as keyof Rule;
+                    const columnName = field.key as keyof Rule;
                     if (!a && !b) return 0; // Both are undefined/null, consider them equal
                     if (!a) return 1; // Undefined 'a' goes to the end (or -1 if you prefer it at the start)
                     if (!b) return -1; // Undefined 'b' goes to the end (or 1 if you prefer it at the start)
@@ -119,7 +132,17 @@ export class InnerPage extends react.Component<Props, State> {
                     return valA > valB ? 1 : -1;
                 },
                 ellipsis: true,
-                render: (text: any) => <Text>{text}</Text>,
+                render: (content: any) => {
+                        if(field.type === 'boolean') {
+                            if(content){
+                                return <CheckOutlined />
+                            }else{
+                                return <CloseOutlined />
+                            }
+                        }else{
+                            return <Text>{content}</Text>
+                        }
+                }
             }
         });
         columns.push({
@@ -307,7 +330,7 @@ export class InnerPage extends react.Component<Props, State> {
                     </Flex>
                     <Table<Rule>
                         columns={this.columns}
-                        rowKey={rule => rule.id.toString()}
+                        rowKey={rule => rule.id}
                         dataSource={this.state.rules}
                         pagination={this.state.tableParams.pagination}
                         loading={this.state.loading}
