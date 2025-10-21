@@ -152,6 +152,20 @@ impl Record{
             .await
     }
 
+    pub async fn read_info(pool: &PgPool, info: &str) -> Result<i64, Error> {
+        let sql = if info == "total" {
+            "SELECT count(*) FROM records"
+        }else if info == "filtered" {
+            "SELECT count(*) FROM records WHERE rule_id IS NOT NULL"
+        }else{
+            return Err(Error::RowNotFound);
+        };
+        query(sql)
+            .map(|cp_row: PgRow| cp_row.get(0))
+            .fetch_one(pool)
+            .await
+    }
+
     pub async fn count_paged(
         pool: &PgPool,
         params: &ReadRecordParams,

@@ -7,7 +7,6 @@ import type { SorterResult } from 'antd/es/table/interface';
 const { Text } = Typography;
 
 import { loadData, mapsEqual, toCapital } from '@/common/utils';
-import type { Dictionary } from '@/common/types';
 import type Record from "@/models/record";
 
 type ColumnsType<T extends object = object> = TableProps<T>['columns'];
@@ -138,17 +137,17 @@ export class InnerPage extends react.Component<Props, State> {
 
     fetchData = async () => {
         console.log("Fetching data");
-        const params: Dictionary<string | number> = {
-            page: this.state.tableParams.pagination?.current || 1,
-            limit: this.state.tableParams.pagination?.pageSize || 10,
-            sort_by: this.state.tableParams.sortField?.toString() || 'created_at',
-            asc: this.state.tableParams.sortOrder === 'ascend' ? 'true' : 'false',
-        };
+        const params: Map<string, string> = new Map([
+            ["page", this.state.tableParams.pagination?.current?.toString() || "1"],
+            ["limit", this.state.tableParams.pagination?.pageSize?.toString() || "10"],
+            ["sort_by", ""],
+            ["asc", this.state.tableParams.sortOrder === 'ascend' ? 'true' : 'false'],
+        ]);
         console.log("Current filters:", this.state.filters);
         this.state.filters.forEach((value, key) => {
             console.log(`Filter entry: ${key} -> ${value}`);
             if (value && value.length > 0) {
-                params[key] = value;
+                params.set(key,value);
             }
         });
         console.log(`Fetch params: ${JSON.stringify(params)}`);

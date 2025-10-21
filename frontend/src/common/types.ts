@@ -1,7 +1,3 @@
-export interface Dictionary<T> {
-    [name: string]: T | undefined | null;
-}
-
 export interface Validation {
     check: Function;
     msg: string;

@@ -2,12 +2,8 @@ import react from "react";
 import { useNavigate } from 'react-router';
 import { useTranslation } from "react-i18next";
 import { Flex, Typography } from 'antd';
-const { Text } = Typography;
+import Logo from "@/assets/logo.svg";
 
-/*
-import { Item } from '../common/types';
-import { loadData } from '../common/utils';
-*/
 
 interface Props {
     navigate: any
@@ -23,8 +19,16 @@ export class HomeInnerPage extends react.Component<Props> {
 
     render = () => {
         return (
-            <Flex justify="center" align="center" >
-                <Text>Welcome to the Home Page</Text>
+            <Flex vertical justify="center" align="center" gap="middle" style={{ height: '100vh' }}>
+                <Typography.Title level={1} style={{ margin: 0 }}>
+                    Shuul
+                </Typography.Title>
+                <Typography.Title level={2} style={{ margin: 0 }}>
+                    The gatekeeper of your data
+                </Typography.Title>
+                <Flex gap="middle" align="center" vertical>
+                    <img src={Logo} alt="Logo" style={{ width: 200, marginBottom: 20 }} />
+                </Flex>
             </Flex>
 
         );

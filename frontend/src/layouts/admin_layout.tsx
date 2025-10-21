@@ -79,6 +79,8 @@ class InnerAdminLayout extends react.Component<Props, State> {
 
     render = () => {
         console.log("AdminLayout");
+        console.log(window.location.pathname);
+        const selectedKey = Object.keys(navigations).find(key => navigations[key] === window.location.pathname) || '1';
         return (
             <AuthContext.Consumer>
                 {({ isLoggedIn, role}) => {
@@ -92,6 +94,7 @@ class InnerAdminLayout extends react.Component<Props, State> {
                                 <Menu
                                     theme="dark"
                                     defaultSelectedKeys={['1']}
+                                    selectedKeys={[selectedKey]}
                                     mode="inline"
                                     items={items}
                                     onClick={(e) => {this.handleMenuClick(e)}}
@@ -126,7 +129,7 @@ class InnerAdminLayout extends react.Component<Props, State> {
                                     </div>
                                 </Content>
                                 <Footer style={{ textAlign: 'center' }}>
-                                    ©{new Date().getFullYear()} atareao
+                                    ©{new Date().getFullYear()} Shuul
                                 </Footer>
                             </Layout>
                         </Layout>

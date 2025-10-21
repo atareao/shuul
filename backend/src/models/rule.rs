@@ -178,6 +178,20 @@ impl Rule {
             .await
     }
 
+    pub async fn read_info(pool: &PgPool, info: &str) -> Result<i64, Error> {
+        let sql = if info == "total" {
+            "SELECT count(*) FROM rules"
+        }else if info == "active" {
+            "SELECT count(*) FROM rules WHERE active = true"
+        }else{
+            return Err(Error::RowNotFound);
+        };
+        query(sql)
+            .map(|cp_row: PgRow| cp_row.get(0))
+            .fetch_one(pool)
+            .await
+    }
+
     pub async fn update(pool: &PgPool, rule: UpdateRule) -> Result<Rule, Error> {
         let sql = "UPDATE rules set
                 weight = $1,
