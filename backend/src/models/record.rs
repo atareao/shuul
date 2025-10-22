@@ -86,8 +86,8 @@ impl NewRecord{
         let ip_data = IPData::complete(maxmind_db, ip);
         debug!("ip data: {:?}", &ip_data);
         let ip_address = if ip.is_empty() { None } else { Some(ip.to_string()) };
-        let protocol = uri.scheme_str().and_then(|s| if s.is_empty() { None } else { Some(s.to_string()) });
-        let fqdn = uri.host().and_then(|s| if s.is_empty() { None } else { Some(s.to_string()) });
+        let protocol = if protocol.is_empty() { None } else { Some(protocol.to_string()) };
+        let fqdn = if host.is_empty() { None } else { Some(host.to_string()) };
         let path = if uri.path().is_empty() { None } else { Some(uri.path().to_string()) };
         let query = uri.query().and_then(|s| if s.is_empty() { None } else { Some(s.to_string()) });
         let city_name = ip_data.city_name.and_then(|s| if s.is_empty() { None } else { Some(s.to_string()) });
