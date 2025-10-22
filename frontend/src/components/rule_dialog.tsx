@@ -99,7 +99,7 @@ class InnerDialog extends React.Component<Props, State> {
         } else {
             return null;
         }
-        url = `${basePath}?${queryString ? `?${queryString}` : ''}`;
+        url = `${basePath}?${queryString && queryString.trim() !== "" ? `?${queryString}` : ''}`;
         console.log("Request URL:", url);
         try {
             const response = await fetch(url, {
