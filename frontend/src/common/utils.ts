@@ -9,7 +9,7 @@ export const loadData = async <T>(
     console.log("Loading data");
 
     const basePath = `${BASE_URL}/api/v1/${endpoint}`;
-    const url = new URL(basePath);
+    const searchParams = new URLSearchParams();
     if (params) {
         console.log("Params", params);
         // Añadir parámetros de consulta de forma segura
@@ -18,18 +18,20 @@ export const loadData = async <T>(
             if (value !== undefined && value !== null) {
                 if (Array.isArray(value)) {
                     // Manejar arrays, si es necesario (ej. para filtros múltiples)
-                    value.forEach(item => url.searchParams.append(key, String(item)));
+                    value.forEach(item => searchParams.append(key, String(item)));
                 } else {
-                    url.searchParams.append(key, String(value));
+                    searchParams.append(key, String(value));
                 }
             }
         });
     }
+    const queryString = searchParams.toString();
+    const url = `${basePath}${queryString ? `?${queryString}` : ''}`;
 
-    console.log("Fetching URL:", url.toString());
+    console.log("Fetching URL:", url);
 
         try {
-            const response = await fetch(url.toString(), {
+            const response = await fetch(url, {
                 method: 'GET',
                 // El Content-Type es típicamente innecesario para un GET sin cuerpo,
                 // pero lo dejo si es una convención de tu API.
