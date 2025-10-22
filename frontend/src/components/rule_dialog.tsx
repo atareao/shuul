@@ -63,13 +63,18 @@ class InnerDialog extends React.Component<Props, State> {
         let method;
         let url;
         let string_body;
+        let queryString;
+        const basePath = `${BASE_URL}/api/v1/rules`;
+        const searchParams = new URLSearchParams();
         if (this.props.dialogMode === DialogModes.DELETE) {
             method = 'DELETE';
-            url = new URL(`${BASE_URL}/api/v1/rules?id=${this.state.rule?.id}`).toString();
+            if(this.state.rule?.id !== undefined){
+                searchParams.append('id', String(this.state.rule.id));
+                queryString = searchParams.toString();
+            }
             string_body = null;
         } else if (this.props.dialogMode === DialogModes.UPDATE) {
             method = 'PATCH';
-            url = new URL(`${BASE_URL}/api/v1/rules`).toString();
             const body = this.fields.reduce((acc: any, field: any) => {
                 acc[field.key] = this.state.rule?.[field.key as keyof Rule];
                 return acc;
@@ -79,7 +84,6 @@ class InnerDialog extends React.Component<Props, State> {
 
         } else if (this.props.dialogMode === DialogModes.CREATE) {
             method = 'POST';
-            url = new URL(`${BASE_URL}/api/v1/rules`).toString();
             const body = this.fields.reduce((acc: any, field: any) => {
                 acc[field.key] = this.state.rule?.[field.key as keyof Rule];
                 return acc;
@@ -87,11 +91,15 @@ class InnerDialog extends React.Component<Props, State> {
             string_body = JSON.stringify(body);
         } else if (this.props.dialogMode === DialogModes.READ) {
             method = 'GET';
-            url = new URL(`${BASE_URL}/api/v1/rules?id=${this.state.rule?.id}`).toString();
+            if(this.state.rule?.id !== undefined){
+                searchParams.append('id', String(this.state.rule.id));
+                queryString = searchParams.toString();
+            }
             string_body = null;
         } else {
             return null;
         }
+        url = `${basePath}?${queryString ? `?${queryString}` : ''}`;
         console.log("Request URL:", url);
         try {
             const response = await fetch(url, {
