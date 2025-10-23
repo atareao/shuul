@@ -208,10 +208,16 @@ export class InnerPage extends react.Component<Props, State> {
 
     fetchData = async () => {
         console.log("Fetching data");
+        let sortBy = this.state.tableParams.sortField;
+        if(sortBy === undefined || sortBy.toString().trim() === ''){
+            sortBy = 'created_at';
+        }else{
+            sortBy = sortBy.toString().trim();
+        }
         const params: Map<string, string> = new Map([
             ["page", this.state.tableParams.pagination?.current?.toString() || "1"],
             ["limit", this.state.tableParams.pagination?.pageSize?.toString() || "10"],
-            ["sort_by", this.state.tableParams.sortField?.toString() || 'created_at'],
+            ["sort_by", sortBy],
             ["asc", this.state.tableParams.sortOrder === 'ascend' ? 'true' : 'false'],
         ]);
         console.log("Current filters:", this.state.filters);
