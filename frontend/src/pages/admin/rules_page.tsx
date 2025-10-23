@@ -6,14 +6,16 @@ import type { GetProp, TableProps, TableColumnsType } from 'antd';
 import type { SorterResult } from 'antd/es/table/interface';
 import { EditFilled, DeleteFilled, CheckOutlined, CloseOutlined } from '@ant-design/icons';
 const { Text } = Typography;
+type TablePaginationConfig = Exclude<GetProp<TableProps, 'pagination'>, boolean>;
 
 import { loadData, mapsEqual, toCapital } from '@/common/utils';
 import type { DialogMode } from '@/common/types';
 import { DialogModes } from '@/common/types';
-import type Rule from "@/models/rule";
-import RuleDialog from "@/components/rule_dialog";
+import type Item from "@/models/rule";
+import ItemDialog from "@/components/rule_dialog";
 
-type TablePaginationConfig = Exclude<GetProp<TableProps, 'pagination'>, boolean>;
+const TITLE = "Rules";
+const ENDPOINT = "rules";
 
 interface Props {
     navigate: any
@@ -21,32 +23,32 @@ interface Props {
 }
 
 interface State {
-    rules: Rule[];
+    items: Item[];
     loading: boolean;
     pagination?: TablePaginationConfig;
     sortField?: SorterResult<any>['field'];
     sortOrder?: SorterResult<any>['order'];
     filters: Map<string, string>;
-    selectedRule?: Rule,
-    ruleDialogMode: DialogMode,
+    selectedItem?: Item,
+    dialogMode: DialogMode,
 }
 
 export class InnerPage extends react.Component<Props, State> {
-    columns: TableColumnsType<Rule>;
+    columns: TableColumnsType<Item>;
 
     constructor(props: Props) {
         super(props);
         const initialFilters = new Map<string, string>();
         this.fields.map(field => initialFilters.set(field.key, ""));
         this.state = {
-            rules: [],
+            items: [],
             loading: false,
             pagination: {
                 current: 1,
                 pageSize: 10,
             },
             filters: initialFilters,
-            ruleDialogMode: DialogModes.NONE,
+            dialogMode: DialogModes.NONE,
         }
         console.log("Initial state:", this.state);
         this.columns = this.getColumns();
@@ -67,12 +69,12 @@ export class InnerPage extends react.Component<Props, State> {
         { key: 'country_code', label: this.props.t('Contry Code'), type: 'string', value: "" },
     ]
 
-    getColumns = (): TableColumnsType<Rule> => {
+    getColumns = (): TableColumnsType<Item> => {
         let columns = this.fields.map((field): {
             title: React.ReactNode | string;
             dataIndex?: string;
             key: string;
-            sorter?: (a: Rule, b: Rule) => number;
+            sorter?: (a: Item, b: Item) => number;
             ellipsis?: boolean;
             render?: (text: any) => React.ReactNode;
         } => {
@@ -112,7 +114,7 @@ export class InnerPage extends react.Component<Props, State> {
                 dataIndex: field.key,
                 key: field.key,
                 sorter: (a: any, b: any) => {
-                    const columnName = field.key as keyof Rule;
+                    const columnName = field.key as keyof Item;
                     if (!a && !b) return 0; // Both are undefined/null, consider them equal
                     if (!a) return 1; // Undefined 'a' goes to the end (or -1 if you prefer it at the start)
                     if (!b) return -1; // Undefined 'b' goes to the end (or 1 if you prefer it at the start)
@@ -141,14 +143,14 @@ export class InnerPage extends react.Component<Props, State> {
         columns.push({
             title: <Text>Edit</Text>,
             key: "operation-edit",
-            render: (rule: Rule) => (
+            render: (rule: Item) => (
                 <Flex justify="center" align="center">
                     <Button
                         onClick={async () => {
                             console.log("Edit rule", rule);
                             this.setState({
-                                selectedRule: rule,
-                                ruleDialogMode: DialogModes.UPDATE,
+                                selectedItem: rule,
+                                dialogMode: DialogModes.UPDATE,
                             });
                         }}
                     >
@@ -158,8 +160,8 @@ export class InnerPage extends react.Component<Props, State> {
                         onClick={async () => {
                             console.log("Delete rule", rule);
                             this.setState({
-                                selectedRule: rule,
-                                ruleDialogMode: DialogModes.DELETE,
+                                selectedItem: rule,
+                                dialogMode: DialogModes.DELETE,
                             });
                         }}
                     >
@@ -171,11 +173,11 @@ export class InnerPage extends react.Component<Props, State> {
         return columns;
     }
 
-    setData = (rules: Rule[]) => {
-        this.setState({ ...this.state, rules });
+    setData = (items: Item[]) => {
+        this.setState({ ...this.state, ...items });
     }
 
-    handleTableChange: TableProps<Rule>['onChange'] = async (
+    handleTableChange: TableProps<Item>['onChange'] = async (
         pagination: any,
         filters: any,
         sorter: any,
@@ -224,11 +226,11 @@ export class InnerPage extends react.Component<Props, State> {
             }
         });
         console.log(`Fetch params: ${JSON.stringify(params)}`);
-        const responseJson = await loadData<Rule[]>("rules", params);
+        const responseJson = await loadData<Item[]>(ENDPOINT, params);
         console.log(`Response: ${JSON.stringify(responseJson)}`);
         if (responseJson.status === 200 && responseJson.data) {
             this.setState({
-                rules: responseJson.data,
+                items: responseJson.data,
                 loading: false,
                 pagination: {
                     ...this.state.pagination,
@@ -240,13 +242,11 @@ export class InnerPage extends react.Component<Props, State> {
         }
     }
 
-
     componentDidMount = async () => {
         await this.fetchData();
     }
 
     componentDidUpdate = async (_prevProps: Props, prevState: State) => {
-        return;
         console.log("Component did update");
         console.log(`sortOrder: prev=${prevState.sortOrder} curr=${this.state.sortOrder}`);
         console.log(`sortField: prev=${prevState.sortField} curr=${this.state.sortField}`);
@@ -262,33 +262,33 @@ export class InnerPage extends react.Component<Props, State> {
     }
 
     render = () => {
-        const title = this.props.t("Rules");
+        const title = this.props.t(TITLE);
         if (this.state.loading) {
             <Text>{this.props.t("Loading...")}</Text>
         }
         return (
             <>
-                {this.state.ruleDialogMode !== DialogModes.NONE &&
-                    <RuleDialog
-                        rule={this.state.selectedRule}
-                        dialogMode={this.state.ruleDialogMode}
+                {this.state.dialogMode !== DialogModes.NONE &&
+                    <ItemDialog
+                        rule={this.state.selectedItem}
+                        dialogMode={this.state.dialogMode}
                         onClose={(ok: boolean, rule) => {
                             console.log("nada", ok)
                             if (rule) {
-                                if (this.state.ruleDialogMode == DialogModes.DELETE) {
+                                if (this.state.dialogMode == DialogModes.DELETE) {
                                     this.setState({
-                                        ruleDialogMode: DialogModes.NONE,
-                                        selectedRule: undefined,
-                                        rules: [
-                                            ...this.state.rules.filter((r) => r.id !== rule.id),
+                                        dialogMode: DialogModes.NONE,
+                                        selectedItem: undefined,
+                                        items: [
+                                            ...this.state.items.filter((r) => r.id !== rule.id),
                                         ],
                                     });
-                                } else if (this.state.ruleDialogMode == DialogModes.UPDATE) {
+                                } else if (this.state.dialogMode == DialogModes.UPDATE) {
                                     this.setState({
-                                        ruleDialogMode: DialogModes.NONE,
-                                        selectedRule: undefined,
-                                        rules: [
-                                            ...this.state.rules.map((r) => {
+                                        dialogMode: DialogModes.NONE,
+                                        selectedItem: undefined,
+                                        items: [
+                                            ...this.state.items.map((r) => {
                                                 if (r.id === rule.id) {
                                                     return { ...r, ...rule };
                                                 }
@@ -296,20 +296,20 @@ export class InnerPage extends react.Component<Props, State> {
                                             })
                                         ]
                                     });
-                                } else if (this.state.ruleDialogMode == DialogModes.CREATE) {
+                                } else if (this.state.dialogMode == DialogModes.CREATE) {
                                     this.setState({
-                                        ruleDialogMode: DialogModes.NONE,
-                                        selectedRule: undefined,
-                                        rules: [
-                                            ...this.state.rules,
+                                        dialogMode: DialogModes.NONE,
+                                        selectedItem: undefined,
+                                        items: [
+                                            ...this.state.items,
                                             rule
                                         ]
                                     });
                                 }
                             } else {
                                 this.setState({
-                                    ruleDialogMode: DialogModes.NONE,
-                                    selectedRule: undefined,
+                                    dialogMode: DialogModes.NONE,
+                                    selectedItem: undefined,
                                 });
                             }
                         }
@@ -322,17 +322,17 @@ export class InnerPage extends react.Component<Props, State> {
                         <Button
                             type="primary"
                             onClick={() => {
-                                console.log("Clicked Add Rule button");
-                                this.setState({ ruleDialogMode: DialogModes.CREATE });
+                                console.log("Clicked Add button");
+                                this.setState({ dialogMode: DialogModes.CREATE });
                             }}
                         >
                             {this.props.t("Add Rule")}
                         </Button>
                     </Flex>
-                    <Table<Rule>
+                    <Table<Item>
                         columns={this.columns}
                         rowKey={rule => rule.id}
-                        dataSource={this.state.rules}
+                        dataSource={this.state.items}
                         sortDirections={this.state.sortOrder ? [this.state.sortOrder] : ['ascend', 'descend']}
                         pagination={this.state.pagination}
                         loading={this.state.loading}
@@ -344,7 +344,7 @@ export class InnerPage extends react.Component<Props, State> {
     }
 };
 
-export default function RulesPage() {
+export default function Page() {
     const navigate = useNavigate();
     const { t } = useTranslation();
     return <InnerPage navigate={navigate} t={t} />;
