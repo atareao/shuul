@@ -1,26 +1,19 @@
 import react from "react";
 import { useNavigate } from 'react-router';
 import { useTranslation } from "react-i18next";
-import { Flex, Typography, Table, Input, Button} from 'antd';
+import { Flex, Typography, Table, Input, Button } from 'antd';
 import type { GetProp, TableProps, TableColumnsType } from 'antd';
 import type { SorterResult } from 'antd/es/table/interface';
 import { EditFilled, DeleteFilled, CheckOutlined, CloseOutlined } from '@ant-design/icons';
 const { Text } = Typography;
 
 import { loadData, mapsEqual, toCapital } from '@/common/utils';
-import type {DialogMode } from '@/common/types';
+import type { DialogMode } from '@/common/types';
 import { DialogModes } from '@/common/types';
 import type Rule from "@/models/rule";
 import RuleDialog from "@/components/rule_dialog";
 
 type TablePaginationConfig = Exclude<GetProp<TableProps, 'pagination'>, boolean>;
-
-interface TableParams {
-    pagination?: TablePaginationConfig;
-    sortField?: SorterResult<any>['field'];
-    sortOrder?: SorterResult<any>['order'];
-}
-
 
 interface Props {
     navigate: any
@@ -30,7 +23,9 @@ interface Props {
 interface State {
     rules: Rule[];
     loading: boolean;
-    tableParams: TableParams;
+    pagination?: TablePaginationConfig;
+    sortField?: SorterResult<any>['field'];
+    sortOrder?: SorterResult<any>['order'];
     filters: Map<string, string>;
     selectedRule?: Rule,
     ruleDialogMode: DialogMode,
@@ -46,11 +41,9 @@ export class InnerPage extends react.Component<Props, State> {
         this.state = {
             rules: [],
             loading: false,
-            tableParams: {
-                pagination: {
-                    current: 1,
-                    pageSize: 10,
-                },
+            pagination: {
+                current: 1,
+                pageSize: 10,
             },
             filters: initialFilters,
             ruleDialogMode: DialogModes.NONE,
@@ -133,15 +126,15 @@ export class InnerPage extends react.Component<Props, State> {
                 },
                 ellipsis: true,
                 render: (content: any) => {
-                        if(field.type === 'boolean') {
-                            if(content){
-                                return <CheckOutlined />
-                            }else{
-                                return <CloseOutlined />
-                            }
-                        }else{
-                            return <Text>{content}</Text>
+                    if (field.type === 'boolean') {
+                        if (content) {
+                            return <CheckOutlined />
+                        } else {
+                            return <CloseOutlined />
                         }
+                    } else {
+                        return <Text>{content}</Text>
+                    }
                 }
             }
         });
@@ -178,9 +171,6 @@ export class InnerPage extends react.Component<Props, State> {
         return columns;
     }
 
-    setTableParams = (tableParams: TableParams) => {
-        this.setState({ ...this.state, tableParams });
-    }
     setData = (rules: Rule[]) => {
         this.setState({ ...this.state, rules });
     }
@@ -191,15 +181,20 @@ export class InnerPage extends react.Component<Props, State> {
         sorter: any,
         extra: any,
     ) => {
+        console.log("Table change detected");
         console.log(`pagination: ${JSON.stringify(pagination)}`);
         console.log(`filters: ${JSON.stringify(filters)}`);
+        console.log(`sorter: ${JSON.stringify(sorter)}`);
         console.log(`extra: ${JSON.stringify(extra)}`);
-        this.setTableParams({
-            pagination,
-            sortOrder: Array.isArray(sorter) ? undefined : sorter.order,
-            sortField: Array.isArray(sorter) ? undefined : sorter.field,
+        this.setState({
+            pagination: {
+                ...this.state.pagination,
+                ...pagination
+            },
+            sortOrder: sorter.order,
+            sortField: sorter.field,
         });
-        if (pagination.pageSize !== this.state.tableParams.pagination?.pageSize) {
+        if (pagination.pageSize !== this.state.pagination?.pageSize) {
             this.setData([]);
         }
     }
@@ -208,17 +203,17 @@ export class InnerPage extends react.Component<Props, State> {
 
     fetchData = async () => {
         console.log("Fetching data");
-        let sortBy = this.state.tableParams.sortField;
-        if(sortBy === undefined || sortBy.toString().trim() === ''){
+        let sortBy = this.state.sortField;
+        if (sortBy === undefined || sortBy.toString().trim() === '') {
             sortBy = 'created_at';
-        }else{
+        } else {
             sortBy = sortBy.toString().trim();
         }
         const params: Map<string, string> = new Map([
-            ["page", this.state.tableParams.pagination?.current?.toString() || "1"],
-            ["limit", this.state.tableParams.pagination?.pageSize?.toString() || "10"],
+            ["page", this.state.pagination?.current?.toString() || "1"],
+            ["limit", this.state.pagination?.pageSize?.toString() || "10"],
             ["sort_by", sortBy],
-            ["asc", this.state.tableParams.sortOrder === 'ascend' ? 'true' : 'false'],
+            ["asc", this.state.sortOrder === 'ascend' ? 'true' : 'false'],
         ]);
         console.log("Current filters:", this.state.filters);
         this.state.filters.forEach((value, key) => {
@@ -234,13 +229,11 @@ export class InnerPage extends react.Component<Props, State> {
             this.setState({
                 rules: responseJson.data,
                 loading: false,
-                tableParams: {
-                    ...this.state.tableParams,
-                    pagination: {
-                        current: responseJson.pagination?.page || 1,
-                        pageSize: responseJson.pagination?.limit || 10,
-                        total: responseJson.pagination?.records || 0,
-                    }
+                pagination: {
+                    ...this.state.pagination,
+                    current: responseJson.pagination?.page || 1,
+                    pageSize: responseJson.pagination?.limit || 10,
+                    total: responseJson.pagination?.records || 0,
                 }
             });
         }
@@ -253,13 +246,13 @@ export class InnerPage extends react.Component<Props, State> {
 
     componentDidUpdate = async (_prevProps: Props, prevState: State) => {
         console.log("Component did update");
-        console.log(`sortOrder: prev=${prevState.tableParams.sortOrder} curr=${this.state.tableParams.sortOrder}`);
-        console.log(`sortField: prev=${prevState.tableParams.sortField} curr=${this.state.tableParams.sortField}`);
+        console.log(`sortOrder: prev=${prevState.sortOrder} curr=${this.state.sortOrder}`);
+        console.log(`sortField: prev=${prevState.sortField} curr=${this.state.sortField}`);
         const filtersHaveChanged = !mapsEqual(prevState.filters, this.state.filters);
-        if (prevState.tableParams.pagination?.current !== this.state.tableParams.pagination?.current ||
-            this.state.tableParams.pagination?.pageSize !== prevState.tableParams.pagination?.pageSize ||
-            this.state.tableParams.sortField !== prevState.tableParams.sortField ||
-            this.state.tableParams.sortOrder !== prevState.tableParams.sortOrder ||
+        if (prevState.pagination?.current !== this.state.pagination?.current ||
+            this.state.pagination?.pageSize !== prevState.pagination?.pageSize ||
+            this.state.sortField !== prevState.sortField ||
+            this.state.sortOrder !== prevState.sortOrder ||
             filtersHaveChanged
         ) {
             await this.fetchData();
@@ -338,7 +331,8 @@ export class InnerPage extends react.Component<Props, State> {
                         columns={this.columns}
                         rowKey={rule => rule.id}
                         dataSource={this.state.rules}
-                        pagination={this.state.tableParams.pagination}
+                        sortDirections={this.state.sortOrder ? [this.state.sortOrder] : ['ascend', 'descend']}
+                        pagination={this.state.pagination}
                         loading={this.state.loading}
                         onChange={this.handleTableChange}
                     />

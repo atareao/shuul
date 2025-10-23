@@ -127,7 +127,7 @@ impl Record{
 
     pub async fn create( pool: &PgPool, record: NewRecord) -> Result<Record, Error> {
 
-        let sql = "INSERT INTO records (ip_address, protocol, fqdn, path, query, city_name, country_name, country_code, rule_id, created_at) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9) RETURNING *";
+        let sql = "INSERT INTO records (ip_address, protocol, fqdn, path, query, city_name, country_name, country_code, rule_id, created_at) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10) RETURNING *";
         let now = Utc::now();
         query(sql)
             .bind(record.ip_address)
@@ -231,7 +231,7 @@ impl Record{
         let limit_index = active_filters.len() + 1;
         let offset_index = limit_index + 1;
         let sort_by = params.sort_by.as_deref().unwrap_or("created_at");
-        if ["created_at", "ip_address", "protocol", "fqdn", "path",
+        if ["created_at", "ip_address", "protocol", "fqdn", "path", "query",
                 "city_name", "country_name", "country_code"].contains(&sort_by) {
             if params.asc.unwrap_or(true) {
                 sql.push_str(&format!(" ORDER BY {} ASC", sort_by));
