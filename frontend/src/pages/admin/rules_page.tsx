@@ -181,7 +181,7 @@ export class InnerPage extends react.Component<Props, State> {
         sorter: any,
         extra: any,
     ) => {
-        console.log("Table change detected");
+        console.log("=== Table change detected ===");
         console.log(`pagination: ${JSON.stringify(pagination)}`);
         console.log(`filters: ${JSON.stringify(filters)}`);
         console.log(`sorter: ${JSON.stringify(sorter)}`);
