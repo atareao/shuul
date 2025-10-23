@@ -1,4 +1,4 @@
-import React from "react";
+import React, { lazy, Suspense } from "react";
 import {
     BrowserRouter,
     Routes,
@@ -13,16 +13,29 @@ import '@ant-design/v5-patch-for-react-19';
 
 import { AuthContextProvider } from "@/components/auth_context";
 import ModeContext, { ModeContextProvider } from "@/components/mode_context";
-import PublicLayout from "@/layouts/public_layout";
-import AdminLayout from "@/layouts/admin_layout";
-import HomePage from "@/pages/public/home_page";
-import LoginPage from "@/pages/public/login_page";
-import LogoutPage from "@/pages/admin/logout_page";
-import DashboardPage from "@/pages/admin/dashboard_page"
-import RulesPage from "@/pages/admin/rules_page"
-import RecordsPage from "@/pages/admin/records_page"
-import ChartsPage from "@/pages/admin/charts_page"
-import UsersPage from "@/pages/admin/users_page"
+
+const PublicLayout = lazy(() => import('@/layouts/public_layout'));
+const AdminLayout = lazy(() => import('@/layouts/admin_layout'));
+const HomePage = lazy(() => import('@/pages/public/home_page'));
+const LoginPage = lazy(() => import('@/pages/public/login_page'));
+const LogoutPage = lazy(() => import('@/pages/admin/logout_page'));
+const DashboardPage = lazy(() => import('@/pages/admin/dashboard_page'));
+const RulesPage = lazy(() => import('@/pages/admin/rules_page'));
+const RecordsPage = lazy(() => import('@/pages/admin/records_page'));
+const ChartsPage = lazy(() => import('@/pages/admin/charts_page'));
+const UsersPage = lazy(() => import('@/pages/admin/users_page'));
+
+
+// import PublicLayout from "@/layouts/public_layout";
+// import AdminLayout from "@/layouts/admin_layout";
+// import HomePage from "@/pages/public/home_page";
+// import LoginPage from "@/pages/public/login_page";
+// import LogoutPage from "@/pages/admin/logout_page";
+// import DashboardPage from "@/pages/admin/dashboard_page"
+// import RulesPage from "@/pages/admin/rules_page"
+// import RecordsPage from "@/pages/admin/records_page"
+// import ChartsPage from "@/pages/admin/charts_page"
+// import UsersPage from "@/pages/admin/users_page"
 import '@/App.css'
 
 i18n
@@ -58,21 +71,23 @@ export default class App extends React.Component {
                             return (
                                 <ConfigProvider theme={customTheme}>
                                     <BrowserRouter>
-                                        <Routes>
-                                            <Route path="/" element={<PublicLayout />} >
-                                                <Route index element={<HomePage />} />
-                                                <Route path="login" element={<LoginPage />} />
-                                            </Route>
-                                            <Route path="/admin" element={<AdminLayout />} >
-                                                <Route index element={<DashboardPage />} />
-                                                <Route path="logout" element={<LogoutPage />} />
-                                                <Route path="dashboard" element={<DashboardPage />} />
-                                                <Route path="rules" element={<RulesPage />} />
-                                                <Route path="records" element={<RecordsPage />} />
-                                                <Route path="charts" element={<ChartsPage />} />
-                                                <Route path="users" element={<UsersPage />} />
-                                            </Route>
-                                        </Routes>
+                                        <Suspense fallback={<div>Loading...</div>}>
+                                            <Routes>
+                                                <Route path="/" element={<PublicLayout />} >
+                                                    <Route index element={<HomePage />} />
+                                                    <Route path="login" element={<LoginPage />} />
+                                                </Route>
+                                                <Route path="/admin" element={<AdminLayout />} >
+                                                    <Route index element={<DashboardPage />} />
+                                                    <Route path="logout" element={<LogoutPage />} />
+                                                    <Route path="dashboard" element={<DashboardPage />} />
+                                                    <Route path="rules" element={<RulesPage />} />
+                                                    <Route path="records" element={<RecordsPage />} />
+                                                    <Route path="charts" element={<ChartsPage />} />
+                                                    <Route path="users" element={<UsersPage />} />
+                                                </Route>
+                                            </Routes>
+                                        </Suspense>
                                     </BrowserRouter>
                                 </ConfigProvider>
                             );

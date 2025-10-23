@@ -181,11 +181,12 @@ export class InnerPage extends react.Component<Props, State> {
         sorter: any,
         extra: any,
     ) => {
-        console.log("=== Table change detected ===");
+        console.log("=== Table change detected. Start ===");
         console.log(`pagination: ${JSON.stringify(pagination)}`);
         console.log(`filters: ${JSON.stringify(filters)}`);
         console.log(`sorter: ${JSON.stringify(sorter)}`);
         console.log(`extra: ${JSON.stringify(extra)}`);
+        console.log("=== Table change detected. End ===");
         this.setState({
             pagination: {
                 ...this.state.pagination,
@@ -245,6 +246,7 @@ export class InnerPage extends react.Component<Props, State> {
     }
 
     componentDidUpdate = async (_prevProps: Props, prevState: State) => {
+        return;
         console.log("Component did update");
         console.log(`sortOrder: prev=${prevState.sortOrder} curr=${this.state.sortOrder}`);
         console.log(`sortField: prev=${prevState.sortField} curr=${this.state.sortField}`);
