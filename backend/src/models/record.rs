@@ -90,6 +90,7 @@ impl NewRecord{
         let fqdn = if host.is_empty() { None } else { Some(host.to_string()) };
         let path = if uri.path().is_empty() { None } else { Some(uri.path().to_string()) };
         let query = uri.query().and_then(|s| if s.is_empty() { None } else { Some(s.to_string()) });
+        debug!("query from proxy: {:?}", query);
         let city_name = ip_data.city_name.and_then(|s| if s.is_empty() { None } else { Some(s.to_string()) });
         let country_name = ip_data.country_name.and_then(|s| if s.is_empty() { None } else { Some(s.to_string()) });
         let country_code = ip_data.country_code.and_then(|s| if s.is_empty() { None } else { Some(s.to_string()) });
@@ -126,13 +127,14 @@ impl Record{
 
     pub async fn create( pool: &PgPool, record: NewRecord) -> Result<Record, Error> {
 
-        let sql = "INSERT INTO records (ip_address, protocol, fqdn, path, city_name, country_name, country_code, rule_id, created_at) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9) RETURNING *";
+        let sql = "INSERT INTO records (ip_address, protocol, fqdn, path, query, city_name, country_name, country_code, rule_id, created_at) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9) RETURNING *";
         let now = Utc::now();
         query(sql)
             .bind(record.ip_address)
             .bind(record.protocol)
             .bind(record.fqdn)
             .bind(record.path)
+            .bind(record.query)
             .bind(record.city_name)
             .bind(record.country_name)
             .bind(record.country_code)
