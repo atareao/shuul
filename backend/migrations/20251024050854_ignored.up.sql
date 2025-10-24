@@ -1,0 +1,14 @@
+CREATE TABLE IF NOT EXISTS ignored (
+    id SERIAL PRIMARY KEY,
+    ip_address VARCHAR,
+    protocol VARCHAR,
+    fqdn VARCHAR,
+    path VARCHAR,
+    query VARCHAR,
+    city_name VARCHAR,
+    country_name VARCHAR,
+    country_code VARCHAR,
+    active BOOLEAN NOT NULL DEFAULT TRUE,
+    created_at TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    updated_at TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT CURRENT_TIMESTAMP
+);
