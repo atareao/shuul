@@ -8,9 +8,7 @@ ENV PATH="$PNPM_HOME:$PATH"
 RUN corepack enable
 WORKDIR /client-builder
 COPY ./frontend .
-#RUN --mount=type=cache,id=pnpm,target=/pnpm/store CI=true pnpm install --frozen-lockfile
-RUN CI=true pnpm install --frozen-lockfile
-RUN pnpm run build
+RUN --mount=type=cache,id=pnpm,target=/pnpm/store CI=true pnpm install --frozen-lockfile
 
 ###############################################################################
 ## Server builder

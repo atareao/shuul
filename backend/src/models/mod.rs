@@ -4,10 +4,12 @@ mod record;
 mod response;
 mod data;
 mod ipdata;
+mod ignored;
 
 pub use data::Data;
 pub use ipdata::IPData;
 pub use rule::{Rule, NewRule, UpdateRule, ReadRuleParams};
+pub use ignored::{Ignored, NewIgnored, UpdateIgnored, ReadIgnoredParams};
 pub use record::{Record, NewRecord, ReadRecordParams};
 pub use response::{ApiResponse, EmptyResponse, PagedResponse, Pagination};
 pub use user::{User, TokenClaims, UserSchema, UserRegister};

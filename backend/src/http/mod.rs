@@ -1,12 +1,13 @@
 mod health;
 mod user;
-mod zuul;
+mod shuul;
 mod util;
 mod record;
 mod rule;
+mod ignored;
 
 pub use health::health_router;
-pub use zuul::zuul_router;
+pub use shuul::shuul_router;
 pub use util::util_router;
 pub use record::record_router;
 pub use rule::rule_router;

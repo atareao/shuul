@@ -46,7 +46,7 @@ use std::{
 use http::{
     health_router,
     user_router,
-    zuul_router,
+    shuul_router,
     util_router,
     api_user_router,
     record_router,
@@ -114,7 +114,7 @@ async fn main() -> Result<(), Error> {
         .allow_headers([AUTHORIZATION, ACCEPT, CONTENT_TYPE]);
 
     let api_routes = Router::new()
-        .nest("/zuul", zuul_router())
+        .nest("/shuul", shuul_router())
         .nest("/util", util_router())
         .nest("/health", health_router())
         .nest("/auth", user_router())

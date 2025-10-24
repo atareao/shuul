@@ -16,6 +16,20 @@ import ItemDialog from "@/components/rule_dialog";
 
 const TITLE = "Rules";
 const ENDPOINT = "rules";
+const FIELDS = [
+        { key: 'id', label: 'Id', type: 'number', value: 0 },
+        { key: 'active', label: 'Active', type: 'boolean', value: true },
+        { key: 'allow', label: 'Allow', type: 'boolean', value: false },
+        { key: 'weight', label: 'Weight', type: 'number', value: 100 },
+        { key: 'ip_address', label: 'IP Address', type: 'string', value: "" },
+        { key: 'protocol', label: 'Protocol', type: 'string', value: "" },
+        { key: 'fqdn', label: 'FQDN', type: 'string', value: "" },
+        { key: 'path', label: 'Path', type: 'string', value: "" },
+        { key: 'query', label: 'Query', type: 'string', value: "" },
+        { key: 'city_name', label: 'City Name', type: 'string', value: "" },
+        { key: 'country_name', label: 'Contry Name', type: 'string', value: "" },
+        { key: 'country_code', label: 'Contry Code', type: 'string', value: "" },
+    ]
 
 interface Props {
     navigate: any
@@ -39,7 +53,7 @@ export class InnerPage extends react.Component<Props, State> {
     constructor(props: Props) {
         super(props);
         const initialFilters = new Map<string, string>();
-        this.fields.map(field => initialFilters.set(field.key, ""));
+        FIELDS.map(field => initialFilters.set(field.key, ""));
         this.state = {
             items: [],
             loading: false,
@@ -54,23 +68,8 @@ export class InnerPage extends react.Component<Props, State> {
         this.columns = this.getColumns();
     }
 
-    fields = [
-        { key: 'id', label: this.props.t('Id'), type: 'number', value: 0 },
-        { key: 'active', label: this.props.t('Active'), type: 'boolean', value: true },
-        { key: 'allow', label: this.props.t('Allow'), type: 'boolean', value: false },
-        { key: 'weight', label: this.props.t('Weight'), type: 'number', value: 100 },
-        { key: 'ip_address', label: this.props.t('IP Address'), type: 'string', value: "" },
-        { key: 'protocol', label: this.props.t('Protocol'), type: 'string', value: "" },
-        { key: 'fqdn', label: this.props.t('FQDN'), type: 'string', value: "" },
-        { key: 'path', label: this.props.t('Path'), type: 'string', value: "" },
-        { key: 'query', label: this.props.t('Query'), type: 'string', value: "" },
-        { key: 'city_name', label: this.props.t('City Name'), type: 'string', value: "" },
-        { key: 'country_name', label: this.props.t('Contry Name'), type: 'string', value: "" },
-        { key: 'country_code', label: this.props.t('Contry Code'), type: 'string', value: "" },
-    ]
-
     getColumns = (): TableColumnsType<Item> => {
-        let columns = this.fields.map((field): {
+        let columns = FIELDS.map((field): {
             title: React.ReactNode | string;
             dataIndex?: string;
             key: string;
@@ -82,7 +81,7 @@ export class InnerPage extends react.Component<Props, State> {
             return {
                 title:
                     <Flex vertical justify="flex-end" align="left" gap="middle" >
-                        <Text>{toCapital(field.key.replaceAll("_", " "))}</Text>
+                        <Text>{this.props.t(field.label)}</Text>
                         {(field.type === 'string' || field.type === 'number') &&
                             <Input
                                 key={`filter-input-${field.key}-${this.state.filters.get(field.key)}`}
