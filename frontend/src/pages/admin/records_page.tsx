@@ -62,6 +62,7 @@ export class InnerPage extends react.Component<Props, State> {
         { key: 'rule_id', label: this.props.t('Rule Id'), type: 'number', value: 0 },
     ];
 
+
     getColumns = (): TableColumnsType<Item> => {
         let columns = this.fields.map((field): {
             title: React.ReactNode | string;

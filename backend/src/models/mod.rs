@@ -17,10 +17,13 @@ pub type Error = Box<dyn std::error::Error>;
 
 use sqlx::postgres::PgPool;
 use maxminddb::Reader;
+use std::sync::Mutex;
 
 pub struct AppState {
     pub pool: PgPool,
     pub secret: String,
     pub maxmind_db: Reader<Vec<u8>>,
+    pub rules: Mutex<Vec<Rule>>,
+    pub ignored: Mutex<Vec<Ignored>>,
     pub static_dir: String,
 }

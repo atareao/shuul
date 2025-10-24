@@ -20,7 +20,7 @@ use tower_http::{
         Any,
     },
 };
-use std::sync::Arc;
+use std::sync::{Mutex, Arc};
 use sqlx::{
     postgres::PgPoolOptions,
     migrate::{
@@ -51,6 +51,10 @@ use http::{
     api_user_router,
     record_router,
     rule_router,
+};
+use models::{
+    Rule,
+    Ignored,
 };
 use dotenv::dotenv;
 use models::{
@@ -113,6 +117,8 @@ async fn main() -> Result<(), Error> {
         //.allow_credentials(true)
         .allow_headers([AUTHORIZATION, ACCEPT, CONTENT_TYPE]);
 
+    let rules = Mutex::new(Rule::read_all_active(&pool).await.unwrap_or_default());
+    let ignored = Mutex::new(Ignored::read_all_active(&pool).await.unwrap_or_default());
     let api_routes = Router::new()
         .nest("/shuul", shuul_router())
         .nest("/util", util_router())
@@ -126,6 +132,8 @@ async fn main() -> Result<(), Error> {
             secret,
             maxmind_db: Reader::open_readfile(maxmind_db_path).unwrap(),
             static_dir: STATIC_DIR.to_string(),
+            rules,
+            ignored,
     }));
 
     let app = Router::new()
