@@ -82,6 +82,10 @@ async fn main() -> Result<(), Error> {
     info!("Maxmin DB Path: {}", maxmind_db_path);
     let secret = var("SECRET").unwrap_or("esto-es-un-secreto".to_string());
     debug!("Secret: {}", secret);
+    let cache_enabled = var("CACHE_ENABLED").unwrap_or("false".to_string()).parse::<bool>().unwrap_or(false);
+    debug!("cache_enabled: {}", cache_enabled);
+    let cache_size = var("CACHE_SIZE").unwrap_or("10".to_string()).parse::<usize>().unwrap_or(10);
+    debug!("cache_size: {}", cache_size);
 
 
     if !sqlx::Postgres::database_exists(&db_url).await.unwrap(){
@@ -119,6 +123,7 @@ async fn main() -> Result<(), Error> {
 
     let rules = Mutex::new(Rule::read_all_active(&pool).await.unwrap_or_default());
     let ignored = Mutex::new(Ignored::read_all_active(&pool).await.unwrap_or_default());
+    let cache = Mutex::new(Vec::new());
     let api_routes = Router::new()
         .nest("/shuul", shuul_router())
         .nest("/util", util_router())
@@ -134,6 +139,9 @@ async fn main() -> Result<(), Error> {
             static_dir: STATIC_DIR.to_string(),
             rules,
             ignored,
+            cache,
+            cache_enabled,
+            cache_size,
     }));
 
     let app = Router::new()

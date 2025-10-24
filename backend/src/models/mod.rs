@@ -25,5 +25,8 @@ pub struct AppState {
     pub maxmind_db: Reader<Vec<u8>>,
     pub rules: Mutex<Vec<Rule>>,
     pub ignored: Mutex<Vec<Ignored>>,
+    pub cache: Mutex<Vec<NewRecord>>,
+    pub cache_enabled: bool,
+    pub cache_size: usize,
     pub static_dir: String,
 }
