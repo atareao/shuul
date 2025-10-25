@@ -6,6 +6,8 @@ import { Flex, Typography, Avatar, Card } from 'antd';
 import { loadData } from "@/common/utils";
 import Logo from "@/assets/logo.svg";
 
+const TITLE = "Shuul (001)"
+
 interface Props {
     navigate: any
     t: any
@@ -55,7 +57,7 @@ export class InnerPage extends react.Component<Props, State> {
                 <Card loading={this.state.loading} style={{ minWidth: 600 }}>
                     <Card.Meta
                         avatar={<Avatar src={Logo} />}
-                        title={<Typography.Title level={3} style={{ margin: 0 }}>Shuul</Typography.Title>}
+                        title={<Typography.Title level={3} style={{ margin: 0 }}>{TITLE}</Typography.Title>}
                         description={
                             <>
                                 <Typography.Title
