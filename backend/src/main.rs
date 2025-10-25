@@ -51,6 +51,7 @@ use http::{
     api_user_router,
     record_router,
     rule_router,
+    ignored_router,
 };
 use models::{
     Rule,
@@ -131,6 +132,7 @@ async fn main() -> Result<(), Error> {
         .nest("/auth", user_router())
         .nest("/users", api_user_router())
         .nest("/records", record_router())
+        .nest("/ignored", ignored_router())
         .nest("/rules", rule_router())
         .with_state(Arc::new(AppState {
             pool,

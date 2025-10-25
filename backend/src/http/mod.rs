@@ -10,6 +10,7 @@ pub use health::health_router;
 pub use shuul::shuul_router;
 pub use util::util_router;
 pub use record::record_router;
+pub use ignored::ignored_router;
 pub use rule::rule_router;
 pub use user::{
     user_router,
