@@ -16,18 +16,19 @@ const ENDPOINT = "rules";
 
 // Definición de los campos (tipados para Item, que es Rule)
 const FIELDS: FieldDefinition<Item>[] = [
-    { key: 'id', label: 'Id', type: 'number', value: 0 },
+    { key: 'id', label: 'Id', type: 'number', value: 0, editable: false, fixed: 'left' },
     { key: 'active', label: 'Active', type: 'boolean', value: true },
     { key: 'allow', label: 'Allow', type: 'boolean', value: false },
+    { key: 'store', label: 'Store', type: 'boolean', value: true },
     { key: 'weight', label: 'Weight', type: 'number', value: 100 },
-    { key: 'ip_address', label: 'IP Address', type: 'string', value: "" },
-    { key: 'protocol', label: 'Protocol', type: 'string', value: "" },
-    { key: 'fqdn', label: 'FQDN', type: 'string', value: "" },
-    { key: 'path', label: 'Path', type: 'string', value: "" },
+    { key: 'ip_address', label: 'IP Address', type: 'string', value: "", width: 150 },
+    { key: 'protocol', label: 'Protocol', type: 'string', value: "", width: 120 },
+    { key: 'fqdn', label: 'FQDN', type: 'string', value: "", width: 200 },
+    { key: 'path', label: 'Path', type: 'string', value: "", width: 140 },
     { key: 'query', label: 'Query', type: 'string', value: "" },
-    { key: 'city_name', label: 'City Name', type: 'string', value: "" },
-    { key: 'country_name', label: 'Contry Name', type: 'string', value: "" },
-    { key: 'country_code', label: 'Contry Code', type: 'string', value: "" },
+    { key: 'city_name', label: 'City Name', type: 'string', value: "", width: 150 },
+    { key: 'country_name', label: 'Contry Name', type: 'string', value: "", width: 150 },
+    { key: 'country_code', label: 'Contry Code', type: 'string', value: "", width: 150 },
 ];
 
 // Mensajes específicos para el CustomDialog de Rules

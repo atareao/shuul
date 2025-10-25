@@ -7,7 +7,6 @@ import {
     OrderedListOutlined,
     MenuUnfoldOutlined,
     PieChartOutlined,
-    QuestionOutlined,
     LogoutOutlined,
     UserOutlined,
 } from '@ant-design/icons';
@@ -39,19 +38,17 @@ function getItem(
 const navigations:{[key: string]: string}  = {
     1: "/admin/dashboard",
     2: "/admin/rules",
-    3: "/admin/records",
-    4: "/admin/ignored",
-    5: "/admin/charts",
-    6: "/admin/users",
+    3: "/admin/requests",
+    4: "/admin/charts",
+    5: "/admin/users",
 }
 
 const items: MenuItem[] = [
     getItem('Dashboard', '1', <HomeOutlined />),
     getItem('Rules', '2', <OrderedListOutlined />),
-    getItem('Records', '3', <MenuUnfoldOutlined />),
-    getItem('Ignored', '4', <QuestionOutlined />),
-    getItem('Charts', '5', <PieChartOutlined />),
-    getItem('Users', '6', <UserOutlined />),
+    getItem('Requests', '3', <MenuUnfoldOutlined />),
+    getItem('Charts', '4', <PieChartOutlined />),
+    getItem('Users', '5', <UserOutlined />),
 ];
 
 

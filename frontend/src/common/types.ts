@@ -21,6 +21,9 @@ export interface FieldDefinition<T>{
     value?: T[keyof T & string]; // Valor inicial de ese tipo
     customSorter?: (a: T, b: T) => number;
     render?: (content: any, record: T) => React.ReactNode; 
+    editable?: boolean;
+    fixed?: 'left' | 'right';
+    width?: number;
 }
 
 export type LanguageCode = "es" | "en";

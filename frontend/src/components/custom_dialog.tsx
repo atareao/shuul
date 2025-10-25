@@ -241,7 +241,7 @@ class InnerDialog<T> extends React.Component<Props<T>, State<T>> {
                                             defaultValue={this.getValue(field.key as keyof T & string) as number}
                                             placeholder={field.label}
                                             onChange={(value) => this.onChange(field.key as keyof T & string, value)}
-                                            disabled={disabled}
+                                            disabled={disabled || field.editable === false}
                                         />
                                     }
                                 </Flex>

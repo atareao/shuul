@@ -153,7 +153,9 @@ export class CustomTable<T extends { id: number | string }> extends React.Compon
                     return valA > valB ? 1 : -1;
                 }),
                 ellipsis: true,
+                width: field.width || 100,
                 render: field.render || defaultRender,
+                fixed: field.fixed || undefined,
             };
         });
         if (this.props.hasActions && this.props.renderActionColumn) {
@@ -161,7 +163,8 @@ export class CustomTable<T extends { id: number | string }> extends React.Compon
                 title: <Text>{this.props.t('Actions')}</Text>, 
                 key: "operation-actions",
                 align: 'center',
-                width: 100, 
+                width: 150, 
+                fixed: 'right',
                 render: (item: T) => this.props.renderActionColumn!(item, this.handleEdit, this.handleDelete)
             });
         }
@@ -287,6 +290,7 @@ export class CustomTable<T extends { id: number | string }> extends React.Compon
                         pagination={this.state.pagination}
                         loading={this.state.loading}
                         onChange={this.handleTableChange}
+                        scroll={{ x: 'max-content' }}
                     />
                 </Flex>
             </>

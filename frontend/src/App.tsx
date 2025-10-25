@@ -21,8 +21,7 @@ const LoginPage = lazy(() => import('@/pages/public/login_page'));
 const LogoutPage = lazy(() => import('@/pages/admin/logout_page'));
 const DashboardPage = lazy(() => import('@/pages/admin/dashboard_page'));
 const RulesPage = lazy(() => import('@/pages/admin/rules_page'));
-const RecordsPage = lazy(() => import('@/pages/admin/records_page'));
-const IgnoredPage = lazy(() => import('@/pages/admin/ignored_page'));
+const RequestsPage = lazy(() => import('@/pages/admin/requests_page'));
 const ChartsPage = lazy(() => import('@/pages/admin/charts_page'));
 const UsersPage = lazy(() => import('@/pages/admin/users_page'));
 
@@ -72,8 +71,7 @@ export default class App extends React.Component {
                                                     <Route path="logout" element={<LogoutPage />} />
                                                     <Route path="dashboard" element={<DashboardPage />} />
                                                     <Route path="rules" element={<RulesPage />} />
-                                                    <Route path="records" element={<RecordsPage />} />
-                                                    <Route path="ignored" element={<IgnoredPage />} />
+                                                    <Route path="requests" element={<RequestsPage />} />
                                                     <Route path="charts" element={<ChartsPage />} />
                                                     <Route path="users" element={<UsersPage />} />
                                                 </Route>

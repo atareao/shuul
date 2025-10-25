@@ -167,6 +167,7 @@ impl Rule {
         query(sql)
             .bind(rule.weight)
             .bind(rule.allow)
+            .bind(rule.store)
             .bind(rule.ip_address)
             .bind(rule.protocol)
             .bind(rule.fqdn)
