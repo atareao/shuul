@@ -6,7 +6,7 @@ import { Flex, Typography, Avatar, Card } from 'antd';
 import { loadData } from "@/common/utils";
 import Logo from "@/assets/logo.svg";
 
-const TITLE = "Shuul (001)"
+const TITLE = "Shuul (002)"
 
 interface Props {
     navigate: any

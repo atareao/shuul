@@ -8,13 +8,14 @@ use sqlx::{
 };
 use tracing::debug;
 
-use crate::models::NewRecord;
+use crate::models::NewRequest;
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
 pub struct Rule {
     pub id: i32,
     pub weight: i32,
     pub allow: bool,
+    pub store: bool,
     pub ip_address: Option<String>,
     pub protocol: Option<String>,
     pub fqdn: Option<String>,
@@ -32,6 +33,7 @@ pub struct Rule {
 pub struct NewRule {
     pub weight: i32,
     pub allow: bool,
+    pub store: bool,
     pub ip_address: Option<String>,
     pub protocol: Option<String>,
     pub fqdn: Option<String>,
@@ -48,6 +50,7 @@ pub struct UpdateRule {
     pub id: i32,
     pub weight: i32,
     pub allow: bool,
+    pub store: bool,
     pub ip_address: Option<String>,
     pub protocol: Option<String>,
     pub fqdn: Option<String>,
@@ -63,6 +66,7 @@ pub struct ReadRuleParams {
     pub id: Option<i32>,
     pub weight: Option<i32>,
     pub allow: Option<bool>,
+    pub store: Option<bool>,
     pub ip_address: Option<String>,
     pub protocol: Option<String>,
     pub fqdn: Option<String>,
@@ -86,6 +90,7 @@ impl Rule {
             id: row.get("id"),
             weight: row.get("weight"),
             allow: row.get("allow"),
+            store: row.get("store"),
             ip_address: row.get("ip_address"),
             protocol: row.get("protocol"),
             fqdn: row.get("fqdn"),
@@ -100,52 +105,52 @@ impl Rule {
         }
     }
 
-    pub fn matches(&self, record: &NewRecord) -> bool {
-        debug!("Matching rule: {:?} for record: {:?}", self, record);
+    pub fn matches(&self, request: &NewRequest) -> bool {
+        debug!("Matching rule: {:?} for request: {:?}", self, request);
         if let Some(regex) = &self.ip_address
-            && let Some(value) = record.ip_address.as_ref()
+            && let Some(value) = request.ip_address.as_ref()
             && !Regex::new(regex).unwrap().is_match(value)
         {
             return false;
         }
         if let Some(regex) = &self.protocol
-            && let Some(value) = record.protocol.as_ref()
+            && let Some(value) = request.protocol.as_ref()
             && !Regex::new(regex).unwrap().is_match(value)
         {
             return false;
         }
         if let Some(regex) = &self.fqdn
-            && let Some(value) = record.fqdn.as_ref()
+            && let Some(value) = request.fqdn.as_ref()
             && !Regex::new(regex).unwrap().is_match(value)
         {
             return false;
         }
         if let Some(regex) = &self.path
-            && let Some(value) = record.path.as_ref()
+            && let Some(value) = request.path.as_ref()
             && !Regex::new(regex).unwrap().is_match(value)
         {
             return false;
         }
         if let Some(regex) = &self.query
-            && let Some(value) = record.query.as_ref()
+            && let Some(value) = request.query.as_ref()
             && !Regex::new(regex).unwrap().is_match(value)
         {
             return false;
         }
         if let Some(regex) = &self.city_name
-            && let Some(value) = record.city_name.as_ref()
+            && let Some(value) = request.city_name.as_ref()
             && !Regex::new(regex).unwrap().is_match(value)
         {
             return false;
         }
         if let Some(regex) = &self.country_name
-            && let Some(value) = record.country_name.as_ref()
+            && let Some(value) = request.country_name.as_ref()
             && !Regex::new(regex).unwrap().is_match(value)
         {
             return false;
         }
         if let Some(regex) = &self.country_code
-            && let Some(value) = record.country_code.as_ref()
+            && let Some(value) = request.country_code.as_ref()
             && !Regex::new(regex).unwrap().is_match(value)
         {
             return false;
@@ -154,10 +159,10 @@ impl Rule {
     }
 
     pub async fn create(pool: &PgPool, rule: NewRule) -> Result<Rule, Error> {
-        let sql = "INSERT INTO rules (weight, allow, ip_address,
-            protocol, fqdn, path, query, city_name, country_name, country_code,
-            active, created_at, updated_at) VALUES ($1, $2, $3, $4, $5, $6, $7,
-            $8, $9, $10, $11, $12, $13) RETURNING *";
+        let sql = "INSERT INTO rules (weight, allow, store,
+            ip_address, protocol, fqdn, path, query, city_name, country_name,
+            country_code, active, created_at, updated_at) VALUES ($1, $2, $3,
+            $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14) RETURNING *";
         let now = Utc::now();
         query(sql)
             .bind(rule.weight)
@@ -196,22 +201,24 @@ impl Rule {
         let sql = "UPDATE rules set
                 weight = $1,
                 allow = $2,
-                ip_address = $3,
-                protocol = $4,
-                fqdn = $5,
-                path = $6,
-                query = $7,
-                city_name = $8,
-                country_name = $9,
-                country_code = $10,
-                active = $11,
-                updated_at = $12
-            WHERE id = $13
+                store = $3,
+                ip_address = $4,
+                protocol = $5,
+                fqdn = $6,
+                path = $7,
+                query = $8,
+                city_name = $9,
+                country_name = $10,
+                country_code = $11,
+                active = $12,
+                updated_at = $13
+            WHERE id = $14
             RETURNING *";
         let now = Utc::now();
         query(sql)
             .bind(rule.weight)
             .bind(rule.allow)
+            .bind(rule.store)
             .bind(rule.ip_address)
             .bind(rule.protocol)
             .bind(rule.fqdn)

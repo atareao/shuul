@@ -1,4 +1,4 @@
-use crate::models::{AppState, EmptyResponse, NewRecord, Record};
+use crate::models::{AppState, EmptyResponse, NewRequest, Request};
 use axum::{
     Router,
     extract::State,
@@ -19,29 +19,19 @@ pub async fn shuul(
     headers: HeaderMap,
 ) -> impl IntoResponse {
     // <-- Ahora solo hay un punto de retorno
-    let mut record = NewRecord::from_request(&headers, &app_state.maxmind_db);
-    debug!("Captured record: {:?}", record);
+    let mut request = NewRequest::from_request(&headers, &app_state.maxmind_db);
+    debug!("Captured request: {:?}", request);
 
     let mut final_status = StatusCode::OK;
     let mut final_message = "Ok";
-    let mut rule_id: i32 = -1;
     let mut must_save = true;
 
     if let Ok(rules) = app_state.rules.lock() {
         for rule in rules.iter() {
-            if rule.matches(&record) {
-                rule_id = rule.id;
+            if rule.matches(&request) {
+                request.rule_id = Some(rule.id);
                 debug!("Matched rule with rule: {:?}", rule);
-                // Comprobación de ignorado
-                if let Ok(ignored) = app_state.ignored.lock() {
-                    for one in ignored.iter() {
-                        if one.matches(&record) {
-                            must_save = false;
-                            break; // Se ignoró, salimos del bucle de ignorados
-                        }
-                    }
-                }
-                // Decidir la respuesta (Permitir o Denegar)
+                must_save = rule.store;
                 if rule.allow {
                     final_status = StatusCode::OK;
                     final_message = "Ok";
@@ -49,60 +39,45 @@ pub async fn shuul(
                     final_status = StatusCode::FORBIDDEN;
                     final_message = "Ko";
                 }
-                // Si encontramos una regla, no necesitamos seguir buscando
                 break;
             }
         }
     }
-    // Lógica de guardado de registro
     if must_save {
-        debug!("Record is not ignored");
-        if rule_id > -1 {
-            // Solo guardamos si se encontró una regla y no fue ignorada
-            record.rule_id = Some(rule_id); // Usa el ID de la regla coincidente si existe
-            debug!("Store record with rule: {:?}", record);
-            save_on_cache_or_db(&app_state, record).await;
-        } else {
-            // Guardar si no hay reglas que apliquen
-            debug!("Store record without rule: {:?}", record);
-            save_on_cache_or_db(&app_state, record).await;
-        }
-    } else {
-        debug!("Record is ignored, skipping save record");
+        save_on_cache_or_db(&app_state, request).await;
     }
-    // Retorno unificado
     EmptyResponse::create(final_status, final_message)
 }
 
-async fn save_on_cache_or_db(app_state: &AppState, record: NewRecord) {
+async fn save_on_cache_or_db(app_state: &AppState, request: NewRequest) {
     if app_state.cache_enabled {
-        debug!("Cache is enabled, saving record to cache");
-        let mut records_to_save: Option<Vec<NewRecord>> = None;
+        debug!("Cache is enabled, saving request to cache");
+        let mut requests_to_save: Option<Vec<NewRequest>> = None;
         {
             if let Ok(mut cache_guard) = app_state.cache.lock() {
-                cache_guard.push(record);
-                debug!("Record saved to cache. Cache size: {}", cache_guard.len());
+                cache_guard.push(request);
+                debug!("Request saved to cache. Cache size: {}", cache_guard.len());
                 if cache_guard.len() >= app_state.cache_size {
-                    records_to_save = Some(mem::take(&mut *cache_guard));
+                    requests_to_save = Some(mem::take(&mut *cache_guard));
                     debug!("Cache size reached limit, preparing to bulk save to database");
                     cache_guard.clear();
                 }
             }
         }
-        if let Some(records) = records_to_save {
+        if let Some(requests) = requests_to_save {
             debug!(
-                "Caching limit reached, saving {} records to database",
-                records.len()
+                "Caching limit reached, saving {} requests to database",
+                requests.len()
             );
-            match Record::create_bulk(&app_state.pool, records).await {
-                Ok(data) => debug!("Saved {} records from cache to database", data.len()),
-                Err(e) => error!("Error saving records from cache to database: {:?}", e),
+            match Request::create_bulk(&app_state.pool, requests).await {
+                Ok(data) => debug!("Saved {} requests from cache to database", data.len()),
+                Err(e) => error!("Error saving requests from cache to database: {:?}", e),
             }
         }
     } else {
-        match Record::create(&app_state.pool, record.clone()).await {
-            Ok(record) => debug!("Saved record to database: {:?}", record),
-            Err(e) => error!("Error saving record to database: {:?}", e),
+        match Request::create(&app_state.pool, request.clone()).await {
+            Ok(request) => debug!("Saved request to database: {:?}", request),
+            Err(e) => error!("Error saving request to database: {:?}", e),
         }
     }
 }

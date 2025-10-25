@@ -2,6 +2,7 @@ CREATE TABLE IF NOT EXISTS rules (
     id SERIAL PRIMARY KEY,
     weight INT NOT NULL,
     allow BOOLEAN NOT NULL,
+    store BOOLEAN NOT NULL,
     ip_address VARCHAR,
     protocol VARCHAR,
     fqdn VARCHAR,

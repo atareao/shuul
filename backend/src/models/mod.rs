@@ -1,16 +1,14 @@
 mod user;
 mod rule;
-mod record;
+mod request;
 mod response;
 mod data;
 mod ipdata;
-mod ignored;
 
 pub use data::Data;
 pub use ipdata::IPData;
 pub use rule::{Rule, NewRule, UpdateRule, ReadRuleParams};
-pub use ignored::{Ignored, NewIgnored, UpdateIgnored, ReadIgnoredParams};
-pub use record::{Record, NewRecord, ReadRecordParams};
+pub use request::{Request, NewRequest, ReadRequestParams};
 pub use response::{ApiResponse, EmptyResponse, PagedResponse, Pagination};
 pub use user::{User, TokenClaims, UserSchema, UserRegister};
 pub type Error = Box<dyn std::error::Error>;
@@ -24,8 +22,7 @@ pub struct AppState {
     pub secret: String,
     pub maxmind_db: Reader<Vec<u8>>,
     pub rules: Mutex<Vec<Rule>>,
-    pub ignored: Mutex<Vec<Ignored>>,
-    pub cache: Mutex<Vec<NewRecord>>,
+    pub cache: Mutex<Vec<NewRequest>>,
     pub cache_enabled: bool,
     pub cache_size: usize,
     pub static_dir: String,

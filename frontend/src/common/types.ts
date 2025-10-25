@@ -14,6 +14,15 @@ export interface ReferencedItem {
     reference: string;
 }
 
+export interface FieldDefinition<T>{
+    key: keyof T & string; // La clave debe ser una clave de T y también un string
+    label: string;
+    type: 'boolean' | 'number' | 'date' | 'string';
+    value?: T[keyof T & string]; // Valor inicial de ese tipo
+    customSorter?: (a: T, b: T) => number;
+    render?: (content: any, record: T) => React.ReactNode; 
+}
+
 export type LanguageCode = "es" | "en";
 
 // Define el objeto de constantes para usar como valores

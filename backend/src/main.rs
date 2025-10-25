@@ -49,13 +49,11 @@ use http::{
     shuul_router,
     util_router,
     api_user_router,
-    record_router,
+    request_router,
     rule_router,
-    ignored_router,
 };
 use models::{
     Rule,
-    Ignored,
 };
 use dotenv::dotenv;
 use models::{
@@ -123,7 +121,6 @@ async fn main() -> Result<(), Error> {
         .allow_headers([AUTHORIZATION, ACCEPT, CONTENT_TYPE]);
 
     let rules = Mutex::new(Rule::read_all_active(&pool).await.unwrap_or_default());
-    let ignored = Mutex::new(Ignored::read_all_active(&pool).await.unwrap_or_default());
     let cache = Mutex::new(Vec::new());
     let api_routes = Router::new()
         .nest("/shuul", shuul_router())
@@ -131,8 +128,7 @@ async fn main() -> Result<(), Error> {
         .nest("/health", health_router())
         .nest("/auth", user_router())
         .nest("/users", api_user_router())
-        .nest("/records", record_router())
-        .nest("/ignored", ignored_router())
+        .nest("/requests", request_router())
         .nest("/rules", rule_router())
         .with_state(Arc::new(AppState {
             pool,
@@ -140,7 +136,6 @@ async fn main() -> Result<(), Error> {
             maxmind_db: Reader::open_readfile(maxmind_db_path).unwrap(),
             static_dir: STATIC_DIR.to_string(),
             rules,
-            ignored,
             cache,
             cache_enabled,
             cache_size,
@@ -154,7 +149,7 @@ async fn main() -> Result<(), Error> {
         .layer(cors);
 
     let listener = tokio::net::TcpListener::bind("0.0.0.0:3000").await?;
-    tracing::info!("🚀 Server started successfully");
+    tracing::info!("🚀 Server started successfully 🚀");
     axum::serve(listener, app).await?;
 
     Ok(())
