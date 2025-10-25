@@ -310,7 +310,7 @@ impl Ignored {
     }
 
     pub async fn read_all_active(pool: &PgPool) -> Result<Vec<Ignored>, Error> {
-        let sql = "SELECT * FROM ignored WHERE active = TRUE ORDER BY weight ASC";
+        let sql = "SELECT * FROM ignored WHERE active = TRUE ORDER BY id ASC";
         query(sql).map(Self::from_row).fetch_all(pool).await
     }
 

@@ -8,7 +8,7 @@ import { EditFilled, DeleteFilled, CheckOutlined, CloseOutlined } from '@ant-des
 const { Text } = Typography;
 type TablePaginationConfig = Exclude<GetProp<TableProps, 'pagination'>, boolean>;
 
-import { loadData, mapsEqual, toCapital } from '@/common/utils';
+import { loadData, mapsEqual } from '@/common/utils';
 import type { DialogMode } from '@/common/types';
 import { DialogModes } from '@/common/types';
 import type Item from "@/models/rule";
