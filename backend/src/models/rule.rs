@@ -108,48 +108,56 @@ impl Rule {
     pub fn matches(&self, request: &NewRequest) -> bool {
         debug!("Matching rule: {:?} for request: {:?}", self, request);
         if let Some(regex) = &self.ip_address
+            && !regex.is_empty()
             && let Some(value) = request.ip_address.as_ref()
             && !Regex::new(regex).unwrap().is_match(value)
         {
             return false;
         }
         if let Some(regex) = &self.protocol
+            && !regex.is_empty()
             && let Some(value) = request.protocol.as_ref()
             && !Regex::new(regex).unwrap().is_match(value)
         {
             return false;
         }
         if let Some(regex) = &self.fqdn
+            && !regex.is_empty()
             && let Some(value) = request.fqdn.as_ref()
             && !Regex::new(regex).unwrap().is_match(value)
         {
             return false;
         }
         if let Some(regex) = &self.path
+            && !regex.is_empty()
             && let Some(value) = request.path.as_ref()
             && !Regex::new(regex).unwrap().is_match(value)
         {
             return false;
         }
         if let Some(regex) = &self.query
+            && !regex.is_empty()
             && let Some(value) = request.query.as_ref()
             && !Regex::new(regex).unwrap().is_match(value)
         {
             return false;
         }
         if let Some(regex) = &self.city_name
+            && !regex.is_empty()
             && let Some(value) = request.city_name.as_ref()
             && !Regex::new(regex).unwrap().is_match(value)
         {
             return false;
         }
         if let Some(regex) = &self.country_name
+            && !regex.is_empty()
             && let Some(value) = request.country_name.as_ref()
             && !Regex::new(regex).unwrap().is_match(value)
         {
             return false;
         }
         if let Some(regex) = &self.country_code
+            && !regex.is_empty()
             && let Some(value) = request.country_code.as_ref()
             && !Regex::new(regex).unwrap().is_match(value)
         {

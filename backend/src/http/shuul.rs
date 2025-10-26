@@ -18,7 +18,6 @@ pub async fn shuul(
     State(app_state): State<Arc<AppState>>,
     headers: HeaderMap,
 ) -> impl IntoResponse {
-    // <-- Ahora solo hay un punto de retorno
     let mut request = NewRequest::from_request(&headers, &app_state.maxmind_db);
     debug!("Captured request: {:?}", request);
     let mut allow = true;
@@ -39,7 +38,10 @@ pub async fn shuul(
         debug!("No matching rule found for request: {:?}", &request);
     }
     if save {
+        debug!("Saving request as per rule configuration");
         save_on_cache_or_db(&app_state, request).await;
+    }else{
+        debug!("Not saving request as per rule configuration");
     }
     if allow {
         EmptyResponse::create(StatusCode::OK, "Ok")

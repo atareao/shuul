@@ -62,24 +62,16 @@ use crate::constants::DEFAULT_PAGE;
 
 impl NewRequest {
     pub fn from_request(headers: &http::HeaderMap, maxmind_db: &Reader<Vec<u8>>) -> Self {
-        let method = headers
-            .get("x-forwarded-method")
-            .map(|s| s.to_str())
-            .and_then(|result| result.ok())
-            .unwrap_or("");
-        debug!("method from proxy: {:?}", method);
         let protocol = headers
             .get("x-forwarded-proto")
             .map(|s| s.to_str())
             .and_then(|result| result.ok())
             .unwrap_or("");
-        debug!("protocol from proxy: {:?}", protocol);
         let host = headers
             .get("x-forwarded-host")
             .map(|s| s.to_str())
             .and_then(|result| result.ok())
             .unwrap_or("");
-        debug!("host from proxy: {:?}", host);
         let uri = headers
             .get("x-forwarded-uri")
             .map(|s| s.to_str())
@@ -87,15 +79,12 @@ impl NewRequest {
             .unwrap_or("")
             .parse::<Uri>()
             .unwrap_or_default();
-        debug!("uri from proxy: {:?}", uri);
         let ip = headers
             .get("x-forwarded-for")
             .map(|s| s.to_str())
             .and_then(|result| result.ok())
             .unwrap_or("");
-        debug!("ip from proxy: {:?}", ip);
         let ip_data = IPData::complete(maxmind_db, ip);
-        debug!("ip data: {:?}", &ip_data);
         let ip_address = if ip.is_empty() {
             None
         } else {
@@ -123,7 +112,6 @@ impl NewRequest {
                 Some(s.to_string())
             }
         });
-        debug!("query from proxy: {:?}", query);
         let city_name = ip_data.city_name.and_then(|s| {
             if s.is_empty() {
                 None
