@@ -47,9 +47,9 @@ pub async fn create_handler(
     debug!("Rule: {:?}", rule);
     match Rule::create(&app_state.pool, rule).await {
         Ok(rule) => {
-            debug!("Rule created: {:?}", rule);
+            debug!("Rule created: {:?}", &rule);
             let mut rules_guard = app_state.rules.lock().expect("Failed to lock rules Mutex");
-            rules_guard.push(rule.clone());
+            rules_guard.push(rule.clone().into());
             ApiResponse::new(StatusCode::CREATED, "Rule created", Data::Some(serde_json::to_value(rule).unwrap()))
         },
         Err(e) => {
@@ -178,7 +178,7 @@ pub async fn update_handler(
     match Rule::update(&app_state.pool, rule).await {
         Ok(rule) => {
             let mut rules_guard = app_state.rules.lock().expect("Failed to lock rules Mutex");
-            rules_guard.retain(|r| r.id != rule.id);
+            rules_guard.retain(|r| r.rule.id != rule.id);
             debug!("Rule updated: {:?}", rule);
             ApiResponse::new(StatusCode::OK, "Rule updated", Data::Some(serde_json::to_value(rule).unwrap()))
         },

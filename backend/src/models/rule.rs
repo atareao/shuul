@@ -1,3 +1,4 @@
+use crate::models::request::NewRequest;
 use chrono::{DateTime, Utc};
 use regex::Regex;
 use serde::{Deserialize, Serialize};
@@ -6,9 +7,7 @@ use sqlx::{
     postgres::{PgPool, PgRow},
     query,
 };
-use tracing::debug;
-
-use crate::models::NewRequest;
+use std::convert::Into;
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
 pub struct Rule {
@@ -27,6 +26,100 @@ pub struct Rule {
     pub active: bool,
     created_at: DateTime<Utc>,
     updated_at: DateTime<Utc>,
+}
+
+#[derive(Debug, Clone)]
+pub struct CacheRule {
+    pub rule: Rule,
+    pub ip_address: Option<Regex>,
+    pub protocol: Option<Regex>,
+    pub fqdn: Option<Regex>,
+    pub path: Option<Regex>,
+    pub query: Option<Regex>,
+    pub city_name: Option<Regex>,
+    pub country_name: Option<Regex>,
+    pub country_code: Option<Regex>,
+}
+
+impl CacheRule {
+    fn from_row(row: PgRow) -> Self {
+        let rule = Rule::from_row(row);
+        Self::from_rule(rule)
+    }
+    pub fn from_rule(rule: Rule) -> Self {
+        Self {
+            rule: rule.clone(),
+            ip_address: rule
+                .ip_address
+                .as_ref()
+                .filter(|r| !r.is_empty())
+                .and_then(|r| Regex::new(r).ok()),
+            protocol: rule
+                .protocol
+                .as_ref()
+                .filter(|r| !r.is_empty())
+                .and_then(|r| Regex::new(r).ok()),
+            fqdn: rule
+                .fqdn
+                .as_ref()
+                .filter(|r| !r.is_empty())
+                .and_then(|r| Regex::new(r).ok()),
+            path: rule
+                .path
+                .as_ref()
+                .filter(|r| !r.is_empty())
+                .and_then(|r| Regex::new(r).ok()),
+            query: rule
+                .query
+                .as_ref()
+                .filter(|r| !r.is_empty())
+                .and_then(|r| Regex::new(r).ok()),
+            city_name: rule
+                .city_name
+                .as_ref()
+                .filter(|r| !r.is_empty())
+                .and_then(|r| Regex::new(r).ok()),
+            country_name: rule
+                .country_name
+                .as_ref()
+                .filter(|r| !r.is_empty())
+                .and_then(|r| Regex::new(r).ok()),
+            country_code: rule
+                .country_code
+                .as_ref()
+                .filter(|r| !r.is_empty())
+                .and_then(|r| Regex::new(r).ok()),
+        }
+    }
+
+    pub async fn read_all_active(pool: &PgPool) -> Result<Vec<CacheRule>, Error> {
+        let sql = "SELECT * FROM rules WHERE active = TRUE ORDER BY weight ASC";
+        query(sql).map(Self::from_row).fetch_all(pool).await
+    }
+
+    pub fn matches(&self, request: &NewRequest) -> bool {
+        let check_match = |rule_regex: Option<&Regex>, request_value: Option<&String>| -> bool {
+            match (rule_regex, request_value) {
+                (Some(regex), Some(value)) => {
+                    // Si la regla está definida Y el valor existe, DEBE coincidir.
+                    regex.is_match(value)
+                }
+                // Si la regla no está definida (None), la condición se cumple por defecto (true).
+                // Si la regla está definida pero el valor de la solicitud es None,
+                // asumimos que el valor no existe y la regla no se puede aplicar (true).
+                _ => true,
+            }
+        };
+        // Si CUALQUIERA de las comprobaciones devuelve 'false', el método devuelve 'false'.
+        check_match(self.ip_address.as_ref(), request.ip_address.as_ref())
+            && check_match(self.protocol.as_ref(), request.protocol.as_ref())
+            && check_match(self.fqdn.as_ref(), request.fqdn.as_ref())
+            && check_match(self.path.as_ref(), request.path.as_ref())
+            && check_match(self.query.as_ref(), request.query.as_ref())
+            && check_match(self.city_name.as_ref(), request.city_name.as_ref())
+            && check_match(self.country_name.as_ref(), request.country_name.as_ref())
+            && check_match(self.country_code.as_ref(), request.country_code.as_ref())
+    }
 }
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
@@ -84,6 +177,12 @@ pub struct ReadRuleParams {
 use crate::constants::DEFAULT_LIMIT;
 use crate::constants::DEFAULT_PAGE;
 
+impl Into<CacheRule> for Rule {
+    fn into(self) -> CacheRule {
+        CacheRule::from_rule(self)
+    }
+}
+
 impl Rule {
     fn from_row(row: PgRow) -> Self {
         Self {
@@ -103,67 +202,6 @@ impl Rule {
             created_at: row.get("created_at"),
             updated_at: row.get("updated_at"),
         }
-    }
-
-    pub fn matches(&self, request: &NewRequest) -> bool {
-        debug!("Matching rule: {:?} for request: {:?}", self, request);
-        if let Some(regex) = &self.ip_address
-            && !regex.is_empty()
-            && let Some(value) = request.ip_address.as_ref()
-            && !Regex::new(regex).unwrap().is_match(value)
-        {
-            return false;
-        }
-        if let Some(regex) = &self.protocol
-            && !regex.is_empty()
-            && let Some(value) = request.protocol.as_ref()
-            && !Regex::new(regex).unwrap().is_match(value)
-        {
-            return false;
-        }
-        if let Some(regex) = &self.fqdn
-            && !regex.is_empty()
-            && let Some(value) = request.fqdn.as_ref()
-            && !Regex::new(regex).unwrap().is_match(value)
-        {
-            return false;
-        }
-        if let Some(regex) = &self.path
-            && !regex.is_empty()
-            && let Some(value) = request.path.as_ref()
-            && !Regex::new(regex).unwrap().is_match(value)
-        {
-            return false;
-        }
-        if let Some(regex) = &self.query
-            && !regex.is_empty()
-            && let Some(value) = request.query.as_ref()
-            && !Regex::new(regex).unwrap().is_match(value)
-        {
-            return false;
-        }
-        if let Some(regex) = &self.city_name
-            && !regex.is_empty()
-            && let Some(value) = request.city_name.as_ref()
-            && !Regex::new(regex).unwrap().is_match(value)
-        {
-            return false;
-        }
-        if let Some(regex) = &self.country_name
-            && !regex.is_empty()
-            && let Some(value) = request.country_name.as_ref()
-            && !Regex::new(regex).unwrap().is_match(value)
-        {
-            return false;
-        }
-        if let Some(regex) = &self.country_code
-            && !regex.is_empty()
-            && let Some(value) = request.country_code.as_ref()
-            && !Regex::new(regex).unwrap().is_match(value)
-        {
-            return false;
-        }
-        true
     }
 
     pub async fn create(pool: &PgPool, rule: NewRule) -> Result<Rule, Error> {
@@ -195,9 +233,9 @@ impl Rule {
     pub async fn read_info(pool: &PgPool, info: &str) -> Result<i64, Error> {
         let sql = if info == "total" {
             "SELECT count(*) FROM rules"
-        }else if info == "active" {
+        } else if info == "active" {
             "SELECT count(*) FROM rules WHERE active = true"
-        }else{
+        } else {
             return Err(Error::RowNotFound);
         };
         query(sql)

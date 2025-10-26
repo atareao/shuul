@@ -53,7 +53,7 @@ use http::{
     rule_router,
 };
 use models::{
-    Rule,
+    CacheRule,
 };
 use dotenv::dotenv;
 use models::{
@@ -120,7 +120,7 @@ async fn main() -> Result<(), Error> {
         //.allow_credentials(true)
         .allow_headers([AUTHORIZATION, ACCEPT, CONTENT_TYPE]);
 
-    let rules = Mutex::new(Rule::read_all_active(&pool).await.unwrap_or_default());
+    let rules = Mutex::new(CacheRule::read_all_active(&pool).await.unwrap_or_default());
     let cache = Mutex::new(Vec::new());
     let api_routes = Router::new()
         .nest("/shuul", shuul_router())

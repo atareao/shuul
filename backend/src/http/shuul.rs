@@ -24,12 +24,12 @@ pub async fn shuul(
     let mut save = true;
 
     if let Ok(rules) = app_state.rules.lock() {
-        for rule in rules.iter() {
-            if rule.matches(&request) {
-                request.rule_id = Some(rule.id);
-                debug!("Selected rule: {:?}", rule);
-                save = rule.store;
-                allow = rule.allow;
+        for cache_rule in rules.iter() {
+            if cache_rule.matches(&request) {
+                request.rule_id = Some(cache_rule.rule.id);
+                debug!("Selected rule: {:?}", cache_rule.rule);
+                save = cache_rule.rule.store;
+                allow = cache_rule.rule.allow;
                 break;
             }
         }
