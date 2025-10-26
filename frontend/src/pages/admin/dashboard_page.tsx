@@ -38,8 +38,8 @@ export class InnerPage extends react.Component<Props, State> {
 
         const total_rules = await loadData("rules/info", new Map([["option", "total"]]))
         const total_active_rules = await loadData("rules/info", new Map([["option", "active"]]))
-        const total_requests = await loadData("records/info", new Map([["option", "total"]]))
-        const total_filtered_requests = await loadData("records/info", new Map([["option", "filtered"]]))
+        const total_requests = await loadData("requests/info", new Map([["option", "total"]]))
+        const total_filtered_requests = await loadData("requests/info", new Map([["option", "filtered"]]))
         console.log("Totals loaded:", total_rules, total_active_rules, total_requests, total_filtered_requests);
         this.setState({
             loading: false,
