@@ -21,32 +21,31 @@ pub async fn shuul(
     // <-- Ahora solo hay un punto de retorno
     let mut request = NewRequest::from_request(&headers, &app_state.maxmind_db);
     debug!("Captured request: {:?}", request);
-
-    let mut final_status = StatusCode::OK;
-    let mut final_message = "Ok";
-    let mut must_save = true;
+    let mut allow = true;
+    let mut save = true;
 
     if let Ok(rules) = app_state.rules.lock() {
         for rule in rules.iter() {
             if rule.matches(&request) {
                 request.rule_id = Some(rule.id);
-                debug!("Matched rule with rule: {:?}", rule);
-                must_save = rule.store;
-                if rule.allow {
-                    final_status = StatusCode::OK;
-                    final_message = "Ok";
-                } else {
-                    final_status = StatusCode::FORBIDDEN;
-                    final_message = "Ko";
-                }
+                debug!("Selected rule: {:?}", rule);
+                save = rule.store;
+                allow = rule.allow;
                 break;
             }
         }
     }
-    if must_save {
+    if request.rule_id.is_none() {
+        debug!("No matching rule found for request: {:?}", &request);
+    }
+    if save {
         save_on_cache_or_db(&app_state, request).await;
     }
-    EmptyResponse::create(final_status, final_message)
+    if allow {
+        EmptyResponse::create(StatusCode::OK, "Ok")
+    } else {
+        EmptyResponse::create(StatusCode::FORBIDDEN, "Ko")
+    }
 }
 
 async fn save_on_cache_or_db(app_state: &AppState, request: NewRequest) {
