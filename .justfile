@@ -1,6 +1,6 @@
 user     := "atareao"
 name     := `basename ${PWD}`
-version  := `git tag -l  | tail -n1`
+version  := `vampus show`
 
 
 list:
@@ -25,6 +25,19 @@ build:
 
 push:
     @docker image push --all-tags {{user}}/{{name}}
+
+upgrade:
+    #!/bin/fish
+    vampus upgrade --patch
+    set VERSION $(vampus show)
+    cd backend
+    cargo update
+    cd ..
+    git commit -am "Upgrade to version $VERSION"
+    git tag -a "$VERSION" -m "Version $VERSION"
+    # clean old docker images
+    docker image list  | grep {{name}} | sort -r | tail -n +5 | awk '{print $3}' | while read id; echo $id; docker rmi $id; end
+    just build push
 
 [working-directory("./backend")]
 revert:

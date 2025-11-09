@@ -6,11 +6,11 @@ import { CheckOutlined, CloseOutlined } from '@ant-design/icons';
 const { Text } = Typography;
 type TablePaginationConfig = Exclude<GetProp<TableProps, 'pagination'>, boolean>;
 
-import { loadData, mapsEqual } from '@/common/utils'; 
-import type { DialogMode, FieldDefinition } from '@/common/types'; 
+import { loadData, mapsEqual, debounce } from '@/common/utils';
+import type { DialogMode, FieldDefinition } from '@/common/types';
 import { DialogModes } from '@/common/types'
-import CustomDialog from '@/components/custom_dialog'; 
-import type { DialogMessages, DialogProps } from '@/components/custom_dialog';
+import CustomDialog from '@/components/dialogs/custom_dialog';
+import type { DialogMessages, DialogProps } from '@/components/dialogs/custom_dialog';
 
 interface ActionProps<T> {
     renderActionColumn: (item: T, onEdit: (item: T) => void, onDelete: (item: T) => void) => React.ReactNode;
@@ -37,9 +37,24 @@ interface State<T> {
     dialogMode: DialogMode,
 }
 
+const getNestedValue = (obj: any, path: string): any => {
+    const pathParts = path.split('.');
+    let current = obj;
 
-export class CustomTable<T extends { id: number | string }> extends React.Component<Props<T>, State<T>> {
-    columns: TableColumnsType<T>; 
+    for (const part of pathParts) {
+        if (current && typeof current === 'object' && part in current) {
+            current = current[part];
+        } else {
+            return undefined;
+        }
+    }
+    return current;
+};
+
+
+export default class CustomTable<T extends { id: number | string }> extends React.Component<Props<T>, State<T>> {
+    columns: TableColumnsType<T>;
+    private debouncedSetFilter: (key: string, value: string) => void;
 
     constructor(props: Props<T>) {
         super(props);
@@ -50,13 +65,35 @@ export class CustomTable<T extends { id: number | string }> extends React.Compon
         this.state = {
             items: [],
             loading: false,
-            pagination: { current: 1, pageSize: 10, total: 0 },
+            pagination: { current: 1, pageSize: 9, total: 0 },
             filters: initialFilters,
-            dialogMode: DialogModes.NONE, 
+            dialogMode: DialogModes.NONE,
             selectedItem: undefined,
         };
 
         this.columns = this.getColumns();
+        const updateFilterState = (key: string, value: string) => {
+            const cleanValue = value.trim().replaceAll("*", "%");
+            this.setState((prevState) => {
+                // Si el valor no ha cambiado, no hacemos nada
+                if (prevState.filters.get(key) === cleanValue) {
+                    return prevState;
+                }
+                const newFilters = new Map(prevState.filters);
+                newFilters.set(key, cleanValue);
+                return {
+                    ...prevState,
+                    filters: newFilters,
+                    pagination: { ...prevState.pagination, current: 1 },
+                    items: [],
+                    loading: true,
+                };
+            });
+        };
+
+        // 2. Debounce de la función de actualización
+        // Usaremos un delay de 500ms
+        this.debouncedSetFilter = debounce(updateFilterState, 500);
     }
 
     private handleEdit = (item: T) => {
@@ -71,12 +108,12 @@ export class CustomTable<T extends { id: number | string }> extends React.Compon
         this.setState({ dialogMode: DialogModes.CREATE, selectedItem: undefined });
     }
 
-    private handleCloseDialog = (item: T | undefined) => { 
+    private handleCloseDialog = (item: T | undefined) => {
         if (item) {
             this.setState(prevState => {
                 let newItems = [...prevState.items];
                 if (prevState.dialogMode === DialogModes.DELETE) {
-                    newItems = newItems.filter((r) => r.id !== item.id); 
+                    newItems = newItems.filter((r) => r.id !== item.id);
                 } else if (prevState.dialogMode === DialogModes.UPDATE) {
                     newItems = newItems.map((r) => r.id === item.id ? { ...r, ...item } : r);
                 } else if (prevState.dialogMode === DialogModes.CREATE) {
@@ -99,71 +136,64 @@ export class CustomTable<T extends { id: number | string }> extends React.Compon
 
     getColumns = (): TableColumnsType<T> => {
         let columns: TableColumnsType<T> = this.props.fields.map((field) => {
-            const filterValue = this.state.filters.get(field.key.toString()) || "";
+            const fieldKey = field.key.toString();
+            const filterValue = this.state.filters.get(fieldKey) || "";
 
             const handleFilterChange = (e: React.KeyboardEvent<HTMLInputElement>) => {
-                if (e.key === "Enter") {
-                    const value = (e.target as HTMLInputElement).value;
-                    const cleanValue = value.trim().replaceAll("*", "%"); 
-                    this.setState((prevState) => {
-                        if (prevState.filters.get(field.key.toString()) === cleanValue) {
-                            return prevState;
-                        }
-                        const newFilters = new Map(prevState.filters);
-                        newFilters.set(field.key.toString(), cleanValue);
-                        return {
-                            ...prevState, 
-                            filters: newFilters,
-                            pagination: { ...prevState.pagination, current: 1 },
-                            items: [], 
-                            loading: true, 
-                        };
-                    }); 
-                }
+                this.debouncedSetFilter(field.key.toString(), e.currentTarget.value);
             };
             const defaultRender = (content: any) => {
                 if (field.type === 'boolean') {
-                    return content ? <CheckOutlined style={{ color: 'green' }}/> : <CloseOutlined style={{ color: 'red' }}/>;
+                    return content ? <CheckOutlined style={{ color: 'green' }} /> : <CloseOutlined style={{ color: 'red' }} />;
                 }
                 return <Text>{content}</Text>
             };
+            const isNested = fieldKey.includes('.');
+            let finalRender = field.render || defaultRender;
+
+            if (isNested && !field.render) {
+                // Si es una clave anidada Y el usuario NO proveyó un render:
+                finalRender = (_content: any, record: T) => {
+                    // 1. Obtenemos el valor anidado de forma segura
+                    const value = getNestedValue(record, fieldKey);
+                    
+                    // 2. Aplicamos la lógica de renderizado por defecto (boolean/texto)
+                    if (field.type === 'boolean') {
+                        return value ? <CheckOutlined style={{ color: 'green' }} /> : <CloseOutlined style={{ color: 'red' }} />;
+                    }
+                    // Retornamos el valor, o una cadena vacía si es null/undefined
+                    return <Text>{value !== undefined && value !== null ? value : ''}</Text>;
+                };
+            }
             return {
                 title: (
                     <Flex vertical justify="flex-end" align="left" gap="middle" >
                         <Text strong>{this.props.t(field.label)}</Text>
-                        {(field.type === 'string' || field.type === 'number') &&
+                        {(field.type === 'string' && field.filterKey) &&
                             <Input
-                                key={`filter-input-${field.key.toString()}-${filterValue}`} 
                                 placeholder={this.props.t('Filter by') + ` ${field.label}...`}
-                                defaultValue={filterValue.replaceAll("%", "*")} 
+                                defaultValue={filterValue.replaceAll("%", "*")}
                                 onKeyUp={handleFilterChange}
+                                onClick={e => e.stopPropagation()}
                             />
                         }
                     </Flex>
                 ),
                 dataIndex: field.key.toString(),
                 key: field.key.toString(),
-                sorter: field.customSorter || ((a: any, b: any) => {
-                    const columnName = field.key as keyof T;
-                    const valA = a?.[columnName];
-                    const valB = b?.[columnName];
-                    if (valA === valB) return 0;
-                    if (valA == null) return 1;
-                    if (valB == null) return -1;
-                    return valA > valB ? 1 : -1;
-                }),
+                sorter: field.type !== 'boolean',
                 ellipsis: true,
                 width: field.width || 100,
-                render: field.render || defaultRender,
+                render: finalRender,
                 fixed: field.fixed || undefined,
             };
         });
         if (this.props.hasActions && this.props.renderActionColumn) {
             columns.push({
-                title: <Text>{this.props.t('Actions')}</Text>, 
+                title: <Text>{this.props.t('Acciones')}</Text>,
                 key: "operation-actions",
                 align: 'center',
-                width: 150, 
+                width: 10,
                 fixed: 'right',
                 render: (item: T) => this.props.renderActionColumn!(item, this.handleEdit, this.handleDelete)
             });
@@ -172,23 +202,28 @@ export class CustomTable<T extends { id: number | string }> extends React.Compon
     }
     handleTableChange: TableProps<T>['onChange'] = async (
         pagination: any,
-        _filters: any, 
+        _filters: any,
         sorter: any,
         _extra: any,
     ) => {
-        const newSortField = (sorter as SorterResult<T>).field as SorterResult<any>['field'];
+        const rawSortField = (sorter as SorterResult<T>).field as SorterResult<any>['field'];
+        const fieldDefinition = this.props.fields.find(f => f.key === rawSortField);
+        const newSortField = fieldDefinition?.sortKey || rawSortField;
         const newSortOrder = (sorter as SorterResult<T>).order;
 
         this.setState((prevState) => {
             const isPageSizeChanged = pagination.pageSize !== prevState.pagination?.pageSize;
             const isPageChanged = prevState.pagination?.current !== pagination.current;
+
+            // 2. Actualizar el estado con los NUEVOS valores de ordenación y paginación
             return {
                 ...prevState,
                 pagination: { ...prevState.pagination, ...pagination },
-                sortOrder: newSortOrder,
+                sortOrder: newSortOrder, // 'descend' ahora se guarda aquí
                 sortField: newSortField,
-                items: isPageSizeChanged ? [] : prevState.items,
-                loading: (isPageSizeChanged || isPageChanged) ? true : prevState.loading,
+                items: (isPageSizeChanged || isPageChanged) ? [] : [...prevState.items],
+                // El loading se puede gestionar aquí, o dejarlo en componentDidUpdate
+                loading: (isPageSizeChanged || isPageChanged || prevState.sortOrder !== newSortOrder || prevState.sortField !== newSortField) ? true : prevState.loading,
             }
         });
     }
@@ -203,14 +238,22 @@ export class CustomTable<T extends { id: number | string }> extends React.Compon
             ["page", this.state.pagination?.current?.toString() || "1"],
             ["limit", this.state.pagination?.pageSize?.toString() || "10"],
             ["sort_by", sortBy],
-            ["asc", this.state.sortOrder === 'ascend' ? 'true' : 'false'],
         ]);
-        this.state.filters.forEach((value, key) => {
+        const sortOrder = this.state.sortOrder;
+        if (sortOrder === 'ascend') {
+            params.set("asc", 'true');
+        } else if (sortOrder === 'descend') {
+            params.set("asc", 'false');
+        }
+        this.state.filters.forEach((value, fieldKey) => { // fieldKey es 'value.name_es'
             if (value && value.length > 0) {
-                params.set(key, value);
+                const fieldDefinition = this.props.fields.find(f => f.key === fieldKey);
+                const apiFilterKey = fieldDefinition?.filterKey || fieldKey; // Usa 'filterKey' o la clave anidada
+                params.set(apiFilterKey, value); 
             }
         });
         const responseJson = await loadData<T[]>(this.props.endpoint, params);
+        console.log(responseJson.data);
         if (responseJson.status === 200 && responseJson.data) {
             this.setState(prevState => ({
                 ...prevState,
@@ -224,24 +267,24 @@ export class CustomTable<T extends { id: number | string }> extends React.Compon
                 }
             }));
         } else {
-             this.setState(prevState => ({ ...prevState, loading: false }));
+            this.setState(prevState => ({ ...prevState, loading: false }));
         }
     }
 
     componentDidMount = async () => {
         await this.fetchData();
     }
-    componentDidUpdate = async (_prevProps: Props<T>, prevState: State<T>) => { 
+    componentDidUpdate = async (_prevProps: Props<T>, prevState: State<T>) => {
         const filtersHaveChanged = !mapsEqual(prevState.filters, this.state.filters);
         const dialogHasClosed = prevState.dialogMode !== DialogModes.NONE && this.state.dialogMode === DialogModes.NONE;
 
         if (dialogHasClosed) {
-             await this.fetchData(); 
-             return;
+            await this.fetchData();
+            return;
         } else if (this.state.dialogMode !== DialogModes.NONE) {
-             return;
+            return;
         }
-        
+
         if (prevState.pagination?.current !== this.state.pagination?.current ||
             this.state.pagination?.pageSize !== prevState.pagination?.pageSize ||
             this.state.sortField !== prevState.sortField ||
@@ -249,7 +292,7 @@ export class CustomTable<T extends { id: number | string }> extends React.Compon
             filtersHaveChanged
         ) {
             if (filtersHaveChanged) {
-                 this.columns = this.getColumns(); 
+                this.columns = this.getColumns();
             }
             await this.fetchData();
         }
@@ -258,7 +301,7 @@ export class CustomTable<T extends { id: number | string }> extends React.Compon
     render = () => {
         const titleText = this.props.t(this.props.title);
         const { hasActions, renderHeaderAction } = this.props;
-        
+
         const dialogUI = hasActions && this.state.dialogMode !== DialogModes.NONE ? (
             <CustomDialog<T>
                 endpoint={this.props.endpoint}
@@ -283,10 +326,11 @@ export class CustomTable<T extends { id: number | string }> extends React.Compon
                         {headerUI}
                     </Flex>
                     <Table<T>
+                        style={{ width: '100%' }}
                         columns={this.columns}
                         rowKey={record => record.id.toString()}
                         dataSource={this.state.items}
-                        sortDirections={this.state.sortOrder ? [this.state.sortOrder] : ['ascend', 'descend']}
+                        sortDirections={['ascend', 'descend']}
                         pagination={this.state.pagination}
                         loading={this.state.loading}
                         onChange={this.handleTableChange}
