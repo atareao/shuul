@@ -1,5 +1,5 @@
 import { useTranslation } from "react-i18next";
-import { CustomTable } from '@/components/custom_table'; 
+import CustomTable from '@/components/custom_table'; 
 import type { FieldDefinition } from '@/common/types'; 
 import type Item from "@/models/record"; 
 

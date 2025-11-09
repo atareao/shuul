@@ -6,9 +6,9 @@ import { EditFilled, DeleteFilled, PlusOutlined } from '@ant-design/icons';
 import type Item from "@/models/rule"; // Alias para Rule
 
 // Importamos CustomTable y los tipos necesarios
-import { CustomTable } from '@/components/custom_table';
+import CustomTable from '@/components/custom_table';
 import type { FieldDefinition } from '@/common/types';
-import type { DialogMessages } from '@/components/custom_dialog';
+import type { DialogMessages } from '@/components/dialogs/custom_dialog';
 
 // 1. Constantes de configuración (fuera de la clase)
 const TITLE = "Rules";
