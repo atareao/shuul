@@ -14,37 +14,35 @@ export interface ReferencedItem {
     reference: string;
 }
 
-type Path<T> = T extends ReadonlyArray<infer U> ? Path<U> : T;
-
-type NestedKeyOf<T> = (
-    T extends object ?
-    { [K in keyof T]-?: K extends string ?
-        | K 
-        | (NestedKeyOf<Path<T[K]>> extends infer R ? R extends string ? `${K}.${R}` : never : never)
-        : never
-    }[keyof T] : never
-) extends infer U ? Exclude<U, ''> : never;
+type NestedKeyOf<T> = {
+    [K in keyof T & (string | number)]: T[K] extends object
+        ? `${K}` | `${K}.${NestedKeyOf<T[K]>}`
+        : `${K}`;
+}[keyof T & (string | number)];
 
 export interface FieldDefinition<T>{
     key: NestedKeyOf<T> & string; // La clave debe ser una clave de T y también un string
+    labelKey?: NestedKeyOf<T> & string; // La clave debe ser una clave de T y también un string
     label: string;
-    type: 'boolean' | 'number' | 'date' | 'string';
+    type: 'boolean' | 'number' | 'date' | 'string' | 'select';
     value?: T[keyof T & string]; // Valor inicial de ese tipo
     customSorter?: (a: T, b: T) => number;
-    render?: (content: any, record: T) => React.ReactNode; 
+    render?: (content: any, record: T ) => React.ReactNode; 
     editable?: boolean;
     filterKey?: string;
     fixed?: 'left' | 'right';
     width?: number;
     sortKey?: string;
+    options?: { value: any; label: string }[];
+    required?: boolean;
 }
 
-export type LanguageCode = "es" | "en";
+export type LanguageCode = "es" | "va";
 
 // Define el objeto de constantes para usar como valores
 export const Language = {
     ES: "es" as LanguageCode,
-    EN: "en" as LanguageCode,
+    VA: "va" as LanguageCode,
 };
 
 export type DialogMode = "create" | "read" | "update" | "delete" | "none";
@@ -66,3 +64,4 @@ export interface PuntoPreemerMarker {
     description: string;
     address?: string;
 }
+
