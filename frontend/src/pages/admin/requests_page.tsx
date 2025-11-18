@@ -9,15 +9,15 @@ const ENDPOINT = "requests";
 // Definición de las columnas/campos para la tabla de Records
 const RecordsFields: FieldDefinition<Item>[] = [
     { key: 'created_at', label: 'Created at', type: 'date'}, 
-    { key: 'ip_address', label: 'IP Address', type: 'string' },
-    { key: 'protocol', label: 'Protocol', type: 'string' },
-    { key: 'fqdn', label: 'FQDN', type: 'string' },
-    { key: 'path', label: 'Path', type: 'string' },
-    { key: 'query', label: 'Query', type: 'string' },
-    { key: 'city_name', label: 'City Name', type: 'string' },
-    { key: 'country_name', label: 'Country Name', type: 'string' }, 
-    { key: 'country_code', label: 'Country Code', type: 'string' },
-    { key: 'rule_id', label: 'Rule Id', type: 'number' },
+    { key: 'ip_address', label: 'IP Address', type: 'string', filterKey: 'ip_address' },
+    { key: 'protocol', label: 'Protocol', type: 'string', filterKey: 'protocol' },
+    { key: 'fqdn', label: 'FQDN', type: 'string', filterKey: 'fqdn' },
+    { key: 'path', label: 'Path', type: 'string', filterKey: 'path' },
+    { key: 'query', label: 'Query', type: 'string', filterKey: 'query' },
+    { key: 'city_name', label: 'City Name', type: 'string', filterKey: 'city_name' },
+    { key: 'country_name', label: 'Country Name', type: 'string', filterKey: 'country_name' },
+    { key: 'country_code', label: 'Country Code', type: 'string', filterKey: 'country_code' },
+    { key: 'rule_id', label: 'Rule Id', type: 'number', filterKey: 'rule_id', fixed: 'right' }
 ];
 
 
