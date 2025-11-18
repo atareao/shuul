@@ -1,7 +1,7 @@
 import React from "react";
 import { useNavigate } from 'react-router';
 import { useTranslation } from "react-i18next";
-import { Modal, Typography, Flex, Input, InputNumber, Switch } from "antd";
+import { Modal, Typography, Flex, Input, InputNumber, Switch, Select, Alert } from "antd";
 
 const { Text } = Typography;
 
@@ -11,11 +11,14 @@ type WithOptionalId<T> = T & { id?: number };
 import { BASE_URL } from '@/constants';
 import type { DialogMode, FieldDefinition } from '@/common/types';
 import { DialogModes } from '@/common/types';
-import {getNestedValue} from "@/common/utils";
+import { getNestedValue, debounce } from "@/common/utils";
 
 // Interfaces de State y Props, ahora genéricas en T
 interface State<T> {
     data?: WithOptionalId<T>, // Renombrado de 'rule' a 'data'
+    showMessage?: boolean
+    messageText?: string
+    messageType?: 'success' | 'error' | 'info' | 'warning'
 }
 
 interface Props<T> {
@@ -32,6 +35,9 @@ interface Props<T> {
 
 // El componente de clase se hace genérico: InnerDialog<T>
 class InnerDialog<T> extends React.Component<Props<T>, State<T>> {
+
+    hideMessage: () => void;
+
     constructor(props: Props<T>) {
         super(props);
         
@@ -43,6 +49,9 @@ class InnerDialog<T> extends React.Component<Props<T>, State<T>> {
                 return acc
             }, {} as WithOptionalId<T>),
         }
+        this.hideMessage = debounce(() => {
+            this.setState({ showMessage: false });
+        }, 3000);
     }
 
     // Los 'fields' ya no son una propiedad de clase fija, sino que se acceden desde this.props.fields
@@ -149,6 +158,30 @@ class InnerDialog<T> extends React.Component<Props<T>, State<T>> {
         }
     }
 
+    handleClose = async(ok: boolean) => {
+        console.log("Handling close, ok =", ok);
+        if(ok){
+            if(this.state.data === undefined){
+                const requiredFields = this.props.fields.filter(field => field.required).map(field => field.label).join(", ");
+                this.showMessage(`Los siguientes campos son obligatorios: ${requiredFields}`, "error");
+                return;
+            }
+            for(const field of this.props.fields){
+                console.log(field);
+                console.log(getNestedValue(this.state.data, field.key as string));
+                if(field.required){
+                    if(getNestedValue(this.state.data, field.key as string) === undefined || getNestedValue(this.state.data, field.key as string) === null || getNestedValue(this.state.data, field.key as string) === ''){
+                        this.showMessage(`El campo ${field.label} es obligatorio`, "error");
+                        return;
+                    }
+                }
+            }
+            await this.fetchData();
+            this.props.onClose(this.state.data); // Renombrado de 'rule' a 'data'
+        }
+        this.props.onClose(undefined); // Renombrado de 'rule' a 'data'
+    }
+
     // La clave ahora está tipada como keyof T & string
     onChange = (key: keyof T & string, value: any) => {
         this.setState((prevState) => ({
@@ -160,7 +193,17 @@ class InnerDialog<T> extends React.Component<Props<T>, State<T>> {
         );
     }
 
+    showMessage = (text: string, type: 'success' | 'error' | 'info' | 'warning') => {
+        this.setState({
+            showMessage: true,
+            messageText: text,
+            messageType: type
+        });
+        this.hideMessage();
+    }
+
     render = () => {
+        const { showMessage, messageText, messageType } = this.state;
         const dialogMode = this.props.dialogMode;
         // Obtener la clave 'id' de forma segura para usar en el mensaje de borrado.
         const data_id = this.state.data ? (this.state.data as any).id : undefined; 
@@ -179,20 +222,30 @@ class InnerDialog<T> extends React.Component<Props<T>, State<T>> {
         }
         return (
             <>
+                {/* Alerta de campos obligatorios */}
                 {(dialogMode === DialogModes.DELETE) &&
                     <Modal
                         title={title}
                         open={this.props.dialogMode !== undefined}
                         onOk={async () => {
-                            await this.fetchData();
-                            this.props.onClose(this.state.data); // Renombrado de 'rule' a 'data'
+                            await this.handleClose(true);
                         }}
-                        onCancel={() => {
-                            this.props.onClose(this.state.data); // Renombrado de 'rule' a 'data'
+                        onCancel={async () => {
+                            await this.handleClose(false);
                         }}
                         okText={this.props.t('Ok')}
                         cancelText={this.props.t('Cancel')}
                     >
+                        {showMessage && (
+                            <Alert
+                                message={messageText}
+                                type={messageType}
+                                showIcon
+                                closable
+                                onClose={() => this.setState({ showMessage: false })}
+                                style={{ margin: 16 }}
+                            />
+                        )}
                         <Text>{message}</Text>
                     </Modal>
                 }
@@ -201,14 +254,24 @@ class InnerDialog<T> extends React.Component<Props<T>, State<T>> {
                         title={title}
                         open={this.props.dialogMode !== undefined}
                         onOk={async () => {
-                            await this.fetchData();
+                            await this.handleClose(true);
                         }}
-                        onCancel={() => {
-                            this.props.onClose();
+                        onCancel={async () => {
+                            await this.handleClose(false);
                         }}
                         okText={this.props.t('Ok')}
                         cancelText={this.props.t('Cancel')}
                     >
+                        {showMessage && (
+                            <Alert
+                                message={messageText}
+                                type={messageType}
+                                showIcon
+                                closable
+                                onClose={() => this.setState({ showMessage: false })}
+                                style={{ margin: 16 }}
+                            />
+                        )}
                         <Flex vertical gap="small">
                             {/* Uso de this.props.fields */}
                             {this.props.fields && this.props.fields.map((field) => (
@@ -239,6 +302,15 @@ class InnerDialog<T> extends React.Component<Props<T>, State<T>> {
                                             placeholder={field.label}
                                             onChange={(value) => this.onChange(field.key as keyof T & string, value)}
                                             disabled={disabled || field.editable === false}
+                                        />
+                                    }
+                                    {field.type === 'select' &&
+                                        <Select
+                                            style={{ width: '100%' }}
+                                            defaultValue={this.getValue(field.key as keyof T & string) as any}
+                                            onChange={(value) => this.onChange(field.key as keyof T & string, value)}
+                                            disabled={disabled}
+                                            options={field.options}
                                         />
                                     }
                                 </Flex>

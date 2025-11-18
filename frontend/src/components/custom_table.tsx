@@ -8,7 +8,7 @@ type TablePaginationConfig = Exclude<GetProp<TableProps, 'pagination'>, boolean>
 
 import { loadData, mapsEqual, debounce } from '@/common/utils';
 import type { DialogMode, FieldDefinition } from '@/common/types';
-import { DialogModes } from '@/common/types'
+import { DialogModes } from '@/common/types';
 import CustomDialog from '@/components/dialogs/custom_dialog';
 import type { DialogMessages, DialogProps } from '@/components/dialogs/custom_dialog';
 
@@ -17,13 +17,26 @@ interface ActionProps<T> {
     renderHeaderAction: (onCreate: () => void) => React.ReactNode;
 }
 
+// Definición de los parámetros que recibirá la función dialogRenderer
+interface DialogRendererParams<T> {
+    dialogMode: DialogMode;
+    selectedItem: T | undefined; // selectedItem puede ser T o Diptych
+    handleCloseDialog: (item?: T | undefined) => void; // handleCloseDialog ahora acepta T | Diptych
+    endpoint: string;
+    fields: FieldDefinition<T>[];
+    dialogMessages?: DialogMessages;
+}
+
+// Añadir prop dialogRenderer
 type Props<T extends { id: number | string }> = {
     title: string;
     endpoint: string;
+    params?: Map<string, string>;
     fields: FieldDefinition<T>[];
     dialogMessages?: DialogMessages;
     t: (key: string) => string;
     hasActions?: boolean;
+    dialogRenderer?: (params: DialogRendererParams<T>) => React.ReactNode | null; // Función para renderizar el diálogo
 } & Partial<ActionProps<T>>;
 
 interface State<T> {
@@ -33,8 +46,8 @@ interface State<T> {
     sortField?: SorterResult<any>['field'];
     sortOrder?: SorterResult<any>['order'];
     filters: Map<string, string>;
-    selectedItem?: T,
-    dialogMode: DialogMode,
+    selectedItem?: T ; // selectedItem puede ser T o Diptych
+    dialogMode: DialogMode;
 }
 
 const getNestedValue = (obj: any, path: string): any => {
@@ -91,8 +104,6 @@ export default class CustomTable<T extends { id: number | string }> extends Reac
             });
         };
 
-        // 2. Debounce de la función de actualización
-        // Usaremos un delay de 500ms
         this.debouncedSetFilter = debounce(updateFilterState, 500);
     }
 
@@ -108,16 +119,18 @@ export default class CustomTable<T extends { id: number | string }> extends Reac
         this.setState({ dialogMode: DialogModes.CREATE, selectedItem: undefined });
     }
 
-    private handleCloseDialog = (item: T | undefined) => {
+    // handleCloseDialog ahora acepta T | Diptych | undefined
+    private handleCloseDialog = (item?: T | undefined) => {
         if (item) {
             this.setState(prevState => {
                 let newItems = [...prevState.items];
+                // Asumiendo que el item tiene una propiedad 'id' compatible
                 if (prevState.dialogMode === DialogModes.DELETE) {
-                    newItems = newItems.filter((r) => r.id !== item.id);
+                    newItems = newItems.filter((r) => r.id !== (item as T).id);
                 } else if (prevState.dialogMode === DialogModes.UPDATE) {
-                    newItems = newItems.map((r) => r.id === item.id ? { ...r, ...item } : r);
+                    newItems = newItems.map((r) => r.id === (item as T).id ? { ...r, ...item as T } : r);
                 } else if (prevState.dialogMode === DialogModes.CREATE) {
-                    newItems = [...newItems, item];
+                    newItems = [...newItems, item as T];
                 }
                 return {
                     ...prevState,
@@ -152,16 +165,11 @@ export default class CustomTable<T extends { id: number | string }> extends Reac
             let finalRender = field.render || defaultRender;
 
             if (isNested && !field.render) {
-                // Si es una clave anidada Y el usuario NO proveyó un render:
                 finalRender = (_content: any, record: T) => {
-                    // 1. Obtenemos el valor anidado de forma segura
                     const value = getNestedValue(record, fieldKey);
-                    
-                    // 2. Aplicamos la lógica de renderizado por defecto (boolean/texto)
                     if (field.type === 'boolean') {
                         return value ? <CheckOutlined style={{ color: 'green' }} /> : <CloseOutlined style={{ color: 'red' }} />;
                     }
-                    // Retornamos el valor, o una cadena vacía si es null/undefined
                     return <Text>{value !== undefined && value !== null ? value : ''}</Text>;
                 };
             }
@@ -184,7 +192,7 @@ export default class CustomTable<T extends { id: number | string }> extends Reac
                 sorter: field.type !== 'boolean',
                 ellipsis: true,
                 width: field.width || 100,
-                render: finalRender,
+                render: (content: any, record: T) => field.render ? field.render(content, record ) : finalRender(content, record),
                 fixed: field.fixed || undefined,
             };
         });
@@ -200,6 +208,7 @@ export default class CustomTable<T extends { id: number | string }> extends Reac
         }
         return columns;
     }
+
     handleTableChange: TableProps<T>['onChange'] = async (
         pagination: any,
         _filters: any,
@@ -215,14 +224,12 @@ export default class CustomTable<T extends { id: number | string }> extends Reac
             const isPageSizeChanged = pagination.pageSize !== prevState.pagination?.pageSize;
             const isPageChanged = prevState.pagination?.current !== pagination.current;
 
-            // 2. Actualizar el estado con los NUEVOS valores de ordenación y paginación
             return {
                 ...prevState,
                 pagination: { ...prevState.pagination, ...pagination },
-                sortOrder: newSortOrder, // 'descend' ahora se guarda aquí
+                sortOrder: newSortOrder,
                 sortField: newSortField,
                 items: (isPageSizeChanged || isPageChanged) ? [] : [...prevState.items],
-                // El loading se puede gestionar aquí, o dejarlo en componentDidUpdate
                 loading: (isPageSizeChanged || isPageChanged || prevState.sortOrder !== newSortOrder || prevState.sortField !== newSortField) ? true : prevState.loading,
             }
         });
@@ -239,17 +246,20 @@ export default class CustomTable<T extends { id: number | string }> extends Reac
             ["limit", this.state.pagination?.pageSize?.toString() || "10"],
             ["sort_by", sortBy],
         ]);
+        this.props.params?.forEach((value, key) => {
+            params.set(key, value);
+        });
         const sortOrder = this.state.sortOrder;
         if (sortOrder === 'ascend') {
             params.set("asc", 'true');
         } else if (sortOrder === 'descend') {
             params.set("asc", 'false');
         }
-        this.state.filters.forEach((value, fieldKey) => { // fieldKey es 'value.name_es'
+        this.state.filters.forEach((value, fieldKey) => {
             if (value && value.length > 0) {
                 const fieldDefinition = this.props.fields.find(f => f.key === fieldKey);
-                const apiFilterKey = fieldDefinition?.filterKey || fieldKey; // Usa 'filterKey' o la clave anidada
-                params.set(apiFilterKey, value); 
+                const apiFilterKey = fieldDefinition?.filterKey || fieldKey;
+                params.set(apiFilterKey, value);
             }
         });
         const responseJson = await loadData<T[]>(this.props.endpoint, params);
@@ -274,7 +284,12 @@ export default class CustomTable<T extends { id: number | string }> extends Reac
     componentDidMount = async () => {
         await this.fetchData();
     }
-    componentDidUpdate = async (_prevProps: Props<T>, prevState: State<T>) => {
+
+    componentDidUpdate = async (prevProps: Props<T>, prevState: State<T>) => {
+        if (prevProps.fields !== this.props.fields) {
+            this.columns = this.getColumns();
+        }
+
         const filtersHaveChanged = !mapsEqual(prevState.filters, this.state.filters);
         const dialogHasClosed = prevState.dialogMode !== DialogModes.NONE && this.state.dialogMode === DialogModes.NONE;
 
@@ -302,16 +317,34 @@ export default class CustomTable<T extends { id: number | string }> extends Reac
         const titleText = this.props.t(this.props.title);
         const { hasActions, renderHeaderAction } = this.props;
 
-        const dialogUI = hasActions && this.state.dialogMode !== DialogModes.NONE ? (
-            <CustomDialog<T>
-                endpoint={this.props.endpoint}
-                fields={this.props.fields}
-                dialogMessages={this.props.dialogMessages}
-                data={this.state.selectedItem as DialogProps<T>['data']}
-                dialogMode={this.state.dialogMode}
-                onClose={this.handleCloseDialog}
-            />
-        ) : null;
+        let dialogUI: React.ReactNode | null = null;
+
+        if (hasActions && this.state.dialogMode !== DialogModes.NONE) {
+            // If a custom dialog renderer is provided, use it
+            if (this.props.dialogRenderer) {
+                dialogUI = this.props.dialogRenderer({
+                    dialogMode: this.state.dialogMode,
+                    selectedItem: this.state.selectedItem,
+                    handleCloseDialog: this.handleCloseDialog,
+                    endpoint: this.props.endpoint,
+                    fields: this.props.fields,
+                    dialogMessages: this.props.dialogMessages,
+                });
+            } else {
+                // Fallback to CustomDialog if no renderer is provided
+                dialogUI = (
+                    <CustomDialog<T>
+                        endpoint={this.props.endpoint}
+                        fields={this.props.fields}
+                        dialogMessages={this.props.dialogMessages}
+                        data={this.state.selectedItem as DialogProps<T>['data']}
+                        dialogMode={this.state.dialogMode}
+                        onClose={this.handleCloseDialog}
+                    />
+                );
+            }
+        }
+        
         const headerUI = hasActions && renderHeaderAction ? (
             renderHeaderAction(this.handleCreate)
         ) : (
