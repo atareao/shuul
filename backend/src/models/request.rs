@@ -413,7 +413,10 @@ impl Request {
     END AS country,
     SUM(total_requests)::integer AS count,
     -- Calculate the percentage of each group relative to the total
-    (SUM(total_requests) * 100.0 / (SELECT COUNT(*) FROM requests))::float4 AS percentage
+    ROUND(
+        (SUM(total_requests) * 100.0 / (SELECT COUNT(*) FROM requests))::numeric,
+        1
+    )::float4 AS percentage
 FROM
 (
     -- Subquery to count requests by country and assign a ranking
