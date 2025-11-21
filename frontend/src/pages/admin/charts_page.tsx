@@ -37,7 +37,7 @@ export class InnerPage extends react.Component<Props, State> {
 
     render = () => {
         const { top_countries } = this.state;
-        const data = top_countries.map(item => ({ id: item[0], label: item[1], value: item[2] }));
+        const data = top_countries.map(item => ({ id: item[0], label: item[1], value: Math.round(item[2] * 100) / 100 }));
         console.log("Pie chart data:", data);
         return (
             <Flex vertical justify="center" align="center" >
