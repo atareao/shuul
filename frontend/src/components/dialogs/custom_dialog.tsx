@@ -40,7 +40,7 @@ class InnerDialog<T> extends React.Component<Props<T>, State<T>> {
 
     constructor(props: Props<T>) {
         super(props);
-        
+
         // Inicialización del estado con 'data' (antes 'rule')
         console.log(props.data);
         this.state = {
@@ -72,7 +72,7 @@ class InnerDialog<T> extends React.Component<Props<T>, State<T>> {
         let queryString = "";
         const basePath = `${BASE_URL}/api/v1/${this.props.endpoint}`;
         const searchParams = new URLSearchParams();
-        
+
         const dataWithId = this.state.data as WithOptionalId<T>; // Para facilitar el acceso al id
 
         if (this.props.dialogMode === DialogModes.DELETE) {
@@ -102,11 +102,12 @@ class InnerDialog<T> extends React.Component<Props<T>, State<T>> {
         } else {
             return null;
         }
-        
+
         // Manejo de URL: se usa '?' solo si queryString existe para evitar dobles '?'
         url = `${basePath}${queryString.trim() !== "" ? `?${queryString}` : ''}`;
-        
+
         console.log("Request URL:", url);
+        console.log("Body:", string_body);
         try {
             const response = await fetch(url, {
                 method: method,
@@ -116,12 +117,16 @@ class InnerDialog<T> extends React.Component<Props<T>, State<T>> {
                 },
                 body: string_body,
             })
-            if (!response.ok) {
+            console.log("====================");
+            console.log("Response Status:", response.status);
+            console.log("====================");
+            if (!response.ok || response.status > 299) {
                 // ... (lógica de manejo de errores, sin cambios)
                 let errorBody: { message?: string } = {};
                 try {
                     errorBody = await response.json();
                 } catch (e) { }
+                console.log(JSON.stringify(errorBody));
                 return {
                     status: response.status,
                     message: errorBody.message || `Error HTTP: ${response.status} - ${response.statusText}`
@@ -130,7 +135,7 @@ class InnerDialog<T> extends React.Component<Props<T>, State<T>> {
             const content = await response.json();
             console.log("Fetch successful:", content);
             // Pasar el objeto completo (content.data) al onClose
-            this.props.onClose(content.data as WithOptionalId<T>); 
+            this.props.onClose(content.data as WithOptionalId<T>);
         } catch (error) {
             // ... (lógica de manejo de errores de red, sin cambios)
             const msg = error instanceof Error ? error.message : String(error);
@@ -158,28 +163,30 @@ class InnerDialog<T> extends React.Component<Props<T>, State<T>> {
         }
     }
 
-    handleClose = async(ok: boolean) => {
+    handleClose = async (ok: boolean) => {
         console.log("Handling close, ok =", ok);
-        if(ok){
-            if(this.state.data === undefined){
+        if (ok) {
+            if (this.state.data === undefined) {
                 const requiredFields = this.props.fields.filter(field => field.required).map(field => field.label).join(", ");
                 this.showMessage(`Los siguientes campos son obligatorios: ${requiredFields}`, "error");
                 return;
             }
-            for(const field of this.props.fields){
+            for (const field of this.props.fields) {
                 console.log(field);
                 console.log(getNestedValue(this.state.data, field.key as string));
-                if(field.required){
-                    if(getNestedValue(this.state.data, field.key as string) === undefined || getNestedValue(this.state.data, field.key as string) === null || getNestedValue(this.state.data, field.key as string) === ''){
+                if (field.required) {
+                    if (getNestedValue(this.state.data, field.key as string) === undefined || getNestedValue(this.state.data, field.key as string) === null || getNestedValue(this.state.data, field.key as string) === '') {
                         this.showMessage(`El campo ${field.label} es obligatorio`, "error");
                         return;
                     }
                 }
             }
-            await this.fetchData();
-            this.props.onClose(this.state.data); // Renombrado de 'rule' a 'data'
+            const response = await this.fetchData();
+            console.log(response);
+            this.showMessage(response?.message || "Operación realizada con éxito", response && response.status && response.status >= 200 && response.status < 300 ? "success" : "error");
+        }else{
+            this.props.onClose(undefined); // Renombrado de 'rule' a 'data'
         }
-        this.props.onClose(undefined); // Renombrado de 'rule' a 'data'
     }
 
     // La clave ahora está tipada como keyof T & string
@@ -206,7 +213,7 @@ class InnerDialog<T> extends React.Component<Props<T>, State<T>> {
         const { showMessage, messageText, messageType } = this.state;
         const dialogMode = this.props.dialogMode;
         // Obtener la clave 'id' de forma segura para usar en el mensaje de borrado.
-        const data_id = this.state.data ? (this.state.data as any).id : undefined; 
+        const data_id = this.state.data ? (this.state.data as any).id : undefined;
         const disabled = dialogMode === DialogModes.READ;
         let title = "";
         let message = "";
@@ -276,44 +283,45 @@ class InnerDialog<T> extends React.Component<Props<T>, State<T>> {
                             {/* Uso de this.props.fields */}
                             {this.props.fields && this.props.fields.map((field) => (
                                 // Casting de field.key a keyof T & string es seguro aquí
-                                <Flex key={field.key}> 
-                                    <Text style={{ width: 200 }}>{field.label}</Text>
-                                    {field.type === 'boolean' &&
-                                        <Switch
-                                            // Se requiere casting a los tipos específicos
-                                            defaultChecked={this.getValue(field.key as keyof T & string) as boolean} 
-                                            onChange={(checked) => this.onChange(field.key as keyof T & string, checked)}
-                                            disabled={disabled}
-                                        />
-                                    }
-                                    {field.type === 'string' &&
-                                        <Input
-                                            style={{ width: '100%' }}
-                                            defaultValue={this.getValue(field.key as keyof T & string) as string}
-                                            placeholder={field.label}
-                                            onChange={(e) => this.onChange(field.key as keyof T & string, e.target.value)}
-                                            disabled={disabled}
-                                        />
-                                    }
-                                    {field.type === 'number' &&
-                                        <InputNumber
-                                            style={{ width: '100%' }}
-                                            defaultValue={this.getValue(field.key as keyof T & string) as number}
-                                            placeholder={field.label}
-                                            onChange={(value) => this.onChange(field.key as keyof T & string, value)}
-                                            disabled={disabled || field.editable === false}
-                                        />
-                                    }
-                                    {field.type === 'select' &&
-                                        <Select
-                                            style={{ width: '100%' }}
-                                            defaultValue={this.getValue(field.key as keyof T & string) as any}
-                                            onChange={(value) => this.onChange(field.key as keyof T & string, value)}
-                                            disabled={disabled}
-                                            options={field.options}
-                                        />
-                                    }
-                                </Flex>
+                                    field.visible === true &&
+                                        <Flex key={field.key}>
+                                            <Text style={{ width: 200 }}>{field.label}</Text>
+                                            {field.type === 'boolean' && field.visible == true &&
+                                                <Switch
+                                                    // Se requiere casting a los tipos específicos
+                                                    defaultChecked={this.getValue(field.key as keyof T & string) as boolean}
+                                                    onChange={(checked) => this.onChange(field.key as keyof T & string, checked)}
+                                                    disabled={disabled}
+                                                />
+                                            }
+                                            {field.type === 'string' && field.visible == true &&
+                                                <Input
+                                                    style={{ width: '100%' }}
+                                                    defaultValue={this.getValue(field.key as keyof T & string) as string}
+                                                    placeholder={field.label}
+                                                    onChange={(e) => this.onChange(field.key as keyof T & string, e.target.value)}
+                                                    disabled={disabled || field.editable === false}
+                                                />
+                                            }
+                                            {field.type === 'number' && field.visible == true &&
+                                                <InputNumber
+                                                    style={{ width: '100%' }}
+                                                    defaultValue={this.getValue(field.key as keyof T & string) as number}
+                                                    placeholder={field.label}
+                                                    onChange={(value) => this.onChange(field.key as keyof T & string, value)}
+                                                    disabled={disabled || field.editable === false}
+                                                />
+                                            }
+                                            {field.type === 'select' && field.visible == true &&
+                                                <Select
+                                                    style={{ width: '100%' }}
+                                                    defaultValue={this.getValue(field.key as keyof T & string) as any}
+                                                    onChange={(value) => this.onChange(field.key as keyof T & string, value)}
+                                                    disabled={disabled}
+                                                    options={field.options}
+                                                />
+                                            }
+                                        </Flex>
                             ))}
                         </Flex>
                     </Modal>

@@ -20,7 +20,33 @@ pub fn request_router() -> Router<Arc<AppState>> {
         .route("/", routing::post(create_handler))
         .route("/", routing::get(read_handler))
         .route("/info", routing::get(read_info_handler))
+        .route("/top_countries", routing::get(read_top_countries))
         .route("/", routing::delete(delete_handler))
+}
+
+pub async fn read_top_countries(
+    State(app_state): State<Arc<AppState>>,
+) -> impl IntoResponse {
+    match Request::top_countries(&app_state.pool).await {
+        Ok(countries) => {
+            debug!("Top countries: {:?}", countries);
+            ApiResponse::new(
+                StatusCode::OK,
+                "Top countries",
+                Data::Some(serde_json::to_value(countries).unwrap()),
+            )
+            .into_response()
+        }
+        Err(e) => {
+            error!("Error reading top countries: {:?}", e);
+            ApiResponse::new(
+                StatusCode::BAD_REQUEST,
+                "Error reading top countries",
+                Data::None,
+            )
+            .into_response()
+        }
+    }
 }
 
 pub async fn create_handler(
