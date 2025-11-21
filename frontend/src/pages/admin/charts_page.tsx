@@ -50,8 +50,10 @@ export class InnerPage extends react.Component<Props, State> {
             );
         }
         let fontColor = "#222222";
+        let toolTipBgColor = "#fff";
         if (isDarkMode) {
             fontColor = "#eeeeee";
+            toolTipBgColor = "#333";
         }
         return (
             <Flex vertical justify="center" align="center" >
@@ -62,6 +64,11 @@ export class InnerPage extends react.Component<Props, State> {
                             text: {
                                 fontSize: 16,
                                 fill: fontColor,
+                            },
+                            tooltip: {
+                                container: {
+                                    background: toolTipBgColor,
+                                    }
                             }
                         }}
                         data={data}
@@ -86,7 +93,6 @@ export class InnerPage extends react.Component<Props, State> {
                         ]}
                     />
                 </Flex>
-                <Text>Fin</Text>
             </Flex>
 
         );
