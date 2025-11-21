@@ -405,6 +405,46 @@ impl Request {
         Ok(row.0)
     }
 
+    pub async fn top_rules(pool: &PgPool) -> Result<Vec<(String, i32, f32)>, Error> {
+        let sql = r#"SELECT
+    CASE
+        WHEN ranking <= 10 THEN rule_id
+        ELSE 'other'
+    END AS rule,
+    SUM(total_requests)::integer AS count,
+    -- Calculate the percentage of each group relative to the total
+    ROUND(
+        (SUM(total_requests) * 100.0 / (SELECT COUNT(*) FROM requests))::numeric,
+        1
+    )::float4 AS percentage
+FROM
+(
+    -- Subquery to count requests by country and assign a ranking
+    SELECT
+        rule_id,
+        COUNT(*) AS total_requests,
+        -- Assign a ranking number to identify the Top 10
+        ROW_NUMBER() OVER (ORDER BY COUNT(*) DESC) AS ranking
+    FROM
+        requests
+    GROUP BY
+        rule_id
+) AS ranked_requests
+GROUP BY
+    rule_id
+ORDER BY
+    count DESC;
+    "#;
+        query(sql)
+            .map(|row: PgRow| {
+                let country: String = row.get("country");
+                let count: i32 = row.get("count");
+                let percentage: f32 = row.get("percentage");
+                (country, count, percentage)
+            })
+            .fetch_all(pool)
+            .await
+    }
     pub async fn top_countries(pool: &PgPool) -> Result<Vec<(String, i32, f32)>, Error> {
         let sql = r#"SELECT
     CASE

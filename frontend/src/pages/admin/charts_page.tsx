@@ -16,6 +16,7 @@ interface Props {
 interface State {
     loading: boolean;
     top_countries: Array<[string, number, number]>,
+    top_rules: Array<[string, number, number]>,
 }
 
 export class InnerPage extends react.Component<Props, State> {
@@ -25,23 +26,26 @@ export class InnerPage extends react.Component<Props, State> {
         this.state = {
             loading: true,
             top_countries: [],
+            top_rules: [],
         }
     }
 
     componentDidMount = async () => {
         const top_countries = await loadData("requests/top_countries");
+        const top_rules = await loadData("requests/top_rules");
         this.setState({
             loading: false,
             top_countries: top_countries.status === 200 ? top_countries.data as Array<[string, number, number]> : [],
+            top_rules: top_countries.status === 200 ? top_rules.data as Array<[string, number, number]> : [],
         });
 
     }
 
     render = () => {
         const { isDarkMode } = this.props;
-        const { top_countries, loading } = this.state;
-        const data = top_countries.map(item => ({ id: item[0], label: item[1], value: Math.round(item[2] * 100) / 100 }));
-        console.log("Pie chart data:", data);
+        const { top_countries, top_rules, loading } = this.state;
+        const top_countries_data = top_countries.map(item => ({ id: item[0], label: item[1], value: Math.round(item[2] * 100) / 100 }));
+        const top_rules_data = top_rules.map(item => ({ id: item[0], label: item[1], value: Math.round(item[2] * 100) / 100 }));
         if (loading) {
             return (
                 <Flex vertical justify="center" align="center" >
@@ -55,23 +59,49 @@ export class InnerPage extends react.Component<Props, State> {
             fontColor = "#eeeeee";
             toolTipBgColor = "#333";
         }
+        const theme = {
+            text: {
+                fontSize: 16,
+                fill: fontColor,
+            },
+            tooltip: {
+                container: {
+                    background: toolTipBgColor,
+                }
+            }
+        }
         return (
             <Flex vertical justify="center" align="center" >
                 <Text>Charts</Text>
                 <Flex style={{ height: 400, width: 600 }}>
                     <ResponsivePie /* or Pie for fixed dimensions */
-                        theme={{
-                            text: {
-                                fontSize: 16,
-                                fill: fontColor,
-                            },
-                            tooltip: {
-                                container: {
-                                    background: toolTipBgColor,
-                                    }
+                        theme={theme}
+                        data={top_countries_data}
+                        margin={{ top: 40, right: 80, bottom: 80, left: 80 }}
+                        innerRadius={0.5}
+                        padAngle={0.6}
+                        cornerRadius={2}
+                        activeOuterRadiusOffset={8}
+                        arcLinkLabelsSkipAngle={10}
+                        arcLinkLabelsThickness={2}
+                        arcLinkLabelsColor={{ from: 'color' }}
+                        arcLabelsSkipAngle={10}
+                        arcLabelsTextColor={{ from: 'color', modifiers: [['darker', 3]] }}
+                        legends={[
+                            {
+                                anchor: 'bottom',
+                                direction: 'row',
+                                translateY: 60,
+                                itemWidth: 100,
+                                itemHeight: 18,
                             }
-                        }}
-                        data={data}
+                        ]}
+                    />
+                </Flex>
+                <Flex style={{ height: 400, width: 600 }}>
+                    <ResponsivePie /* or Pie for fixed dimensions */
+                        theme={theme}
+                        data={top_rules_data}
                         margin={{ top: 40, right: 80, bottom: 80, left: 80 }}
                         innerRadius={0.5}
                         padAngle={0.6}
