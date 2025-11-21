@@ -35,6 +35,7 @@ export interface FieldDefinition<T>{
     sortKey?: string;
     options?: { value: any; label: string }[];
     required?: boolean;
+    visible?: boolean;
 }
 
 export type LanguageCode = "es" | "va";
