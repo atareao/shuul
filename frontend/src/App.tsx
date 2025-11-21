@@ -45,7 +45,7 @@ export default class App extends React.Component {
         return (
             <AuthContextProvider>
                 <ModeContextProvider>
-                    <ModeContext.Consumer>
+                   <ModeContext.Consumer>
                         {({ isDarkMode }) => {
                             console.log(`Rendering App with isDarkMode ${isDarkMode}`);
                             const algorithm = isDarkMode ? theme.darkAlgorithm : theme.defaultAlgorithm;
