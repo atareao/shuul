@@ -123,8 +123,8 @@ export class InnerPage extends react.Component<Props, State> {
         const isHourly = this.state.unit === 'hour';
         const xScaleConfig = {
             type: 'time' as const,
-            format: 'iso' as  const,
-            //format: '%Y-%m-%dT%H:%M:%S' as const,
+            // format: 'iso' as  const,
+            format: '%Y-%m-%dT%H:%M:%SZ' as const,
             precision: isHourly ? 'hour' as const : 'day' as const, // <-- Precision dinamica
             useUTC: true
         };
