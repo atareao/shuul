@@ -535,7 +535,7 @@ ORDER BY
             -- Agregación final: Crea el array JSON de puntos
             jsonb_agg(
                 jsonb_build_object(
-                    'x', (COALESCE(TO_CHAR(date_group, 'YYYY-MM-DD\"T\"HH24:MI:SS'), '1970-01-01T00:00:00') || 'Z')::text,
+                    'x', (COALESCE(TO_CHAR(date_group, 'YYYY-MM-DD"T"HH24:MI:SS'), '1970-01-01T00:00:00') || 'Z')::text,
                     'y', total_requests_for_point::integer
                 )
                 ORDER BY date_group
