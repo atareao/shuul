@@ -215,7 +215,6 @@ export class InnerPage extends react.Component<Props, State> {
                         pointSize={16}
                         pointColor={{ theme: 'background' }}
                         pointBorderWidth={2}
-                        pointBorderColor={{ from: 'serieColor' }}
                         useMesh={true}
                         legends={[
                             {
