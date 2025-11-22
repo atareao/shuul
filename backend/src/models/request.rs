@@ -482,12 +482,7 @@ ORDER BY
             "day" => "day",
             _ => return Err(Error::RowNotFound),
         };
-        let x_output = if unit_group == "hour" {
-            "date_group::timestamp"
-        } else {
-            "date_group::date"
-        };
-
+        let x_output = "date_group::timestamp";
         let sql = format!(
             r#"WITH ranked_countries AS (
             -- CTE 1: Calcula el ranking total de peticiones en el periodo
