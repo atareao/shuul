@@ -49,10 +49,11 @@ pub async fn read_evolution(
             .into_response()
         }
         Err(e) => {
-            error!("Error reading request evolution: {:?}", e);
+            let msg = format!("Error reading request evolution: {:?}", e);
+            error!("{msg}");
             ApiResponse::new(
                 StatusCode::BAD_REQUEST,
-                "Error reading request evolution",
+                &msg,
                 Data::None,
             )
             .into_response()
