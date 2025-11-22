@@ -126,7 +126,7 @@ export class InnerPage extends react.Component<Props, State> {
             format: 'iso' as  const,
             //format: '%Y-%m-%dT%H:%M:%S' as const,
             precision: isHourly ? 'hour' as const : 'day' as const, // <-- Precision dinamica
-            useUTC: false
+            useUTC: true
         };
         const axisBottomFormat = isHourly ? '%Hh' : '%d';
         const axisBottomLegend = isHourly ? 'Time (Hour)' : 'Date (Day)';
