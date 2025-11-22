@@ -128,6 +128,7 @@ export class InnerPage extends react.Component<Props, State> {
             precision: isHourly ? 'hour' as const : 'day' as const, // <-- Precision dinamica
             useUTC: true
         };
+        const tickValues = isHourly ? 'every 1 hours' : 'every 1 days';
         const axisBottomFormat = isHourly ? '%Hh' : '%d';
         const axisBottomLegend = isHourly ? 'Time (Hour)' : 'Date (Day)';
         const legendOffset = isHourly ? 45 : 36;
@@ -170,6 +171,7 @@ export class InnerPage extends react.Component<Props, State> {
                         </Flex>
                     </Flex>
                     <ResponsiveLine
+                        animate
                         theme={theme}
                         data={valid_evolution_data}
                         margin={{ top: 50, right: 110, bottom: 50, left: 60 }}
@@ -187,6 +189,7 @@ export class InnerPage extends react.Component<Props, State> {
                             format: axisBottomFormat,
                             legend: axisBottomLegend,
                             legendOffset: legendOffset,
+                            tickValues: tickValues,
                             legendPosition: 'middle',
                             truncateTickAt: 0
                         }}
