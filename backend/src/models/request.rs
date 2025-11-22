@@ -408,7 +408,7 @@ impl Request {
     pub async fn top_rules(pool: &PgPool) -> Result<Vec<(String, i32, f32)>, Error> {
         let sql = r#"SELECT
     CASE
-        WHEN ranking <= 10 THEN rule_id
+        WHEN ranking <= 10 THEN rule_id::text
         ELSE 'other'
     END AS rule,
     SUM(total_requests)::integer AS count,
@@ -431,13 +431,13 @@ FROM
         rule_id
 ) AS ranked_requests
 GROUP BY
-    rule_id
+    rule
 ORDER BY
     count DESC;
     "#;
         query(sql)
             .map(|row: PgRow| {
-                let country: String = row.get("country");
+                let country: String = row.get("rule");
                 let count: i32 = row.get("count");
                 let percentage: f32 = row.get("percentage");
                 (country, count, percentage)

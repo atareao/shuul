@@ -39,10 +39,11 @@ pub async fn read_top_rules(
             .into_response()
         }
         Err(e) => {
-            error!("Error reading top rules: {:?}", e);
+            let msg = format!("Error reading top rules: {:?}", e);
+            error!("{msg}");
             ApiResponse::new(
                 StatusCode::BAD_REQUEST,
-                "Error reading top rules",
+                &msg,
                 Data::None,
             )
             .into_response()
@@ -64,10 +65,11 @@ pub async fn read_top_countries(
             .into_response()
         }
         Err(e) => {
-            error!("Error reading top countries: {:?}", e);
+            let msg = format!("Error reading top countries: {:?}", e);
+            error!("{msg}");
             ApiResponse::new(
                 StatusCode::BAD_REQUEST,
-                "Error reading top countries",
+                &msg,
                 Data::None,
             )
             .into_response()
