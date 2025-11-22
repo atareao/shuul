@@ -175,6 +175,7 @@ export class InnerPage extends react.Component<Props, State> {
                         xScale={xScaleConfig}
                         yScale={{ type: 'linear', min: 'auto', max: 'auto', stacked: false, reverse: false }}
                         curve="monotoneX"
+                        enablePoints={true}
                         axisTop={null}
                         axisRight={null}
                         axisBottom={{
