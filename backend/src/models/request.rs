@@ -427,6 +427,8 @@ FROM
         ROW_NUMBER() OVER (ORDER BY COUNT(*) DESC) AS ranking
     FROM
         requests
+    WHERE
+        rule_id IS NOT NULL
     GROUP BY
         rule_id
 ) AS ranked_requests
