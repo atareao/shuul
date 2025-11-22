@@ -111,10 +111,13 @@ export class InnerPage extends react.Component<Props, State> {
         }
         // Define la configuración de la escala X y el formato del eje X
         const isHourly = this.state.unit === 'hour';
-        const xScaleConfig = isHourly ? 
-            { type: 'time' as const, format: 'iso', precision: 'hour' as const, useUTC: false } : 
-            { type: 'point' as const };
-        const axisBottomFormat = isHourly ? '%m/%d %Hh' : '%Y-%m-%d';
+        const xScaleConfig = { 
+            type: 'time' as const, 
+            format: 'iso', // El backend debe devolver el formato ISO (YYYY-MM-DD o YYYY-MM-DD HH:MM:SS)
+            precision: isHourly ? 'hour' as const : 'day' as const, // <-- Precision dinamica
+            useUTC: false 
+        };
+        const axisBottomFormat = isHourly ? '%Hh' : '%d';
         const axisBottomLegend = isHourly ? 'Time (Hour)' : 'Date (Day)';
         const legendOffset = isHourly ? 45 : 36;
         return (
