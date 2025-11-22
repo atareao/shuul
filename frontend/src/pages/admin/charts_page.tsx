@@ -154,7 +154,7 @@ export class InnerPage extends react.Component<Props, State> {
                                 value={this.state.last}
                                 onChange={(value) => {
                                     const newLast = value || 7;
-                                    this.setState({ last: newLast},  async () => await this.refreshData(false, undefined, newLast));
+                                    this.setState({ last: newLast }, async () => await this.refreshData(false, undefined, newLast));
                                 }} />
                             <Select
                                 defaultValue="day"
@@ -172,7 +172,6 @@ export class InnerPage extends react.Component<Props, State> {
                     </Flex>
                     <ResponsiveLine
                         animate
-                        enablePointLabel
                         enableTouchCrosshair
                         theme={theme}
                         data={valid_evolution_data}
@@ -182,6 +181,15 @@ export class InnerPage extends react.Component<Props, State> {
                         yScale={{ type: 'linear', min: 'auto', max: 'auto', stacked: false, reverse: false }}
                         curve="monotoneX"
                         enablePoints={true}
+                        pointBorderColor={{
+                            from: 'color',
+                            modifiers: [
+                                [
+                                    'darker',
+                                    0.3
+                                ]
+                            ]
+                        }}
                         axisTop={null}
                         axisRight={null}
                         axisBottom={{
