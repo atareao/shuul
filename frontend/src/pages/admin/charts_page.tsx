@@ -141,13 +141,13 @@ export class InnerPage extends react.Component<Props, State> {
                                 defaultValue={7}
                                 value={this.state.last}
                                 onChange={async (value) => {
-                                    this.setState({ last: value || 7 }, this.refreshData);
+                                    this.setState({ last: value || 7 }, async () => await this.refreshData());
                                 }} />
                             <Select
                                 defaultValue="day"
                                 value={this.state.unit}
                                 onChange={async (value) => {
-                                    this.setState({ unit: value }, this.refreshData);
+                                    this.setState({ unit: value }, async() => await this.refreshData());
                                 }}
                                 options={[
                                     { value: 'day', label: 'day' },
