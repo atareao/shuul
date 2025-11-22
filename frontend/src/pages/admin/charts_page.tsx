@@ -47,32 +47,42 @@ export class InnerPage extends react.Component<Props, State> {
         }
     }
 
-    refreshData = async (all?: boolean) => {
-        if(all){
+    refreshData = async (all?: boolean, newUnit?: string, newLast?: number) => {
+
+        // Usar los valores pasados o, si no se pasan, usar el estado actual.
+        const unit = newUnit || this.state.unit;
+        const last = newLast || this.state.last;
+
+        if (all) {
             this.setState({ loading: true });
-            const { unit, last } = this.state;
             const top_countries = await loadData("requests/top_countries");
             const top_rules = await loadData("requests/top_rules");
+
+            // 2. USAR unit y last EN LA LLAMADA
             const evolution_data = await loadData(`requests/evolution?unit=${unit}&last=${last}`);
-            console.log("Top countries:", top_countries);
-            console.log("Top rules:", top_rules);
-            console.log("Evolution:", evolution_data);
+
+            console.log("Evolution Call:", `requests/evolution?unit=${unit}&last=${last}`); // <<== IMPRIMIR LA LLAMADA COMPLETA
+            console.log("Evolution Data:", evolution_data);
+
             this.setState({
                 loading: false,
                 top_countries: top_countries.status === 200 ? top_countries.data as Array<[string, number, number]> : [],
                 top_rules: top_countries.status === 200 ? top_rules.data as Array<[string, number, number]> : [],
                 evolution_data: evolution_data.status === 200 ? evolution_data.data as Array<TimeSeries> : [],
             });
-        }else{
+        } else {
             this.setState({ loading: true });
-            const { unit, last } = this.state;
+
+            // 3. USAR unit y last EN LA LLAMADA
             const evolution_data = await loadData(`requests/evolution?unit=${unit}&last=${last}`);
-            console.log("Evolution:", evolution_data);
+
+            console.log("Evolution Call:", `requests/evolution?unit=${unit}&last=${last}`); // <<== IMPRIMIR LA LLAMADA COMPLETA
+            console.log("Evolution Data:", evolution_data);
+
             this.setState({
                 loading: false,
                 evolution_data: evolution_data.status === 200 ? evolution_data.data as Array<TimeSeries> : [],
             });
-
         }
     }
 
@@ -111,18 +121,18 @@ export class InnerPage extends react.Component<Props, State> {
         }
         // Define la configuración de la escala X y el formato del eje X
         const isHourly = this.state.unit === 'hour';
-        const xScaleConfig = { 
-            type: 'time' as const, 
+        const xScaleConfig = {
+            type: 'time' as const,
             format: isHourly ? 'iso' : '%Y-%m-%d',
             precision: isHourly ? 'hour' as const : 'day' as const, // <-- Precision dinamica
-            useUTC: false 
+            useUTC: false
         };
         const axisBottomFormat = isHourly ? '%Hh' : '%d';
         const axisBottomLegend = isHourly ? 'Time (Hour)' : 'Date (Day)';
         const legendOffset = isHourly ? 45 : 36;
         const valid_evolution_data = evolution_data
             // Asegurarse de que la serie y su array de datos existen
-            .filter(series => series && series.data && Array.isArray(series.data)) 
+            .filter(series => series && series.data && Array.isArray(series.data))
             // Para cada serie, filtrar los puntos donde 'x' es null, undefined, o una cadena vacía
             .map(series => ({
                 ...series,
@@ -140,14 +150,16 @@ export class InnerPage extends react.Component<Props, State> {
                                 min={1}
                                 defaultValue={7}
                                 value={this.state.last}
-                                onChange={async (value) => {
-                                    this.setState({ last: value || 7 }, async () => await this.refreshData());
+                                onChange={(value) => {
+                                    const newLast = value || 7;
+                                    this.setState({ last: newLast},  async () => await this.refreshData(false, undefined, newLast));
                                 }} />
                             <Select
                                 defaultValue="day"
                                 value={this.state.unit}
-                                onChange={async (value) => {
-                                    this.setState({ unit: value }, async() => await this.refreshData());
+                                onChange={(value) => {
+                                    const newUnit = value || 'day';
+                                    this.setState({ unit: value }, async () => await this.refreshData(false, newUnit, undefined));
                                 }}
                                 options={[
                                     { value: 'day', label: 'day' },
