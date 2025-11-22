@@ -49,10 +49,11 @@ export const loadData = async <T>(
             } catch (e) {
                 // Si falla al parsear, ignorar y usar un mensaje por defecto
             }
-
+            const msg = errorBody.message || `Error HTTP: ${response.status} - ${response.statusText}`
+            console.error(`API Error Response: msg`);
             return {
                 status: response.status,
-                message: errorBody.message || `Error HTTP: ${response.status} - ${response.statusText}`
+                message: msg,
             };
         }
 

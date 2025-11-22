@@ -33,6 +33,8 @@ export class InnerPage extends react.Component<Props, State> {
     componentDidMount = async () => {
         const top_countries = await loadData("requests/top_countries");
         const top_rules = await loadData("requests/top_rules");
+        console.log("Top countries:", top_countries);
+        console.log("Top rules:", top_rules);
         this.setState({
             loading: false,
             top_countries: top_countries.status === 200 ? top_countries.data as Array<[string, number, number]> : [],
