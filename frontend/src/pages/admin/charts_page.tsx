@@ -88,7 +88,7 @@ export class InnerPage extends react.Component<Props, State> {
         if (loading) {
             return (
                 <Flex vertical justify="center" align="center" >
-                    <Spin tip="Loading" size="large" />
+                    <Spin size="large" />
                 </Flex>
             );
         }

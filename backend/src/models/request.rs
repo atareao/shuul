@@ -471,68 +471,87 @@ ORDER BY
             .fetch_all(pool)
             .await
     }
+    // request.rs -> impl Request -> evolution
 
     pub async fn evolution(pool: &PgPool, unit: &str, last: i32) -> Result<Vec<TimeSeries>, Error> {
         debug!("Evolution params - unit: {}, last: {}", unit, last);
-        // unit can be "day", "hour"
+
+        // ... (Validación de unit_group y determinación de x_output - esto está correcto) ...
         let unit_group = match unit {
             "hour" => "hour",
             "day" => "day",
-            _ => return Err(Error::RowNotFound), // O un error más específico
+            _ => return Err(Error::RowNotFound),
         };
+        let x_output = if unit_group == "hour" {
+            "date_group::timestamp"
+        } else {
+            "date_group::date"
+        };
+
         let sql = format!(
             r#"WITH ranked_countries AS (
             -- CTE 1: Calcula el ranking total de peticiones en el periodo
             SELECT
                 country_code,
-                -- Usamos MAKE_INTERVAL para el filtro de tiempo seguro
-                RANK() OVER (ORDER BY COUNT(*) DESC) AS ranking
+                -- Usamos ROW_NUMBER() para un Top 10 estricto
+                ROW_NUMBER() OVER (ORDER BY COUNT(*) DESC) AS ranking
             FROM
                 requests
             WHERE
-                -- Uso seguro del intervalo: NOW() - INTERVAL '1 {unit}' * $1
                 created_at >= NOW() - INTERVAL '1 {unit_group}' * $1 
                 AND country_code IS NOT NULL
             GROUP BY
                 country_code
         ),
-        grouped_requests AS (
-            -- CTE 2: Cuenta las peticiones por país y unidad de tiempo
+        -- NUEVO CTE 3: Consolidar y sumar las peticiones para 'other' o códigos reales
+        aggregated_series AS (
             SELECT
-                country_code,
-                DATE_TRUNC('{unit_group}', created_at) AS date_group,
-                COUNT(*)::integer AS num_requests -- Casteo a integer (i32)
+                CASE
+                    -- Aplica la etiqueta 'other' a todos los países fuera del Top 10
+                    WHEN rp.ranking <= 10 THEN gr.country_code
+                    ELSE 'other'
+                END AS series_id, -- El ID de la serie (país o 'other')
+                gr.date_group,
+                -- SUMA las peticiones para cada (series_id, date_group)
+                SUM(gr.num_requests) AS total_requests_for_point
             FROM
-                requests
-            WHERE
-                created_at >= NOW() - INTERVAL '1 {unit_group}' * $1 
-                AND country_code IS NOT NULL
+                ranked_countries AS rp
+            JOIN (
+                -- CTE 2: Cuenta las peticiones por país y unidad de tiempo
+                SELECT
+                    country_code,
+                    DATE_TRUNC('{unit_group}', created_at) AS date_group,
+                    COUNT(*)::integer AS num_requests
+                FROM
+                    requests
+                WHERE
+                    created_at >= NOW() - INTERVAL '1 {unit_group}' * $1 
+                    AND country_code IS NOT NULL
+                GROUP BY
+                    country_code,
+                    date_group
+            ) AS gr
+            ON rp.country_code = gr.country_code
             GROUP BY
-                country_code,
-                date_group
+                series_id,
+                gr.date_group -- AGREGAMOS POR SERIE Y UNIDAD DE TIEMPO
         )
         SELECT
-            CASE
-                WHEN rp.ranking <= 10 THEN gr.country_code
-                ELSE 'other'
-            END AS id,
+            series_id AS id,
+            -- Agregación final: Crea el array JSON de puntos
             jsonb_agg(
                 jsonb_build_object(
-                    'x', CASE WHEN '{unit_group}' = 'hour' THEN date_group::timestamp ELSE date_group::date END,
-                    'y', num_requests::integer
+                    'x', COALESCE({x_output}, '1970-01-01T00:00:00Z')::text,
+                    'y', total_requests_for_point::integer
                 )
                 ORDER BY date_group
             ) AS data
         FROM
-            ranked_countries AS rp
-        JOIN
-            grouped_requests AS gr
-        ON
-            rp.country_code = gr.country_code
+            aggregated_series
         GROUP BY
-            id
+            series_id
         ORDER BY
-            id;
+            series_id;
     "#
         );
         sqlx::query_as::<_, TimeSeries>(&sql)
