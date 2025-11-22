@@ -64,19 +64,7 @@ export class InnerPage extends react.Component<Props, State> {
     }
 
     componentDidMount = async () => {
-        const { unit, last } = this.state;
-        const top_countries = await loadData("requests/top_countries");
-        const top_rules = await loadData("requests/top_rules");
-        const evolution_data = await loadData(`requests/evolution?unit=${unit}&last=${last}`);
-        console.log("Top countries:", top_countries);
-        console.log("Top rules:", top_rules);
-        this.setState({
-            loading: false,
-            top_countries: top_countries.status === 200 ? top_countries.data as Array<[string, number, number]> : [],
-            top_rules: top_countries.status === 200 ? top_rules.data as Array<[string, number, number]> : [],
-            evolution_data: evolution_data.status === 200 ? evolution_data.data as Array<TimeSeries> : [],
-        });
-
+        await this.refreshData();
     }
 
     render = () => {
@@ -121,15 +109,13 @@ export class InnerPage extends react.Component<Props, State> {
                                 defaultValue={7}
                                 value={this.state.last}
                                 onChange={async (value) => {
-                                    this.setState({ last: value || 7 });
-                                    await this.refreshData();
+                                    this.setState({ last: value || 7 }, this.refreshData);
                                 }} />
                             <Select
                                 defaultValue="day"
                                 value={this.state.unit}
                                 onChange={async (value) => {
-                                    this.setState({ unit: value });
-                                    await this.refreshData();
+                                    this.setState({ unit: value }, this.refreshData);
                                 }}
                                 options={[
                                     { value: 'day', label: 'day' },
@@ -151,7 +137,7 @@ export class InnerPage extends react.Component<Props, State> {
                             tickSize: 5,
                             tickPadding: 5,
                             tickRotation: 0,
-                            legend: 'Día',
+                            legend: this.state.unit,
                             legendOffset: 36,
                             legendPosition: 'middle',
                             truncateTickAt: 0
@@ -161,7 +147,7 @@ export class InnerPage extends react.Component<Props, State> {
                             tickPadding: 5,
                             tickRotation: 0,
                             legend: 'Número de Peticiones',
-                            legendOffset: -40,
+                            legendOffset: 0,
                             legendPosition: 'middle',
                             truncateTickAt: 0
                         }}

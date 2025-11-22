@@ -57,7 +57,6 @@ pub struct ReadRequestParams {
     pub asc: Option<bool>,
 }
 
-
 #[derive(Debug, Serialize, Deserialize)]
 pub struct TimeSeriesPoint {
     pub x: String, // Usamos String si la fecha viene como "YYYY-MM-DD"
@@ -68,9 +67,9 @@ pub struct TimeSeriesPoint {
 // Nota: La columna 'data' de tu DB es un array JSON.
 #[derive(Debug, Serialize, FromRow, Deserialize)]
 pub struct TimeSeries {
-    pub id: String, 
+    pub id: String,
     #[sqlx(json)] // Indica a sqlx que deserialice este campo desde JSONB
-    pub data: Vec<TimeSeriesPoint>, 
+    pub data: Vec<TimeSeriesPoint>,
 }
 
 use crate::constants::DEFAULT_LIMIT;
@@ -476,61 +475,69 @@ ORDER BY
     pub async fn evolution(pool: &PgPool, unit: &str, last: i32) -> Result<Vec<TimeSeries>, Error> {
         debug!("Evolution params - unit: {}, last: {}", unit, last);
         // unit can be "day", "hour"
-        let sql = format!(r#"
-        SELECT
-    CASE
-        -- Si el país está en el Top 10, usa su código; si no, usa 'other'
-        WHEN rp.ranking <= 10 THEN gr.country_code
-        ELSE 'other'
-    END AS id,
-    -- Agrupar los puntos de datos (x, y) en un array JSONB
-    jsonb_agg(
-        jsonb_build_object(
-            'x', gr.date_group::date, 
-            'y', gr.num_requests::integer -- Casteamos a integer para consistencia con f32/i32 en Rust
+        let unit_group = match unit {
+            "hour" => "hour",
+            "day" => "day",
+            _ => return Err(Error::RowNotFound), // O un error más específico
+        };
+        let sql = format!(
+            r#"WITH ranked_countries AS (
+            -- CTE 1: Calcula el ranking total de peticiones en el periodo
+            SELECT
+                country_code,
+                -- Usamos MAKE_INTERVAL para el filtro de tiempo seguro
+                RANK() OVER (ORDER BY COUNT(*) DESC) AS ranking
+            FROM
+                requests
+            WHERE
+                -- Uso seguro del intervalo: NOW() - INTERVAL '1 {unit}' * $1
+                created_at >= NOW() - INTERVAL '1 {unit_group}' * $1 
+                AND country_code IS NOT NULL
+            GROUP BY
+                country_code
+        ),
+        grouped_requests AS (
+            -- CTE 2: Cuenta las peticiones por país y unidad de tiempo
+            SELECT
+                country_code,
+                DATE_TRUNC('{unit_group}', created_at) AS date_group,
+                COUNT(*)::integer AS num_requests -- Casteo a integer (i32)
+            FROM
+                requests
+            WHERE
+                created_at >= NOW() - INTERVAL '1 {unit_group}' * $1 
+                AND country_code IS NOT NULL
+            GROUP BY
+                country_code,
+                date_group
         )
-        ORDER BY gr.date_group
-    ) AS data
-FROM
-(
-    -- CTE 1: Calcula el ranking total de peticiones en el periodo
-    SELECT
-        country_code,
-        RANK() OVER (ORDER BY COUNT(*) DESC) AS ranking
-    FROM
-        requests
-    WHERE
-        created_at >= NOW() - INTERVAL '{last} {unit}' -- Filtra el periodo
-        AND country_code IS NOT NULL
-    GROUP BY
-        country_code
-) AS rp -- Ranked Countries
-JOIN
-(
-    -- CTE 2: Cuenta las peticiones por país y unidad de tiempo (el dato temporal X, Y)
-    SELECT
-        country_code,
-        DATE_TRUNC('{unit}', created_at) AS date_group,
-        COUNT(*) AS num_requests
-    FROM
-        requests
-    WHERE
-        created_at >= NOW() - INTERVAL '{last} {unit}' -- Filtra el mismo periodo
-        AND country_code IS NOT NULL
-    GROUP BY
-        country_code,
-        date_group
-) AS gr -- Grouped Requests
-ON
-    rp.country_code = gr.country_code
-GROUP BY
-    id
-ORDER BY
-    id;
-    "#);
+        SELECT
+            CASE
+                WHEN rp.ranking <= 10 THEN gr.country_code
+                ELSE 'other'
+            END AS id,
+            jsonb_agg(
+                jsonb_build_object(
+                    'x', date_group::date, 
+                    'y', num_requests
+                )
+                ORDER BY date_group
+            ) AS data
+        FROM
+            ranked_countries AS rp
+        JOIN
+            grouped_requests AS gr
+        ON
+            rp.country_code = gr.country_code
+        GROUP BY
+            id
+        ORDER BY
+            id;
+    "#
+        );
         sqlx::query_as::<_, TimeSeries>(&sql)
+            .bind(last)
             .fetch_all(pool)
             .await
     }
 }
-
