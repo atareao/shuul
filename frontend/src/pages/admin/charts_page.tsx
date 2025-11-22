@@ -1,7 +1,7 @@
 import react from "react";
 import { useNavigate } from 'react-router';
 import { useTranslation } from "react-i18next";
-import { Flex, Typography, Space } from 'antd';
+import { Flex, Typography, Space, Spin, InputNumber, Select } from 'antd';
 import { ResponsivePie } from '@nivo/pie';
 import { ResponsiveLine } from '@nivo/line';
 const { Title } = Typography;
@@ -26,9 +26,11 @@ interface Props {
 
 interface State {
     loading: boolean;
-    top_countries: Array<[string, number, number]>,
-    top_rules: Array<[string, number, number]>,
-    evolution_data: Array<TimeSeries>,
+    top_countries: Array<[string, number, number]>;
+    top_rules: Array<[string, number, number]>;
+    evolution_data: Array<TimeSeries>;
+    unit: string;
+    last: number;
 }
 
 export class InnerPage extends react.Component<Props, State> {
@@ -40,13 +42,16 @@ export class InnerPage extends react.Component<Props, State> {
             top_countries: [],
             top_rules: [],
             evolution_data: [],
+            unit: 'day',
+            last: 7,
         }
     }
 
     componentDidMount = async () => {
+        const { unit, last } = this.state;
         const top_countries = await loadData("requests/top_countries");
         const top_rules = await loadData("requests/top_rules");
-        const evolution_data = await loadData("requests/evolution?unit=day&last=7");
+        const evolution_data = await loadData(`requests/evolution?unit=${unit}&last=${last}`);
         console.log("Top countries:", top_countries);
         console.log("Top rules:", top_rules);
         this.setState({
@@ -66,7 +71,7 @@ export class InnerPage extends react.Component<Props, State> {
         if (loading) {
             return (
                 <Flex vertical justify="center" align="center" >
-                    <Title>Loading</Title>
+                    <Spin tip="Loading" size="large" />
                 </Flex>
             );
         }
@@ -91,10 +96,23 @@ export class InnerPage extends react.Component<Props, State> {
             <Flex vertical justify="center" align="center" >
                 <Title level={2}>Charts</Title>
                 {/* 5. Añadir la sección de la gráfica de evolución */}
-                <Flex vertical style={{ height: 400, width: '90%', maxWidth: 1200}}>
-                    <Space direction="vertical" align="center">
-                        <Title level={3}>Evolución de Peticiones (Últimos 7 Días)</Title>
-                    </Space>
+                <Flex vertical style={{ height: 400, width: '90%', maxWidth: 1200, marginBottom: 100 }}>
+                    <Flex vertical justify="center" align="center">
+                        <Title level={3}>Request Evolution</Title>
+                        <Flex justify="center" align="center" gap="middle">
+                            <InputNumber min={1} defaultValue={7} onChange={(value) => this.setState({
+                                last: value || 7
+                            })} />
+                            <Select
+                                defaultValue="day"
+                                onChange={(value) => this.setState({ unit: value })}
+                                options={[
+                                    { value: 'day', label: 'day' },
+                                    { value: 'hour', label: 'hour' },
+                                ]}
+                            />
+                        </Flex>
+                    </Flex>
                     <ResponsiveLine
                         theme={theme}
                         data={evolution_data}
@@ -158,7 +176,7 @@ export class InnerPage extends react.Component<Props, State> {
                 <Flex justify="center" align="center" gap={50} wrap>
                     <Flex vertical style={{ height: 400, width: 600 }}>
                         <Space direction="vertical" align="center">
-                        <Title level={3}>Top countries</Title>
+                            <Title level={3}>Top countries</Title>
                         </Space>
                         <ResponsivePie /* or Pie for fixed dimensions */
                             theme={theme}
@@ -186,7 +204,7 @@ export class InnerPage extends react.Component<Props, State> {
                     </Flex>
                     <Flex vertical style={{ height: 400, width: 600 }}>
                         <Space direction="vertical" align="center">
-                        <Title level={3}>Top rules</Title>
+                            <Title level={3}>Top rules</Title>
                         </Space>
                         <ResponsivePie /* or Pie for fixed dimensions */
                             theme={theme}
