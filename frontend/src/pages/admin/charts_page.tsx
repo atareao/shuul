@@ -47,6 +47,22 @@ export class InnerPage extends react.Component<Props, State> {
         }
     }
 
+    refreshData = async () => {
+        this.setState({ loading: true });
+        const { unit, last } = this.state;
+        const top_countries = await loadData("requests/top_countries");
+        const top_rules = await loadData("requests/top_rules");
+        const evolution_data = await loadData(`requests/evolution?unit=${unit}&last=${last}`);
+        console.log("Top countries:", top_countries);
+        console.log("Top rules:", top_rules);
+        this.setState({
+            loading: false,
+            top_countries: top_countries.status === 200 ? top_countries.data as Array<[string, number, number]> : [],
+            top_rules: top_countries.status === 200 ? top_rules.data as Array<[string, number, number]> : [],
+            evolution_data: evolution_data.status === 200 ? evolution_data.data as Array<TimeSeries> : [],
+        });
+    }
+
     componentDidMount = async () => {
         const { unit, last } = this.state;
         const top_countries = await loadData("requests/top_countries");
@@ -100,12 +116,21 @@ export class InnerPage extends react.Component<Props, State> {
                     <Flex vertical justify="center" align="center">
                         <Title level={3}>Request Evolution</Title>
                         <Flex justify="center" align="center" gap="middle">
-                            <InputNumber min={1} defaultValue={7} onChange={(value) => this.setState({
-                                last: value || 7
-                            })} />
+                            <InputNumber
+                                min={1}
+                                defaultValue={7}
+                                value={this.state.last}
+                                onChange={async (value) => {
+                                    this.setState({ last: value || 7 });
+                                    await this.refreshData();
+                                }} />
                             <Select
                                 defaultValue="day"
-                                onChange={(value) => this.setState({ unit: value })}
+                                value={this.state.unit}
+                                onChange={async (value) => {
+                                    this.setState({ unit: value });
+                                    await this.refreshData();
+                                }}
                                 options={[
                                     { value: 'day', label: 'day' },
                                     { value: 'hour', label: 'hour' },
