@@ -22,7 +22,42 @@ pub fn request_router() -> Router<Arc<AppState>> {
         .route("/info", routing::get(read_info_handler))
         .route("/top_countries", routing::get(read_top_countries))
         .route("/top_rules", routing::get(read_top_rules))
+        .route("/evolution", routing::get(read_evolution))
         .route("/", routing::delete(delete_handler))
+}
+
+#[derive(Debug, Deserialize)]
+pub struct EvolutionParams {
+    pub unit: Option<String>,
+    pub last: Option<i32>,
+}
+pub async fn read_evolution(
+    State(app_state): State<Arc<AppState>>,
+    Query(params): Query<EvolutionParams>,
+) -> impl IntoResponse {
+    debug!("Evolution params: {:?}", params);
+    let unit = params.unit.clone().unwrap_or("day".to_string());
+    let last = params.last.unwrap_or(7);
+    match Request::evolution(&app_state.pool, &unit, last).await {
+        Ok(evolution) => {
+            debug!("Request evolution: {:?}", evolution);
+            ApiResponse::new(
+                StatusCode::OK,
+                "Request evolution",
+                Data::Some(serde_json::to_value(evolution).unwrap()),
+            )
+            .into_response()
+        }
+        Err(e) => {
+            error!("Error reading request evolution: {:?}", e);
+            ApiResponse::new(
+                StatusCode::BAD_REQUEST,
+                "Error reading request evolution",
+                Data::None,
+            )
+            .into_response()
+        }
+    }
 }
 
 pub async fn read_top_rules(

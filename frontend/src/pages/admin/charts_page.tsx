@@ -3,9 +3,20 @@ import { useNavigate } from 'react-router';
 import { useTranslation } from "react-i18next";
 import { Flex, Typography, Space } from 'antd';
 import { ResponsivePie } from '@nivo/pie';
+import { ResponsiveLine } from '@nivo/line';
 const { Title } = Typography;
 import { loadData } from "@/common/utils";
 import ModeContext from "@/components/mode_context";
+
+interface TimeSeriesPoint {
+    x: string;
+    y: number;
+}
+
+interface TimeSeries {
+    id: string; // country_code
+    data: TimeSeriesPoint[];
+}
 
 interface Props {
     navigate: any;
@@ -17,6 +28,7 @@ interface State {
     loading: boolean;
     top_countries: Array<[string, number, number]>,
     top_rules: Array<[string, number, number]>,
+    evolution_data: Array<TimeSeries>,
 }
 
 export class InnerPage extends react.Component<Props, State> {
@@ -27,25 +39,28 @@ export class InnerPage extends react.Component<Props, State> {
             loading: true,
             top_countries: [],
             top_rules: [],
+            evolution_data: [],
         }
     }
 
     componentDidMount = async () => {
         const top_countries = await loadData("requests/top_countries");
         const top_rules = await loadData("requests/top_rules");
+        const evolution_data = await loadData("requests/evolution?unit=day&last=7");
         console.log("Top countries:", top_countries);
         console.log("Top rules:", top_rules);
         this.setState({
             loading: false,
             top_countries: top_countries.status === 200 ? top_countries.data as Array<[string, number, number]> : [],
             top_rules: top_countries.status === 200 ? top_rules.data as Array<[string, number, number]> : [],
+            evolution_data: evolution_data.status === 200 ? evolution_data.data as Array<TimeSeries> : [],
         });
 
     }
 
     render = () => {
         const { isDarkMode } = this.props;
-        const { top_countries, top_rules, loading } = this.state;
+        const { top_countries, top_rules, evolution_data, loading } = this.state;
         const top_countries_data = top_countries.map(item => ({ id: item[0], label: item[1], value: Math.round(item[2] * 100) / 100 }));
         const top_rules_data = top_rules.map(item => ({ id: item[0], label: item[1], value: Math.round(item[2] * 100) / 100 }));
         if (loading) {
@@ -75,6 +90,71 @@ export class InnerPage extends react.Component<Props, State> {
         return (
             <Flex vertical justify="center" align="center" >
                 <Title level={2}>Charts</Title>
+                {/* 5. Añadir la sección de la gráfica de evolución */}
+                <Flex vertical style={{ height: 400, width: '90%', maxWidth: 1200}}>
+                    <Space direction="vertical" align="center">
+                        <Title level={3}>Evolución de Peticiones (Últimos 7 Días)</Title>
+                    </Space>
+                    <ResponsiveLine
+                        theme={theme}
+                        data={evolution_data}
+                        margin={{ top: 50, right: 110, bottom: 50, left: 60 }}
+                        xScale={{ type: 'point' }}
+                        yScale={{ type: 'linear', min: 'auto', max: 'auto', stacked: false, reverse: false }}
+                        curve="monotoneX"
+                        axisTop={null}
+                        axisRight={null}
+                        axisBottom={{
+                            tickSize: 5,
+                            tickPadding: 5,
+                            tickRotation: 0,
+                            legend: 'Día',
+                            legendOffset: 36,
+                            legendPosition: 'middle',
+                            truncateTickAt: 0
+                        }}
+                        axisLeft={{
+                            tickSize: 5,
+                            tickPadding: 5,
+                            tickRotation: 0,
+                            legend: 'Número de Peticiones',
+                            legendOffset: -40,
+                            legendPosition: 'middle',
+                            truncateTickAt: 0
+                        }}
+                        pointSize={10}
+                        pointColor={{ theme: 'background' }}
+                        pointBorderWidth={2}
+                        pointBorderColor={{ from: 'serieColor' }}
+                        useMesh={true}
+                        legends={[
+                            {
+                                anchor: 'bottom-right',
+                                direction: 'column',
+                                justify: false,
+                                translateX: 100,
+                                translateY: 0,
+                                itemsSpacing: 0,
+                                itemDirection: 'left-to-right',
+                                itemWidth: 80,
+                                itemHeight: 20,
+                                itemOpacity: 0.75,
+                                symbolSize: 12,
+                                symbolShape: 'circle',
+                                symbolBorderColor: 'rgba(0, 0, 0, .5)',
+                                effects: [
+                                    {
+                                        on: 'hover',
+                                        style: {
+                                            itemBackground: 'rgba(0, 0, 0, .03)',
+                                            itemOpacity: 1
+                                        }
+                                    }
+                                ]
+                            }
+                        ]}
+                    />
+                </Flex>
                 <Flex justify="center" align="center" gap={50} wrap>
                     <Flex vertical style={{ height: 400, width: 600 }}>
                         <Space direction="vertical" align="center">

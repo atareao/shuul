@@ -3,10 +3,9 @@ use http::Uri;
 use maxminddb::Reader;
 use serde::{Deserialize, Serialize};
 use sqlx::{
-    Error, Row, FromRow,
+    Error, FromRow, Row,
     postgres::{PgPool, PgRow},
-    query,
-    query_as,
+    query, query_as,
 };
 use tracing::debug;
 
@@ -57,6 +56,23 @@ pub struct ReadRequestParams {
     pub sort_by: Option<String>,
     pub asc: Option<bool>,
 }
+
+
+#[derive(Debug, Serialize, Deserialize)]
+pub struct TimeSeriesPoint {
+    pub x: String, // Usamos String si la fecha viene como "YYYY-MM-DD"
+    pub y: i64,    // La cuenta de peticiones
+}
+
+// Estructura principal para cada país (la serie completa)
+// Nota: La columna 'data' de tu DB es un array JSON.
+#[derive(Debug, Serialize, FromRow, Deserialize)]
+pub struct TimeSeries {
+    pub id: String, 
+    #[sqlx(json)] // Indica a sqlx que deserialice este campo desde JSONB
+    pub data: Vec<TimeSeriesPoint>, 
+}
+
 use crate::constants::DEFAULT_LIMIT;
 use crate::constants::DEFAULT_PAGE;
 
@@ -206,7 +222,10 @@ impl Request {
             .await
     }
 
-    pub async fn create_bulk(pool: &PgPool, requests: Vec<NewRequest>) -> Result<Vec<Request>, Error> {
+    pub async fn create_bulk(
+        pool: &PgPool,
+        requests: Vec<NewRequest>,
+    ) -> Result<Vec<Request>, Error> {
         if requests.is_empty() {
             return Ok(Vec::new());
         }
@@ -254,7 +273,7 @@ impl Request {
                 .bind(&request.country_name)
                 .bind(&request.country_code)
                 .bind(request.rule_id)
-                .bind(&request.created_at);
+                .bind(request.created_at);
         }
 
         let created_requests = query_builder.fetch_all(&mut *transaction).await?;
@@ -369,43 +388,8 @@ impl Request {
             .await
     }
 
-    pub async fn group_by_country(pool: &PgPool) -> Result<Vec<(String, i64)>, Error> {
-        let sql = "SELECT country_name, COUNT(*) as count FROM requests GROUP BY country_name";
-        query(sql)
-            .map(|row: PgRow| {
-                let country_name: String = row.get("country_name");
-                let count: i64 = row.get("count");
-                (country_name, count)
-            })
-            .fetch_all(pool)
-            .await
-    }
-
-    pub async fn group_by_city(pool: &PgPool) -> Result<Vec<(String, i64)>, Error> {
-        let sql = "SELECT city_name, COUNT(*) as count FROM requests GROUP BY city_name";
-        query(sql)
-            .map(|row: PgRow| {
-                let country_name: String = row.get("city_name");
-                let count: i64 = row.get("count");
-                (country_name, count)
-            })
-            .fetch_all(pool)
-            .await
-    }
-
-    pub async fn count_all(pool: &PgPool) -> Result<i32, Error> {
-        let sql = "SELECT COUNT(*) as count FROM requests";
-        let row: (i32,) = query(sql)
-            .map(|row: PgRow| {
-                let count: i32 = row.get("count");
-                (count,)
-            })
-            .fetch_one(pool)
-            .await?;
-        Ok(row.0)
-    }
-
     pub async fn top_rules(pool: &PgPool) -> Result<Vec<(String, i32, f32)>, Error> {
+        debug!("Computing top rules");
         let sql = r#"SELECT
     CASE
         WHEN ranking <= 10 THEN rule_id::text
@@ -448,6 +432,7 @@ ORDER BY
             .await
     }
     pub async fn top_countries(pool: &PgPool) -> Result<Vec<(String, i32, f32)>, Error> {
+        debug!("Computing top countries");
         let sql = r#"SELECT
     CASE
         WHEN ranking <= 10 THEN country_name
@@ -487,4 +472,65 @@ ORDER BY
             .fetch_all(pool)
             .await
     }
+
+    pub async fn evolution(pool: &PgPool, unit: &str, last: i32) -> Result<Vec<TimeSeries>, Error> {
+        debug!("Evolution params - unit: {}, last: {}", unit, last);
+        // unit can be "day", "hour"
+        let sql = format!(r#"
+        SELECT
+    CASE
+        -- Si el país está en el Top 10, usa su código; si no, usa 'other'
+        WHEN rp.ranking <= 10 THEN gr.country_code
+        ELSE 'other'
+    END AS id,
+    -- Agrupar los puntos de datos (x, y) en un array JSONB
+    jsonb_agg(
+        jsonb_build_object(
+            'x', gr.date_group::date, 
+            'y', gr.num_requests::integer -- Casteamos a integer para consistencia con f32/i32 en Rust
+        )
+        ORDER BY gr.date_group
+    ) AS data
+FROM
+(
+    -- CTE 1: Calcula el ranking total de peticiones en el periodo
+    SELECT
+        country_code,
+        RANK() OVER (ORDER BY COUNT(*) DESC) AS ranking
+    FROM
+        requests
+    WHERE
+        created_at >= NOW() - INTERVAL '{last} {unit}' -- Filtra el periodo
+        AND country_code IS NOT NULL
+    GROUP BY
+        country_code
+) AS rp -- Ranked Countries
+JOIN
+(
+    -- CTE 2: Cuenta las peticiones por país y unidad de tiempo (el dato temporal X, Y)
+    SELECT
+        country_code,
+        DATE_TRUNC('{unit}', created_at) AS date_group,
+        COUNT(*) AS num_requests
+    FROM
+        requests
+    WHERE
+        created_at >= NOW() - INTERVAL '{last} {unit}' -- Filtra el mismo periodo
+        AND country_code IS NOT NULL
+    GROUP BY
+        country_code,
+        date_group
+) AS gr -- Grouped Requests
+ON
+    rp.country_code = gr.country_code
+GROUP BY
+    id
+ORDER BY
+    id;
+    "#);
+        sqlx::query_as::<_, TimeSeries>(&sql)
+            .fetch_all(pool)
+            .await
+    }
 }
+

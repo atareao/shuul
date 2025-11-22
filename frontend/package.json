@@ -12,6 +12,7 @@
   "dependencies": {
     "@ant-design/icons": "^6.1.0",
     "@ant-design/v5-patch-for-react-19": "^1.0.3",
+    "@nivo/line": "^0.99.0",
     "@nivo/pie": "^0.99.0",
     "antd": "^5.27.6",
     "class-variance-authority": "^0.7.1",
