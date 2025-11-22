@@ -482,7 +482,6 @@ ORDER BY
             "day" => "day",
             _ => return Err(Error::RowNotFound),
         };
-        let x_output = "date_group::timestamp";
         let sql = format!(
             r#"WITH ranked_countries AS (
             -- CTE 1: Calcula el ranking total de peticiones en el periodo
@@ -536,7 +535,7 @@ ORDER BY
             -- Agregación final: Crea el array JSON de puntos
             jsonb_agg(
                 jsonb_build_object(
-                    'x', COALESCE({x_output}, '1970-01-01T00:00:00Z')::text,
+                    'x', TO_CHAR(date_group, 'YYYY-MM-DD"T"HH24:MI:SS')::text,
                     'y', total_requests_for_point::integer
                 )
                 ORDER BY date_group
