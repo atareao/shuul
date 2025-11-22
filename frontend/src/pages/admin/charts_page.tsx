@@ -120,6 +120,14 @@ export class InnerPage extends react.Component<Props, State> {
         const axisBottomFormat = isHourly ? '%Hh' : '%d';
         const axisBottomLegend = isHourly ? 'Time (Hour)' : 'Date (Day)';
         const legendOffset = isHourly ? 45 : 36;
+        const valid_evolution_data = evolution_data
+            // Asegurarse de que la serie y su array de datos existen
+            .filter(series => series.data && Array.isArray(series.data)) 
+            // Para cada serie, filtrar los puntos donde 'x' es null, undefined, o una cadena vacía
+            .map(series => ({
+                ...series,
+                data: series.data.filter(point => point.x && point.x.length > 0) // <-- FILTRADO CLAVE
+            }));
         return (
             <Flex vertical justify="center" align="center" >
                 <Title level={2}>Charts</Title>
@@ -150,7 +158,7 @@ export class InnerPage extends react.Component<Props, State> {
                     </Flex>
                     <ResponsiveLine
                         theme={theme}
-                        data={evolution_data}
+                        data={valid_evolution_data}
                         margin={{ top: 50, right: 110, bottom: 50, left: 60 }}
                         xScale={xScaleConfig}
                         yScale={{ type: 'linear', min: 'auto', max: 'auto', stacked: false, reverse: false }}
