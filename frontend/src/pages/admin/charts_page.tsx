@@ -173,6 +173,7 @@ export class InnerPage extends react.Component<Props, State> {
                         theme={theme}
                         data={valid_evolution_data}
                         margin={{ top: 50, right: 110, bottom: 50, left: 60 }}
+                        xFormat="time:%Y-%m-%dT%H:%M:%SZ"
                         xScale={xScaleConfig}
                         yScale={{ type: 'linear', min: 'auto', max: 'auto', stacked: false, reverse: false }}
                         curve="monotoneX"
