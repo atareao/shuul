@@ -47,24 +47,37 @@ export class InnerPage extends react.Component<Props, State> {
         }
     }
 
-    refreshData = async () => {
-        this.setState({ loading: true });
-        const { unit, last } = this.state;
-        const top_countries = await loadData("requests/top_countries");
-        const top_rules = await loadData("requests/top_rules");
-        const evolution_data = await loadData(`requests/evolution?unit=${unit}&last=${last}`);
-        console.log("Top countries:", top_countries);
-        console.log("Top rules:", top_rules);
-        this.setState({
-            loading: false,
-            top_countries: top_countries.status === 200 ? top_countries.data as Array<[string, number, number]> : [],
-            top_rules: top_countries.status === 200 ? top_rules.data as Array<[string, number, number]> : [],
-            evolution_data: evolution_data.status === 200 ? evolution_data.data as Array<TimeSeries> : [],
-        });
+    refreshData = async (all?: boolean) => {
+        if(all){
+            this.setState({ loading: true });
+            const { unit, last } = this.state;
+            const top_countries = await loadData("requests/top_countries");
+            const top_rules = await loadData("requests/top_rules");
+            const evolution_data = await loadData(`requests/evolution?unit=${unit}&last=${last}`);
+            console.log("Top countries:", top_countries);
+            console.log("Top rules:", top_rules);
+            console.log("Evolution:", evolution_data);
+            this.setState({
+                loading: false,
+                top_countries: top_countries.status === 200 ? top_countries.data as Array<[string, number, number]> : [],
+                top_rules: top_countries.status === 200 ? top_rules.data as Array<[string, number, number]> : [],
+                evolution_data: evolution_data.status === 200 ? evolution_data.data as Array<TimeSeries> : [],
+            });
+        }else{
+            this.setState({ loading: true });
+            const { unit, last } = this.state;
+            const evolution_data = await loadData(`requests/evolution?unit=${unit}&last=${last}`);
+            console.log("Evolution:", evolution_data);
+            this.setState({
+                loading: false,
+                evolution_data: evolution_data.status === 200 ? evolution_data.data as Array<TimeSeries> : [],
+            });
+
+        }
     }
 
     componentDidMount = async () => {
-        await this.refreshData();
+        await this.refreshData(true);
     }
 
     render = () => {
@@ -146,8 +159,8 @@ export class InnerPage extends react.Component<Props, State> {
                             tickSize: 5,
                             tickPadding: 5,
                             tickRotation: 0,
-                            legend: 'Número de Peticiones',
-                            legendOffset: 0,
+                            legend: 'Requests',
+                            legendOffset: -100,
                             legendPosition: 'middle',
                             truncateTickAt: 0
                         }}
