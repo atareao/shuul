@@ -4,9 +4,10 @@ import { useTranslation } from "react-i18next";
 import { Flex, Typography, Avatar, Card } from 'antd';
 
 import { loadData } from "@/common/utils";
+import {VERSION} from "@/constants";
 import Logo from "@/assets/logo.svg";
 
-const TITLE = "Shuul (002)"
+const TITLE = `Shuul (${VERSION})`;
 
 interface Props {
     navigate: any

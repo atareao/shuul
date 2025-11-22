@@ -13,7 +13,9 @@ import {
 
 import ModeSwitcher from '@/components/mode_switcher';
 import AuthContext from '@/components/auth_context';
+import { VERSION } from '@/constants';
 
+const TITLE = `Shuul (${VERSION})`;
 const ROLE = "admin";
 const { Header, Content, Footer, Sider } = Layout;
 
@@ -129,7 +131,7 @@ class InnerAdminLayout extends react.Component<Props, State> {
                                     </div>
                                 </Content>
                                 <Footer style={{ textAlign: 'center' }}>
-                                    ©{new Date().getFullYear()} Shuul
+                                    ©{new Date().getFullYear()} {TITLE} 
                                 </Footer>
                             </Layout>
                         </Layout>
