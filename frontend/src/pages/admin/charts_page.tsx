@@ -122,11 +122,11 @@ export class InnerPage extends react.Component<Props, State> {
         const legendOffset = isHourly ? 45 : 36;
         const valid_evolution_data = evolution_data
             // Asegurarse de que la serie y su array de datos existen
-            .filter(series => series.data && Array.isArray(series.data)) 
+            .filter(series => series && series.data && Array.isArray(series.data)) 
             // Para cada serie, filtrar los puntos donde 'x' es null, undefined, o una cadena vacía
             .map(series => ({
                 ...series,
-                data: series.data.filter(point => point.x && point.x.length > 0) // <-- FILTRADO CLAVE
+                data: series.data.filter(point => point && point.x && point.x.length > 0) // <-- FILTRADO CLAVE
             }));
         return (
             <Flex vertical justify="center" align="center" >
