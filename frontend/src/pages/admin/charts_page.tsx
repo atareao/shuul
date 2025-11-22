@@ -109,6 +109,14 @@ export class InnerPage extends react.Component<Props, State> {
                 }
             }
         }
+        // Define la configuración de la escala X y el formato del eje X
+        const isHourly = this.state.unit === 'hour';
+        const xScaleConfig = isHourly ? 
+            { type: 'time' as const, format: 'iso', precision: 'hour' as const, useUTC: false } : 
+            { type: 'point' as const };
+        const axisBottomFormat = isHourly ? '%m/%d %Hh' : '%Y-%m-%d';
+        const axisBottomLegend = isHourly ? 'Time (Hour)' : 'Date (Day)';
+        const legendOffset = isHourly ? 45 : 36;
         return (
             <Flex vertical justify="center" align="center" >
                 <Title level={2}>Charts</Title>
@@ -141,7 +149,7 @@ export class InnerPage extends react.Component<Props, State> {
                         theme={theme}
                         data={evolution_data}
                         margin={{ top: 50, right: 110, bottom: 50, left: 60 }}
-                        xScale={{ type: 'point' }}
+                        xScale={xScaleConfig}
                         yScale={{ type: 'linear', min: 'auto', max: 'auto', stacked: false, reverse: false }}
                         curve="monotoneX"
                         axisTop={null}
@@ -150,8 +158,9 @@ export class InnerPage extends react.Component<Props, State> {
                             tickSize: 5,
                             tickPadding: 5,
                             tickRotation: 0,
-                            legend: this.state.unit,
-                            legendOffset: 36,
+                            format: axisBottomFormat,
+                            legend: axisBottomLegend,
+                            legendOffset: legendOffset,
                             legendPosition: 'middle',
                             truncateTickAt: 0
                         }}
@@ -160,7 +169,7 @@ export class InnerPage extends react.Component<Props, State> {
                             tickPadding: 5,
                             tickRotation: 0,
                             legend: 'Requests',
-                            legendOffset: -100,
+                            legendOffset: -50,
                             legendPosition: 'middle',
                             truncateTickAt: 0
                         }}

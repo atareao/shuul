@@ -518,8 +518,8 @@ ORDER BY
             END AS id,
             jsonb_agg(
                 jsonb_build_object(
-                    'x', date_group::date, 
-                    'y', num_requests
+                    'x', CASE WHEN '{unit_group}' = 'hour' THEN date_group::timestamp ELSE date_group::date END,
+                    'y', num_requests::integer
                 )
                 ORDER BY date_group
             ) AS data
