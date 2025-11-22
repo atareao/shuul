@@ -172,6 +172,8 @@ export class InnerPage extends react.Component<Props, State> {
                     </Flex>
                     <ResponsiveLine
                         animate
+                        enablePointLabel
+                        enableTouchCrosshair
                         theme={theme}
                         data={valid_evolution_data}
                         margin={{ top: 50, right: 110, bottom: 50, left: 60 }}
@@ -202,7 +204,7 @@ export class InnerPage extends react.Component<Props, State> {
                             legendPosition: 'middle',
                             truncateTickAt: 0
                         }}
-                        pointSize={10}
+                        pointSize={16}
                         pointColor={{ theme: 'background' }}
                         pointBorderWidth={2}
                         pointBorderColor={{ from: 'serieColor' }}
