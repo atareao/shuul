@@ -17,18 +17,18 @@ const ENDPOINT = "rules";
 // Definición de los campos (tipados para Item, que es Rule)
 const FIELDS: FieldDefinition<Item>[] = [
     { key: 'id', label: 'Id', type: 'number', value: 0, editable: false, fixed: 'left', width: 80 },
-    { key: 'active', label: 'Active', type: 'boolean', value: true, width: 80 },
-    { key: 'allow', label: 'Allow', type: 'boolean', value: false, width: 80 },
-    { key: 'store', label: 'Store', type: 'boolean', value: true, width: 80 },
-    { key: 'weight', label: 'Weight', type: 'number', value: 100, width: 80 },
-    { key: 'ip_address', label: 'IP Address', type: 'string', value: "", width: 150, filterKey: "ip_address" },
-    { key: 'protocol', label: 'Protocol', type: 'string', value: "", width: 120, filterKey: "protocol" },
-    { key: 'fqdn', label: 'FQDN', type: 'string', value: "", width: 200, filterKey: "fqdn" },
-    { key: 'path', label: 'Path', type: 'string', value: "", width: 140, filterKey: "path" },
-    { key: 'query', label: 'Query', type: 'string', value: "", filterKey: "query" },
-    { key: 'city_name', label: 'City Name', type: 'string', value: "", width: 150, filterKey: "city_name" },
-    { key: 'country_name', label: 'Contry Name', type: 'string', value: "", width: 150, filterKey: "country_name" },
-    { key: 'country_code', label: 'Contry Code', type: 'string', value: "", width: 150, filterKey: "country_code" },
+    { key: 'active', label: 'Active', type: 'boolean', value: true, width: 80, visible: true },
+    { key: 'allow', label: 'Allow', type: 'boolean', value: false, width: 80, visible: true },
+    { key: 'store', label: 'Store', type: 'boolean', value: true, width: 80, visible: true },
+    { key: 'weight', label: 'Weight', type: 'number', value: 100, width: 80, visible: true },
+    { key: 'ip_address', label: 'IP Address', type: 'string', value: "", width: 150, filterKey: "ip_address", visible: true },
+    { key: 'protocol', label: 'Protocol', type: 'string', value: "", width: 120, filterKey: "protocol", visible: true },
+    { key: 'fqdn', label: 'FQDN', type: 'string', value: "", width: 200, filterKey: "fqdn", visible: true },
+    { key: 'path', label: 'Path', type: 'string', value: "", width: 140, filterKey: "path", visible: true },
+    { key: 'query', label: 'Query', type: 'string', value: "", filterKey: "query", visible: true },
+    { key: 'city_name', label: 'City Name', type: 'string', value: "", width: 150, filterKey: "city_name", visible: true },
+    { key: 'country_name', label: 'Contry Name', type: 'string', value: "", width: 150, filterKey: "country_name", visible: true },
+    { key: 'country_code', label: 'Contry Code', type: 'string', value: "", width: 150, filterKey: "country_code", visible: true },
 ];
 
 // Mensajes específicos para el CustomDialog de Rules
