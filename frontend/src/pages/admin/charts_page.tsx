@@ -144,7 +144,7 @@ export class InnerPage extends react.Component<Props, State> {
             <Flex vertical justify="center" align="center" >
                 <Title level={2}>Charts</Title>
                 {/* 5. Añadir la sección de la gráfica de evolución */}
-                <Flex vertical style={{ height: 400, width: '90%', maxWidth: 1200, marginBottom: 100 }}>
+                <Flex vertical gap="middle" style={{ height: 400, width: '90%', maxWidth: 1200, marginBottom: 100 }}>
                     <Flex vertical justify="center" align="center">
                         <Title level={3}>Request Evolution</Title>
                         <Flex justify="center" align="center" gap="middle">
@@ -170,137 +170,179 @@ export class InnerPage extends react.Component<Props, State> {
                             />
                         </Flex>
                     </Flex>
-                    <ResponsiveLine
-                        animate
-                        enableTouchCrosshair
-                        theme={theme}
-                        data={valid_evolution_data}
-                        margin={{ top: 50, right: 110, bottom: 50, left: 60 }}
-                        xFormat="time:%Y-%m-%dT%H:%M:%SZ"
-                        xScale={xScaleConfig}
-                        yScale={{ type: 'linear', min: 'auto', max: 'auto', stacked: false, reverse: false }}
-                        curve="monotoneX"
-                        enablePoints={true}
-                        pointBorderColor={{
-                            from: 'color',
-                            modifiers: [
-                                [
-                                    'darker',
-                                    0.3
+                    <Flex
+                        vertical
+                        style={{
+                            height: 600,
+                            borderRadius: '8px',
+                            backgroundColor: 'rgba(75, 75, 75, 0.7)',
+                            backdropFilter: 'blur(5px)',
+                            padding: '20px',
+                            boxShadow: '0 4px 8px rgba(0, 0, 0, 0.2)',
+                            border: '1px solid rgba(100, 100, 100, 0.5)'
+                        }}>
+                        <ResponsiveLine
+                            animate
+                            enableTouchCrosshair
+                            theme={theme}
+                            data={valid_evolution_data}
+                            margin={{ top: 50, right: 110, bottom: 50, left: 60 }}
+                            xFormat="time:%Y-%m-%dT%H:%M:%SZ"
+                            xScale={xScaleConfig}
+                            yScale={{ type: 'linear', min: 'auto', max: 'auto', stacked: false, reverse: false }}
+                            curve="monotoneX"
+                            enablePoints={true}
+                            pointBorderColor={{
+                                from: 'color',
+                                modifiers: [
+                                    [
+                                        'darker',
+                                        0.3
+                                    ]
                                 ]
-                            ]
-                        }}
-                        axisTop={null}
-                        axisRight={null}
-                        axisBottom={{
-                            tickSize: 5,
-                            tickPadding: 5,
-                            tickRotation: 0,
-                            format: axisBottomFormat,
-                            legend: axisBottomLegend,
-                            legendOffset: legendOffset,
-                            tickValues: tickValues,
-                            legendPosition: 'middle',
-                            truncateTickAt: 0
-                        }}
-                        axisLeft={{
-                            tickSize: 5,
-                            tickPadding: 5,
-                            tickRotation: 0,
-                            legend: 'Requests',
-                            legendOffset: -50,
-                            legendPosition: 'middle',
-                            truncateTickAt: 0
-                        }}
-                        pointSize={16}
-                        pointColor={{ theme: 'background' }}
-                        pointBorderWidth={2}
-                        useMesh={true}
-                        legends={[
-                            {
-                                anchor: 'bottom-right',
-                                direction: 'column',
-                                justify: false,
-                                translateX: 100,
-                                translateY: 0,
-                                itemsSpacing: 0,
-                                itemDirection: 'left-to-right',
-                                itemWidth: 80,
-                                itemHeight: 20,
-                                itemOpacity: 0.75,
-                                symbolSize: 12,
-                                symbolShape: 'circle',
-                                symbolBorderColor: 'rgba(0, 0, 0, .5)',
-                                effects: [
-                                    {
-                                        on: 'hover',
-                                        style: {
-                                            itemBackground: 'rgba(0, 0, 0, .03)',
-                                            itemOpacity: 1
+                            }}
+                            axisTop={null}
+                            axisRight={null}
+                            axisBottom={{
+                                tickSize: 5,
+                                tickPadding: 5,
+                                tickRotation: 0,
+                                format: axisBottomFormat,
+                                legend: axisBottomLegend,
+                                legendOffset: legendOffset,
+                                tickValues: tickValues,
+                                legendPosition: 'middle',
+                                truncateTickAt: 0
+                            }}
+                            axisLeft={{
+                                tickSize: 5,
+                                tickPadding: 5,
+                                tickRotation: 0,
+                                legend: 'Requests',
+                                legendOffset: -50,
+                                legendPosition: 'middle',
+                                truncateTickAt: 0
+                            }}
+                            pointSize={16}
+                            pointColor={{ theme: 'background' }}
+                            pointBorderWidth={2}
+                            useMesh={true}
+                            legends={[
+                                {
+                                    anchor: 'bottom-right',
+                                    direction: 'column',
+                                    justify: false,
+                                    translateX: 100,
+                                    translateY: 0,
+                                    itemsSpacing: 0,
+                                    itemDirection: 'left-to-right',
+                                    itemWidth: 80,
+                                    itemHeight: 20,
+                                    itemOpacity: 0.75,
+                                    symbolSize: 12,
+                                    symbolShape: 'circle',
+                                    symbolBorderColor: 'rgba(0, 0, 0, .5)',
+                                    effects: [
+                                        {
+                                            on: 'hover',
+                                            style: {
+                                                itemBackground: 'rgba(0, 0, 0, .03)',
+                                                itemOpacity: 1
+                                            }
                                         }
-                                    }
-                                ]
-                            }
-                        ]}
-                    />
+                                    ]
+                                }
+                            ]}
+                        />
+                    </Flex>
                 </Flex>
                 <Flex justify="center" align="center" gap={50} wrap>
-                    <Flex vertical style={{ height: 400, width: 600 }}>
-                        <Space direction="vertical" align="center">
-                            <Title level={3}>Top countries</Title>
-                        </Space>
-                        <ResponsivePie /* or Pie for fixed dimensions */
-                            theme={theme}
-                            data={top_countries_data}
-                            margin={{ top: 40, right: 80, bottom: 80, left: 80 }}
-                            innerRadius={0.5}
-                            padAngle={0.6}
-                            cornerRadius={2}
-                            activeOuterRadiusOffset={8}
-                            arcLinkLabelsSkipAngle={10}
-                            arcLinkLabelsThickness={2}
-                            arcLinkLabelsColor={{ from: 'color' }}
-                            arcLabelsSkipAngle={10}
-                            arcLabelsTextColor={{ from: 'color', modifiers: [['darker', 3]] }}
-                            legends={[
-                                {
-                                    anchor: 'bottom',
-                                    direction: 'row',
-                                    translateY: 60,
-                                    itemWidth: 100,
-                                    itemHeight: 18,
-                                }
-                            ]}
-                        />
-                    </Flex>
-                    <Flex vertical style={{ height: 400, width: 600 }}>
-                        <Space direction="vertical" align="center">
-                            <Title level={3}>Top rules</Title>
-                        </Space>
-                        <ResponsivePie /* or Pie for fixed dimensions */
-                            theme={theme}
-                            data={top_rules_data}
-                            margin={{ top: 40, right: 80, bottom: 80, left: 80 }}
-                            innerRadius={0.5}
-                            padAngle={0.6}
-                            cornerRadius={2}
-                            activeOuterRadiusOffset={8}
-                            arcLinkLabelsSkipAngle={10}
-                            arcLinkLabelsThickness={2}
-                            arcLinkLabelsColor={{ from: 'color' }}
-                            arcLabelsSkipAngle={10}
-                            arcLabelsTextColor={{ from: 'color', modifiers: [['darker', 3]] }}
-                            legends={[
-                                {
-                                    anchor: 'bottom',
-                                    direction: 'row',
-                                    translateY: 60,
-                                    itemWidth: 100,
-                                    itemHeight: 18,
-                                }
-                            ]}
-                        />
-                    </Flex>
+                    <div style={{ display: 'block', flexDirection: 'column', alignItems: 'center' }}>
+                        <Flex justify="center" align="center" gap={50} wrap>
+                            <Space orientation="vertical" align="center">
+                                <Title level={3}>Top countries</Title>
+                            </Space>
+                        </Flex>
+                        <Flex
+                            vertical
+                            style={{
+                                height: 400,
+                                width: 600,
+                                borderRadius: '8px',
+                                backgroundColor: 'rgba(75, 75, 75, 0.7)',
+                                backdropFilter: 'blur(5px)',
+                                padding: '20px',
+                                boxShadow: '0 4px 8px rgba(0, 0, 0, 0.2)',
+                                border: '1px solid rgba(100, 100, 100, 0.5)'
+                            }}>
+                            <ResponsivePie /* or Pie for fixed dimensions */
+                                theme={theme}
+                                data={top_countries_data}
+                                margin={{ top: 40, right: 80, bottom: 80, left: 80 }}
+                                innerRadius={0.5}
+                                padAngle={0.6}
+                                cornerRadius={2}
+                                activeOuterRadiusOffset={8}
+                                arcLinkLabelsSkipAngle={10}
+                                arcLinkLabelsThickness={2}
+                                arcLinkLabelsColor={{ from: 'color' }}
+                                arcLabelsSkipAngle={10}
+                                arcLabelsTextColor={{ from: 'color', modifiers: [['darker', 3]] }}
+                                legends={[
+                                    {
+                                        anchor: 'bottom',
+                                        direction: 'row',
+                                        translateY: 60,
+                                        itemWidth: 100,
+                                        itemHeight: 18,
+                                    }
+                                ]}
+                            />
+                        </Flex>
+                    </div>
+                    <div style={{ display: 'block', flexDirection: 'column', alignItems: 'center' }}>
+                        <Flex justify="center" align="center" gap={50} wrap>
+                            <Space orientation="vertical" align="center">
+                                <Title level={3}>Top rules</Title>
+                            </Space>
+                        </Flex>
+                        <Flex
+                            vertical
+                            style={{
+                                height: 400,
+                                width: 600,
+                                borderRadius: '8px',
+                                backgroundColor: 'rgba(75, 75, 75, 0.7)',
+                                backdropFilter: 'blur(5px)',
+                                padding: '20px',
+                                boxShadow: '0 4px 8px rgba(0, 0, 0, 0.2)',
+                                border: '1px solid rgba(100, 100, 100, 0.5)'
+                            }}>
+                            <ResponsivePie /* or Pie for fixed dimensions */
+                                theme={theme}
+                                data={top_rules_data}
+                                margin={{ top: 40, right: 80, bottom: 80, left: 80 }}
+                                innerRadius={0.5}
+                                padAngle={0.6}
+                                cornerRadius={2}
+                                activeOuterRadiusOffset={8}
+                                arcLinkLabelsSkipAngle={10}
+                                arcLinkLabelsThickness={2}
+                                arcLinkLabelsColor={{ from: 'color' }}
+                                arcLabelsSkipAngle={10}
+                                arcLabelsTextColor={{ from: 'color', modifiers: [['darker', 3]] }}
+                                legends={[
+                                    {
+                                        anchor: 'bottom',
+                                        direction: 'row',
+                                        translateY: 60,
+                                        itemWidth: 100,
+                                        itemHeight: 18,
+                                    }
+                                ]}
+                            />
+                        </Flex>
+                    </div>
                 </Flex>
             </Flex>
 
