@@ -96,8 +96,9 @@ pub async fn register(
             ApiResponse::new(StatusCode::CREATED, "User created", Data::Some(serde_json::to_value(user).unwrap()))
         },
         Err(e) => {
-            error!("Error creating user: {:?}", e);
-            ApiResponse::new(StatusCode::BAD_REQUEST, "Error creating user", Data::None)
+            let msg = format!("Error creating user: {:?}", e);
+            error!("{msg}");
+            ApiResponse::new(StatusCode::BAD_REQUEST, &msg, Data::None)
         }
     }
 }
