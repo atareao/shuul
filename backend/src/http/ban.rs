@@ -87,7 +87,6 @@ pub async fn ban_handler(
         .parse()
         .map_err(|_| AppError::InvalidInput("Invalid IP address".to_string()))?;
 
-    let _duration = params.ban_duration_seconds.unwrap_or(3600);
     let reason = params.reason.unwrap_or_else(|| "Manual ban".to_string());
 
     let ban_info = {
@@ -95,7 +94,7 @@ pub async fn ban_handler(
             .ban_manager
             .lock()
             .map_err(|_| AppError::CachePoisoned)?;
-        ban_manager.ban(ip, params.rule_id, reason).clone()
+        ban_manager.ban(ip, params.rule_id, reason, params.ban_duration_seconds).clone()
     };
 
     Ok(ApiResponse::new(

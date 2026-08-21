@@ -89,9 +89,12 @@ impl BanManager {
     }
 
     /// Ban an IP address.
-    pub fn ban(&mut self, ip: IpAddr, rule_id: Option<i32>, reason: String) -> &BanInfo {
+    ///
+    /// If `ban_duration_override` is `Some`, it is used as the ban duration
+    /// instead of the calculated escalation-based duration.
+    pub fn ban(&mut self, ip: IpAddr, rule_id: Option<i32>, reason: String, ban_duration_override: Option<i64>) -> &BanInfo {
         let escalation_level = self.get_escalation_level(&ip);
-        let duration = self.calculate_ban_duration(escalation_level);
+        let duration = ban_duration_override.unwrap_or_else(|| self.calculate_ban_duration(escalation_level));
 
         let ban_info = BanInfo {
             banned_at: Instant::now(),
@@ -201,7 +204,7 @@ mod tests {
         let ip: IpAddr = "1.2.3.4".parse().unwrap();
 
         assert!(bm.is_banned(&ip).is_none());
-        bm.ban(ip, None, "test ban".to_string());
+        bm.ban(ip, None, "test ban".to_string(), None);
         assert!(bm.is_banned(&ip).is_some());
     }
 
@@ -210,7 +213,7 @@ mod tests {
         let mut bm = BanManager::new(3600, false, vec![1, 2, 4], 86400, 30);
         let ip: IpAddr = "1.2.3.4".parse().unwrap();
 
-        bm.ban(ip, Some(1), "test".to_string());
+        bm.ban(ip, Some(1), "test".to_string(), None);
         assert!(bm.unban(&ip, Some(1)));
         assert!(bm.is_banned(&ip).is_none());
     }
@@ -221,15 +224,15 @@ mod tests {
         let ip: IpAddr = "1.2.3.4".parse().unwrap();
 
         // First offense: 3600s (multiplier 1)
-        let ban1 = bm.ban(ip, None, "1st".to_string());
+        let ban1 = bm.ban(ip, None, "1st".to_string(), None);
         assert_eq!(ban1.ban_duration_seconds, 3600);
 
         // Second offense: 7200s (multiplier 2)
-        let ban2 = bm.ban(ip, None, "2nd".to_string());
+        let ban2 = bm.ban(ip, None, "2nd".to_string(), None);
         assert_eq!(ban2.ban_duration_seconds, 7200);
 
         // Third offense: 14400s (multiplier 4)
-        let ban3 = bm.ban(ip, None, "3rd".to_string());
+        let ban3 = bm.ban(ip, None, "3rd".to_string(), None);
         assert_eq!(ban3.ban_duration_seconds, 14400);
     }
 
@@ -238,7 +241,7 @@ mod tests {
         let mut bm = BanManager::new(1, false, vec![1], 86400, 30);
         let ip: IpAddr = "1.2.3.4".parse().unwrap();
 
-        bm.ban(ip, None, "short ban".to_string());
+        bm.ban(ip, None, "short ban".to_string(), None);
         assert_eq!(bm.active_count(), 1);
 
         std::thread::sleep(Duration::from_millis(1100));

@@ -25,8 +25,9 @@ pub struct CircularTimestamps {
 impl CircularTimestamps {
     /// Create a new ring buffer that tracks up to `capacity` timestamps.
     pub fn new(capacity: usize) -> Self {
+        let now = Instant::now();
         Self {
-            timestamps: vec![Instant::now(); capacity],
+            timestamps: vec![now; capacity],
             capacity,
             head: 0,
             count: 0,

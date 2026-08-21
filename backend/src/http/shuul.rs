@@ -43,6 +43,8 @@ pub async fn shuul(
                         &format!("Banned: {}", ban.reason),
                     );
                 }
+            } else {
+                error!("Ban manager mutex poisoned");
             }
         }
     }
@@ -63,19 +65,20 @@ pub async fn shuul(
                 if cache_rule.rule.rate_limit_enabled {
                     if let Some(ip_str) = &request.ip_address {
                         if let Ok(ip) = ip_str.parse::<IpAddr>() {
-                            let should_ban = {
-                                if let Ok(mut rate_limiters) = app_state.rate_limiter.lock() {
-                                    let rl = rate_limiters
-                                        .entry(cache_rule.rule.id)
-                                        .or_insert_with(|| RateLimiter::new(
-                                            cache_rule.rule.max_retry as u32,
-                                            cache_rule.rule.find_time_seconds,
-                                        ));
-                                    rl.record(ip)
-                                } else {
-                                    false
-                                }
-                            };
+let should_ban = {
+                                    if let Ok(mut rate_limiters) = app_state.rate_limiter.lock() {
+                                        let rl = rate_limiters
+                                            .entry(cache_rule.rule.id)
+                                            .or_insert_with(|| RateLimiter::new(
+                                                cache_rule.rule.max_retry as u32,
+                                                cache_rule.rule.find_time_seconds,
+                                            ));
+                                        rl.record(ip)
+                                    } else {
+                                        error!("Rate limiter mutex poisoned");
+                                        false
+                                    }
+                                };
 
                             if should_ban {
                                 debug!(
@@ -91,7 +94,10 @@ pub async fn shuul(
                                             cache_rule.rule.max_retry,
                                             cache_rule.rule.find_time_seconds
                                         ),
+                                        None,
                                     );
+                                } else {
+                                    error!("Ban manager mutex poisoned during rate limit ban");
                                 }
                                 allow = false;
                             }

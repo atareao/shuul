@@ -22,17 +22,17 @@ async fn test_ban_manager_escalation() {
     let ip: IpAddr = "10.0.0.2".parse().unwrap();
 
     // First ban: 3600s
-    let b1 = bm.ban(ip, Some(1), "test".to_string());
+    let b1 = bm.ban(ip, Some(1), "test".to_string(), None);
     assert_eq!(b1.escalation_level, 0);
     assert_eq!(b1.ban_duration_seconds, 3600);
 
     // Second ban: 7200s (2x)
-    let b2 = bm.ban(ip, Some(1), "test".to_string());
+    let b2 = bm.ban(ip, Some(1), "test".to_string(), None);
     assert_eq!(b2.escalation_level, 1);
     assert_eq!(b2.ban_duration_seconds, 7200);
 
     // Third ban: 14400s (4x)
-    let b3 = bm.ban(ip, Some(1), "test".to_string());
+    let b3 = bm.ban(ip, Some(1), "test".to_string(), None);
     assert_eq!(b3.escalation_level, 2);
     assert_eq!(b3.ban_duration_seconds, 14400);
 }
@@ -43,7 +43,7 @@ async fn test_ban_unban_cycle() {
     let ip: IpAddr = "10.0.0.3".parse().unwrap();
 
     assert!(bm.is_banned(&ip).is_none());
-    bm.ban(ip, Some(1), "test".to_string());
+    bm.ban(ip, Some(1), "test".to_string(), None);
     assert!(bm.is_banned(&ip).is_some());
     bm.unban(&ip, Some(1));
     assert!(bm.is_banned(&ip).is_none());
