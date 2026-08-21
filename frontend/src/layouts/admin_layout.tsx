@@ -10,6 +10,7 @@ import {
     LogoutOutlined,
     UserOutlined,
     StopOutlined,
+    SettingOutlined,
 } from '@ant-design/icons';
 
 import ModeSwitcher from '@/components/mode_switcher';
@@ -45,6 +46,7 @@ const navigations:{[key: string]: string}  = {
     4: "/admin/charts",
     5: "/admin/users",
     6: "/admin/bans",
+    7: "/admin/settings",
 }
 
 const items: MenuItem[] = [
@@ -54,6 +56,7 @@ const items: MenuItem[] = [
     getItem('Charts', '4', <PieChartOutlined />),
     getItem('Users', '5', <UserOutlined />),
     getItem('Bans', '6', <StopOutlined />),
+    getItem('Settings', '7', <SettingOutlined />),
 ];
 
 

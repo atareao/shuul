@@ -28,7 +28,7 @@ use axum::{
 use dotenv::dotenv;
 use http::{
     api_user_router, auth_router, ban_router, health_router, request_router, require_auth,
-    rule_router, shuul_router, template_router, user_router, util_router,
+    rule_router, settings_router, shuul_router, template_router, user_router, util_router,
 };
 use maxminddb::Reader;
 use models::CacheRule;
@@ -36,6 +36,7 @@ use models::{AppState, BanManager, Error, JwtValidator, OidcMetadata, RateLimite
 use sqlx::{
     migrate::{MigrateDatabase, Migrator},
     postgres::PgPoolOptions,
+    Row,
 };
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
@@ -45,7 +46,7 @@ use tower_http::{
     cors::{Any, CorsLayer},
     trace::TraceLayer,
 };
-use tracing::{debug, info};
+use tracing::{debug, error, info};
 use tracing_subscriber::{EnvFilter, layer::SubscriberExt, util::SubscriberInitExt};
 
 const STATIC_DIR: &str = "static";
@@ -232,6 +233,33 @@ async fn main() -> Result<(), Error> {
         }
     });
 
+    // Background task: daily cleanup of old requests
+    let cleanup_state2 = Arc::clone(&app_state);
+    tokio::spawn(async move {
+        let mut interval = tokio::time::interval(tokio::time::Duration::from_secs(86400));
+        loop {
+            interval.tick().await;
+            // Read retention days from settings table
+            let days = sqlx::query("SELECT value FROM settings WHERE key = 'log_retention_days'")
+                .fetch_optional(&cleanup_state2.pool)
+                .await
+                .ok()
+                .flatten()
+                .and_then(|r| r.get::<Option<String>, _>("value"))
+                .and_then(|v| v.parse::<i32>().ok())
+                .unwrap_or(30);
+
+            match models::Request::delete_before(&cleanup_state2.pool, days).await {
+                Ok(deleted) => {
+                    if !deleted.is_empty() {
+                        debug!("Daily cleanup: deleted {} old requests (retention: {} days)", deleted.len(), days);
+                    }
+                }
+                Err(e) => error!("Daily cleanup failed: {}", e),
+            }
+        }
+    });
+
     let api_routes = Router::new()
         .nest("/shuul", shuul_router())
         .nest("/util", util_router())
@@ -245,6 +273,7 @@ async fn main() -> Result<(), Error> {
         .nest("/rules", rule_router())
         .nest("/bans", ban_router())
         .nest("/templates", template_router())
+        .nest("/settings", settings_router())
         .route_layer(axum_middleware::from_fn_with_state(app_state.clone(), require_auth))
         .with_state(app_state);
 

@@ -1,5 +1,5 @@
 import React from "react";
-import { Table, Input, Flex, Typography } from 'antd';
+import { Table, Input, Flex, Typography, Switch } from 'antd';
 import type { GetProp, TableProps, TableColumnsType } from 'antd';
 import type { SorterResult } from 'antd/es/table/interface';
 import { CheckOutlined, CloseOutlined } from '@ant-design/icons';
@@ -37,6 +37,10 @@ type Props<T extends { id: number | string }> = {
     t: (key: string) => string;
     hasActions?: boolean;
     dialogRenderer?: (params: DialogRendererParams<T>) => React.ReactNode | null; // Función para renderizar el diálogo
+    defaultSortField?: string;
+    defaultSortDesc?: boolean;
+    autoRefresh?: boolean;
+    autoRefreshInterval?: number;
 } & Partial<ActionProps<T>>;
 
 interface State<T> {
@@ -48,6 +52,8 @@ interface State<T> {
     filters: Map<string, string>;
     selectedItem?: T ; // selectedItem puede ser T o Diptych
     dialogMode: DialogMode;
+    autoRefreshEnabled: boolean;
+    autoRefreshInterval: number;
 }
 
 const getNestedValue = (obj: any, path: string): any => {
@@ -68,6 +74,7 @@ const getNestedValue = (obj: any, path: string): any => {
 export default class CustomTable<T extends { id: number | string }> extends React.Component<Props<T>, State<T>> {
     columns: TableColumnsType<T>;
     private debouncedSetFilter: (key: string, value: string) => void;
+    private autoRefreshTimer: ReturnType<typeof setInterval> | null = null;
 
     constructor(props: Props<T>) {
         super(props);
@@ -79,9 +86,13 @@ export default class CustomTable<T extends { id: number | string }> extends Reac
             items: [],
             loading: false,
             pagination: { current: 1, pageSize: 9, total: 0 },
+            sortField: props.defaultSortField || 'created_at',
+            sortOrder: props.defaultSortDesc ? 'descend' : undefined,
             filters: initialFilters,
             dialogMode: DialogModes.NONE,
             selectedItem: undefined,
+            autoRefreshEnabled: false,
+            autoRefreshInterval: props.autoRefreshInterval || 10,
         };
 
         this.columns = this.getColumns();
@@ -144,6 +155,26 @@ export default class CustomTable<T extends { id: number | string }> extends Reac
                 dialogMode: DialogModes.NONE,
                 selectedItem: undefined,
             });
+        }
+    }
+
+    private toggleAutoRefresh = () => {
+        this.setState(prev => ({ autoRefreshEnabled: !prev.autoRefreshEnabled }));
+    }
+
+    private startAutoRefresh = () => {
+        this.stopAutoRefresh();
+        this.autoRefreshTimer = setInterval(() => {
+            if (this.state.dialogMode === DialogModes.NONE) {
+                this.fetchData();
+            }
+        }, this.state.autoRefreshInterval * 1000);
+    }
+
+    private stopAutoRefresh = () => {
+        if (this.autoRefreshTimer) {
+            clearInterval(this.autoRefreshTimer);
+            this.autoRefreshTimer = null;
         }
     }
 
@@ -283,6 +314,13 @@ export default class CustomTable<T extends { id: number | string }> extends Reac
 
     componentDidMount = async () => {
         await this.fetchData();
+        if (this.props.autoRefresh) {
+            this.startAutoRefresh();
+        }
+    }
+
+    componentWillUnmount = () => {
+        this.stopAutoRefresh();
     }
 
     componentDidUpdate = async (prevProps: Props<T>, prevState: State<T>) => {
@@ -348,7 +386,19 @@ export default class CustomTable<T extends { id: number | string }> extends Reac
         const headerUI = hasActions && renderHeaderAction ? (
             renderHeaderAction(this.handleCreate)
         ) : (
-            <Text style={{ fontSize: '24px' }} strong>{titleText}</Text>
+            <Flex align="center" gap="small">
+                <Text style={{ fontSize: '24px' }} strong>{titleText}</Text>
+                {this.props.autoRefresh && (
+                    <Flex align="center" gap="small">
+                        <Switch 
+                            checked={this.state.autoRefreshEnabled} 
+                            onChange={this.toggleAutoRefresh} 
+                            size="small"
+                        />
+                        <Text type="secondary">Auto-refresh ({this.state.autoRefreshInterval}s)</Text>
+                    </Flex>
+                )}
+            </Flex>
         );
 
         return (

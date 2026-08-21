@@ -38,6 +38,10 @@ export default function Page() {
             endpoint={ENDPOINT}
             fields={translatedFields}
             t={t}
+            defaultSortField="created_at"
+            defaultSortDesc={true}
+            autoRefresh={true}
+            autoRefreshInterval={10}
         />
     );
 }
