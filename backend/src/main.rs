@@ -149,6 +149,44 @@ async fn main() -> Result<(), Error> {
         30,      // ban_count_decay_days
     ));
     let rate_limiter: Mutex<HashMap<i32, RateLimiter>> = Mutex::new(HashMap::new());
+
+    let app_state = Arc::new(AppState {
+        pool,
+        secret,
+        maxmind_db: Reader::open_readfile(&maxmind_db_path)
+            .map_err(|e| Error::Other(format!("Failed to open MaxMind DB: {e}")))?,
+        static_dir: STATIC_DIR.to_string(),
+        rules,
+        cache,
+        cache_enabled,
+        cache_size,
+        ban_manager,
+        rate_limiter,
+    });
+
+    // Background task: cleanup expired bans every 60 seconds
+    let cleanup_state = Arc::clone(&app_state);
+    tokio::spawn(async move {
+        let mut interval = tokio::time::interval(tokio::time::Duration::from_secs(60));
+        loop {
+            interval.tick().await;
+            if let Ok(mut ban_manager) = cleanup_state.ban_manager.lock() {
+                let before = ban_manager.active_count();
+                ban_manager.cleanup_expired();
+                let after = ban_manager.active_count();
+                if before != after {
+                    debug!("Ban cleanup: {} → {} active bans", before, after);
+                }
+            }
+            if let Ok(mut rate_limiters) = cleanup_state.rate_limiter.lock() {
+                rate_limiters.retain(|_, rl| {
+                    rl.cleanup_expired();
+                    !rl.is_empty()
+                });
+            }
+        }
+    });
+
     let api_routes = Router::new()
         .nest("/shuul", shuul_router())
         .nest("/util", util_router())
@@ -159,19 +197,7 @@ async fn main() -> Result<(), Error> {
         .nest("/rules", rule_router())
         .nest("/bans", ban_router())
         .nest("/templates", template_router())
-        .with_state(Arc::new(AppState {
-            pool,
-            secret,
-            maxmind_db: Reader::open_readfile(&maxmind_db_path)
-                .map_err(|e| Error::Other(format!("Failed to open MaxMind DB: {e}")))?,
-            static_dir: STATIC_DIR.to_string(),
-            rules,
-            cache,
-            cache_enabled,
-            cache_size,
-            ban_manager,
-            rate_limiter,
-        }));
+        .with_state(app_state);
 
     let app = Router::new()
         .nest("/api/v1", api_routes)
