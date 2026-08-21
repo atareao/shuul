@@ -3,7 +3,7 @@
 //! Define [`OidcMetadata`] para el descubrimiento OIDC y [`JwtValidator`]
 //! para la validación de tokens JWT emitidos por un proveedor OIDC (PocketID).
 
-use serde::{Deserialize, Serialize};
+use serde::Deserialize;
 
 /// OIDC discovery metadata from `.well-known/openid-configuration`
 #[derive(Debug, Deserialize, Clone)]
@@ -91,13 +91,7 @@ impl JwtValidator {
 
         if self.is_dev {
             // Dev mode: just decode and return claims
-            let mut validation = jsonwebtoken::Validation::default();
-            validation.insecure_disable_signature_validation();
-            let token_data = jsonwebtoken::decode::<serde_json::Value>(
-                token,
-                &jsonwebtoken::DecodingKey::from_secret(&[]),
-                &validation,
-            )
+            let token_data = jsonwebtoken::dangerous::insecure_decode::<serde_json::Value>(token)
             .map_err(|e| crate::models::error::AppError::Jwt(e))?;
             return Ok(token_data.claims);
         }

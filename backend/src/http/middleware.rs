@@ -25,7 +25,7 @@ use crate::models::AppState;
 /// - `/api/v1/templates`
 pub async fn require_auth(
     State(app_state): State<Arc<AppState>>,
-    mut req: Request,
+    req: Request,
     next: Next,
 ) -> Result<Response, StatusCode> {
     // Skip auth for public paths

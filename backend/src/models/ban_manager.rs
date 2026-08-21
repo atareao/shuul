@@ -127,6 +127,7 @@ impl BanManager {
     }
 
     /// Unban all entries for an IP.
+    #[allow(dead_code)]
     pub fn unban_all(&mut self, ip: &IpAddr) -> bool {
         self.bans.remove(ip).is_some()
     }

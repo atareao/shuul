@@ -1,5 +1,5 @@
 import React from "react";
-import { Table, Input, Flex, Typography, Switch } from 'antd';
+import { Table, Input, Flex, Typography, Switch, Select } from 'antd';
 import type { GetProp, TableProps, TableColumnsType } from 'antd';
 import type { SorterResult } from 'antd/es/table/interface';
 import { CheckOutlined, CloseOutlined } from '@ant-design/icons';
@@ -160,6 +160,14 @@ export default class CustomTable<T extends { id: number | string }> extends Reac
 
     private toggleAutoRefresh = () => {
         this.setState(prev => ({ autoRefreshEnabled: !prev.autoRefreshEnabled }));
+    }
+
+    private handleIntervalChange = (value: number) => {
+        this.setState({ autoRefreshInterval: value }, () => {
+            if (this.state.autoRefreshEnabled) {
+                this.startAutoRefresh();
+            }
+        });
     }
 
     private startAutoRefresh = () => {
@@ -395,7 +403,19 @@ export default class CustomTable<T extends { id: number | string }> extends Reac
                             onChange={this.toggleAutoRefresh} 
                             size="small"
                         />
-                        <Text type="secondary">Auto-refresh ({this.state.autoRefreshInterval}s)</Text>
+                        <Select
+                            value={this.state.autoRefreshInterval}
+                            onChange={this.handleIntervalChange}
+                            size="small"
+                            style={{ width: 80 }}
+                            options={[
+                                { value: 30, label: '30s' },
+                                { value: 60, label: '60s' },
+                                { value: 120, label: '2m' },
+                                { value: 300, label: '5m' },
+                                { value: 600, label: '10m' },
+                            ]}
+                        />
                     </Flex>
                 )}
             </Flex>

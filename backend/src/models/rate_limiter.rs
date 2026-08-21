@@ -58,6 +58,7 @@ impl CircularTimestamps {
     }
 
     /// Number of timestamps stored.
+    #[allow(dead_code)]
     pub fn len(&self) -> usize {
         self.count
     }
@@ -117,11 +118,13 @@ impl RateLimiter {
     }
 
     /// Remove a specific IP from the rate limiter (e.g., after unban).
+    #[allow(dead_code)]
     pub fn remove_ip(&mut self, ip: &IpAddr) {
         self.ip_buffers.remove(ip);
     }
 
     /// Number of tracked IPs.
+    #[allow(dead_code)]
     pub fn len(&self) -> usize {
         self.ip_buffers.len()
     }

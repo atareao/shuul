@@ -16,8 +16,6 @@ use sqlx::{
     postgres::{PgPool, PgRow},
     query,
 };
-use std::convert::Into;
-
 #[derive(Debug, Serialize, Deserialize, Clone)]
 pub struct Rule {
     pub id: i32,
@@ -193,6 +191,7 @@ pub struct UpdateRule {
     pub webhook: Option<String>,
     pub active: bool,
 }
+#[allow(dead_code)]
 #[derive(Debug, Deserialize)]
 pub struct ReadRuleParams {
     pub id: Option<i32>,
@@ -470,11 +469,6 @@ impl Rule {
             .map(Self::from_row)
             .fetch_one(pool)
             .await
-    }
-
-    pub async fn read_all_active(pool: &PgPool) -> Result<Vec<Self>, Error> {
-        let sql = "SELECT * FROM rules WHERE active = TRUE ORDER BY weight ASC";
-        query(sql).map(Self::from_row).fetch_all(pool).await
     }
 
     pub async fn delete(pool: &PgPool, id: i32) -> Result<Self, Error> {

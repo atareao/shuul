@@ -104,6 +104,7 @@ impl PagedResponse {
             pagination,
         }
     }
+    #[allow(dead_code)]
     pub fn create(
         status: StatusCode,
         message: &str,

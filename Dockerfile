@@ -1,75 +1,65 @@
+# ═══════════════════════════════════════════════════════════════
+# Stage 1: Backend (Rust)
+# ═══════════════════════════════════════════════════════════════
+FROM docker.io/library/rust:alpine3.23 AS backend-builder
 
-###############################################################################
-## Client builder
-###############################################################################
-FROM node:22-slim AS client-builder
-ENV PNPM_HOME="/pnpm"
-ENV PATH="$PNPM_HOME:$PATH"
-RUN corepack enable
-WORKDIR /client-builder
-COPY ./frontend .
-RUN --mount=type=cache,id=pnpm,target=/pnpm/store CI=true pnpm install --frozen-lockfile
-RUN pnpm build
+RUN apk add --no-cache --update \
+    build-base \
+    musl-dev \
+    pkgconfig \
+    openssl-dev \
+    openssl-libs-static
 
-###############################################################################
-## Server builder
-###############################################################################
-FROM rust:alpine3.22 AS server-builder
-RUN apk add --update --no-cache \
-            autoconf \
-            gcc \
-            gdb \
-            git \
-            libdrm-dev \
-            libepoxy-dev \
-            make \
-            mesa-dev \
-            strace \
-            openssl \
-            openssl-dev \
-            musl-dev && \
-    rm -rf /var/cache/apk && \
-    rm -rf /var/lib/app/lists
+WORKDIR /build
 
-WORKDIR /server-builder
-COPY ./backend .
+# Cache dependencies (avoid recompiling every time)
+RUN cargo init --bin --name backend . && \
+    echo "pub fn dummy() {}" > src/lib.rs
+
+COPY backend/Cargo.toml backend/Cargo.lock ./
+RUN cargo build --release && \
+    rm -rf src
+
 ENV OPENSSL_LIB_DIR=/usr/lib \
     OPENSSL_STATIC=1
-RUN cargo build --release --locked
 
-###############################################################################
-## Final image
-###############################################################################
-FROM alpine:3.22
+COPY backend/src ./src
+RUN touch src/main.rs src/lib.rs && \
+    cargo build --release && \
+    strip target/release/backend
 
-ENV USER=app \
-    UID=1000
+# ═══════════════════════════════════════════════════════════════
+# Stage 2: Frontend (Node)
+# ═══════════════════════════════════════════════════════════════
+FROM docker.io/library/node:23-alpine AS frontend-builder
 
-RUN apk add --update --no-cache \
-            font-noto-emoji~=2 \
-            fontconfig~=2.15 && \
-    rm -rf /var/cache/apk && \
-    rm -rf /var/lib/app/lists && \
-    mkdir -p /app/static
+RUN npm install -g pnpm@latest
 
-# Copy our build
-COPY --from=server-builder /server-builder/target/release/backend /app
-COPY --from=client-builder /client-builder/dist/ /app/static/
-COPY ./backend/migrations /app/migrations/
+WORKDIR /build
+COPY frontend/package.json frontend/pnpm-lock.yaml frontend/pnpm-workspace.yaml ./
+RUN pnpm install --ignore-scripts && pnpm rebuild esbuild
 
-# Create the user
-RUN adduser \
-    --disabled-password \
-    --gecos "" \
-    --home "/${USER}" \
-    --shell "/sbin/nologin" \
-    --uid "${UID}" \
-    "${USER}" && \
-    chown -R app:app /app && \
-    fc-cache -f
+COPY frontend/ ./
+RUN CI=true pnpm build
+
+# ═══════════════════════════════════════════════════════════════
+# Stage 3: Runtime
+# ═══════════════════════════════════════════════════════════════
+FROM alpine:3.23
+
+RUN apk add --no-cache \
+    ca-certificates \
+    && adduser -D -h /app -u 1000 app
 
 WORKDIR /app
+COPY --from=backend-builder /build/target/release/backend .
+COPY --from=frontend-builder /build/dist ./static
+COPY backend/migrations ./migrations/
+
+RUN chown -R app:app /app
+
 USER app
 EXPOSE 3000
+ENV RUST_LOG=info
 
-CMD [ "/app/backend" ]
+CMD ["./backend"]
