@@ -28,6 +28,7 @@ pub use user::{TokenClaims, User, UserRegister, UserSchema};
 
 use maxminddb::Reader;
 use sqlx::postgres::PgPool;
+use std::collections::HashMap;
 use std::sync::Mutex;
 
 pub struct AppState {
@@ -39,4 +40,6 @@ pub struct AppState {
     pub cache_enabled: bool,
     pub cache_size: usize,
     pub static_dir: String,
+    pub ban_manager: Mutex<BanManager>,
+    pub rate_limiter: Mutex<HashMap<i32, RateLimiter>>, // rule_id → RateLimiter
 }
