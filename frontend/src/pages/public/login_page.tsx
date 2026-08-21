@@ -1,6 +1,6 @@
 import React from 'react';
 import { Navigate } from "react-router";
-import { Flex } from 'antd';
+import { Button, Flex } from 'antd';
 
 import AuthContext from '@/components/auth_context';
 import { BASE_URL } from '@/constants';
@@ -18,6 +18,7 @@ interface State {
     redirectToAdmin: boolean;
     usersExist: boolean;
     redirectToLogin: boolean;
+    ssoConfigured: boolean;
 }
 interface UserData {
     email: string;
@@ -40,6 +41,7 @@ export default class LoginPage extends React.Component<{}, State> {
             redirectToAdmin: false,
             usersExist: false,
             redirectToLogin: false,
+            ssoConfigured: false,
         };
     }
 
@@ -83,6 +85,23 @@ export default class LoginPage extends React.Component<{}, State> {
     componentDidMount = async () => {
         console.log("Mounting login page");
         await this.existsUsers();
+        await this.checkSsoStatus();
+    }
+
+    checkSsoStatus = async () => {
+        try {
+            const response = await fetch(`${BASE_URL}/api/v1/auth/sso-status`);
+            const responseJson = await response.json();
+            if (response.ok && responseJson.data?.sso_configured) {
+                this.setState({ ssoConfigured: true });
+            }
+        } catch (error) {
+            console.error('Error checking SSO status:', error);
+        }
+    }
+
+    handleSsoLogin = () => {
+        window.location.href = `${BASE_URL}/api/v1/auth/sso`;
     }
 
     register = async (email: string, password: string) => {
@@ -193,6 +212,14 @@ export default class LoginPage extends React.Component<{}, State> {
                             onSubmit={this.handleSubmit}
                             responseMessage={this.state.responseMessage}
                         />
+                        {this.state.ssoConfigured && (
+                            <>
+                                <span style={{ color: '#888' }}>or</span>
+                                <Button type="primary" ghost onClick={this.handleSsoLogin}>
+                                    Sign in with PocketID
+                                </Button>
+                            </>
+                        )}
                     </Flex>
                 </Flex>
             );

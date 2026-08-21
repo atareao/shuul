@@ -10,6 +10,7 @@ mod ban_manager;
 mod data;
 pub mod error;
 mod ipdata;
+mod oidc;
 mod rate_limiter;
 mod request;
 mod response;
@@ -20,6 +21,7 @@ pub use ban_manager::{BanInfo, BanManager};
 pub use data::Data;
 pub use error::AppError as Error;
 pub use ipdata::IPData;
+pub use oidc::{JwtValidator, OidcMetadata};
 pub use rate_limiter::{CircularTimestamps, RateLimiter};
 pub use request::{NewRequest, ReadRequestParams, Request};
 pub use response::{ApiResponse, EmptyResponse, PagedResponse, Pagination};
@@ -30,6 +32,7 @@ use maxminddb::Reader;
 use sqlx::postgres::PgPool;
 use std::collections::HashMap;
 use std::sync::Mutex;
+use std::time::Instant;
 
 pub struct AppState {
     pub pool: PgPool,
@@ -42,4 +45,10 @@ pub struct AppState {
     pub static_dir: String,
     pub ban_manager: Mutex<BanManager>,
     pub rate_limiter: Mutex<HashMap<i32, RateLimiter>>, // rule_id → RateLimiter
+    // SSO / OIDC fields
+    pub oidc_metadata: Option<OidcMetadata>,
+    pub jwt_validator: JwtValidator,
+    pub oidc_states: tokio::sync::Mutex<HashMap<String, (String, Instant)>>,
+    pub oidc_client_id: Option<String>,
+    pub oidc_redirect_url: Option<String>,
 }

@@ -23,15 +23,16 @@ use axum::{
         Method,
         header::{ACCEPT, AUTHORIZATION, CONTENT_TYPE},
     },
+    middleware as axum_middleware,
 };
 use dotenv::dotenv;
 use http::{
-    api_user_router, ban_router, health_router, request_router, rule_router, shuul_router,
-    template_router, user_router, util_router,
+    api_user_router, auth_router, ban_router, health_router, request_router, require_auth,
+    rule_router, shuul_router, template_router, user_router, util_router,
 };
 use maxminddb::Reader;
 use models::CacheRule;
-use models::{AppState, BanManager, Error, RateLimiter};
+use models::{AppState, BanManager, Error, JwtValidator, OidcMetadata, RateLimiter};
 use sqlx::{
     migrate::{MigrateDatabase, Migrator},
     postgres::PgPoolOptions,
@@ -150,6 +151,45 @@ async fn main() -> Result<(), Error> {
     ));
     let rate_limiter: Mutex<HashMap<i32, RateLimiter>> = Mutex::new(HashMap::new());
 
+    // ── OIDC / SSO Configuration ──
+    let oidc_issuer_url = var("OIDC_ISSUER_URL").ok();
+    let oidc_client_id = var("OIDC_CLIENT_ID").ok();
+    let oidc_client_secret = var("OIDC_CLIENT_SECRET").ok();
+    let oidc_redirect_url = var("OIDC_REDIRECT_URL")
+        .unwrap_or_else(|_| "http://localhost:3000/api/v1/auth/callback".to_string());
+
+    let (oidc_metadata, jwt_validator) = if let (Some(issuer), Some(client_id), Some(_secret)) =
+        (&oidc_issuer_url, &oidc_client_id, &oidc_client_secret)
+    {
+        info!("OIDC configured: issuer={issuer}, client_id={client_id}");
+
+        // Fetch OIDC discovery metadata
+        let discovery_url = format!("{}/.well-known/openid-configuration", issuer);
+        let metadata: OidcMetadata = reqwest::get(&discovery_url)
+            .await
+            .map_err(|e| Error::Other(format!("Failed to fetch OIDC metadata: {e}")))?
+            .json()
+            .await
+            .map_err(|e| Error::Other(format!("Failed to parse OIDC metadata: {e}")))?;
+
+        info!(
+            "OIDC discovery: issuer={}, auth_endpoint={}",
+            metadata.issuer, metadata.authorization_endpoint
+        );
+
+        // Create JWT validator and fetch JWKS
+        let mut validator = JwtValidator::new(&metadata.issuer, client_id);
+        validator
+            .fetch_jwks(&metadata.jwks_uri)
+            .await
+            .map_err(|e| Error::Other(format!("Failed to fetch JWKS: {e}")))?;
+
+        (Some(metadata), validator)
+    } else {
+        info!("OIDC not configured — using dev-mode JWT validator");
+        (None, JwtValidator::dev())
+    };
+
     let app_state = Arc::new(AppState {
         pool,
         secret,
@@ -162,6 +202,11 @@ async fn main() -> Result<(), Error> {
         cache_size,
         ban_manager,
         rate_limiter,
+        oidc_metadata,
+        jwt_validator,
+        oidc_states: tokio::sync::Mutex::new(HashMap::new()),
+        oidc_client_id,
+        oidc_redirect_url: Some(oidc_redirect_url),
     });
 
     // Background task: cleanup expired bans every 60 seconds
@@ -192,11 +237,15 @@ async fn main() -> Result<(), Error> {
         .nest("/util", util_router())
         .nest("/health", health_router())
         .nest("/auth", user_router())
+        // SSO routes (public — no auth middleware)
+        .nest("/auth", auth_router())
+        // Protected routes (require JWT auth)
         .nest("/users", api_user_router())
         .nest("/requests", request_router())
         .nest("/rules", rule_router())
         .nest("/bans", ban_router())
         .nest("/templates", template_router())
+        .route_layer(axum_middleware::from_fn_with_state(app_state.clone(), require_auth))
         .with_state(app_state);
 
     let app = Router::new()
