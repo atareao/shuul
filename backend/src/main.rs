@@ -25,8 +25,8 @@ use axum::{
 };
 use dotenv::dotenv;
 use http::{
-    api_user_router, health_router, request_router, rule_router, shuul_router, user_router,
-    util_router,
+    api_user_router, ban_router, health_router, request_router, rule_router, shuul_router,
+    user_router, util_router,
 };
 use maxminddb::Reader;
 use models::CacheRule;
@@ -156,6 +156,7 @@ async fn main() -> Result<(), Error> {
         .nest("/users", api_user_router())
         .nest("/requests", request_router())
         .nest("/rules", rule_router())
+        .nest("/bans", ban_router())
         .with_state(Arc::new(AppState {
             pool,
             secret,
