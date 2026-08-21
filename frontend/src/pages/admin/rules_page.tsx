@@ -35,7 +35,7 @@ const FIELDS: FieldDefinition<Item>[] = [
     { key: 'find_time_seconds', label: 'Find Time (s)', type: 'number', value: 600, width: 120, visible: true },
     { key: 'ban_time_seconds', label: 'Ban Time (s)', type: 'number', value: 3600, width: 120, visible: true },
     { key: 'bantime_increment', label: 'Escalate', type: 'boolean', value: false, width: 100, visible: true },
-    { key: 'bantime_multipliers', label: 'Multipliers', type: 'string', value: "1,2,4,8", width: 120, visible: true },
+    { key: 'bantime_multipliers', label: 'Multipliers', type: 'string', value: "", width: 120, visible: true },
     { key: 'bantime_maxtime_seconds', label: 'Max Ban (s)', type: 'number', value: 604800, width: 120, visible: true },
     { key: 'ban_count_decay_days', label: 'Decay (d)', type: 'number', value: 30, width: 100, visible: true },
     { key: 'ignoreip', label: 'Ignore IPs', type: 'string', value: "", width: 150, visible: true },

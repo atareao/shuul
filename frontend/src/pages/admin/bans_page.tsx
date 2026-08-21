@@ -6,6 +6,7 @@ import { DeleteFilled, PlusOutlined } from '@ant-design/icons';
 import type Ban from "@/models/ban";
 import CustomTable from '@/components/custom_table';
 import type { FieldDefinition } from '@/common/types';
+import type { DialogMessages } from '@/components/dialogs/custom_dialog';
 
 const { Text } = Typography;
 const TITLE = "Active Bans";
@@ -18,6 +19,15 @@ const FIELDS: FieldDefinition<Ban>[] = [
     { key: 'ban_duration_seconds', label: 'Duration (s)', type: 'number', value: 0, width: 120, visible: true },
     { key: 'escalation_level', label: 'Level', type: 'number', value: 0, width: 80, visible: true },
 ];
+
+const BAN_DIALOG_MESSAGES: DialogMessages = {
+    createTitle: 'Ban IP',
+    readTitle: 'View Ban',
+    updateTitle: 'Update Ban',
+    deleteTitle: 'Unban IP',
+    confirmDeleteMessage: (id: number | string) =>
+        `Are you sure you want to unban IP "${id}"?`,
+};
 
 export class InnerPage extends React.Component<{ navigate: any; t: any }, {}> {
     private renderHeaderAction = (onCreate: () => void) => {
@@ -44,6 +54,7 @@ export class InnerPage extends React.Component<{ navigate: any; t: any }, {}> {
                 title={TITLE}
                 endpoint={ENDPOINT}
                 fields={FIELDS}
+                dialogMessages={BAN_DIALOG_MESSAGES}
                 t={this.props.t}
                 hasActions={true}
                 renderHeaderAction={this.renderHeaderAction}
