@@ -111,6 +111,9 @@ pub async fn login(
 
 /// Registers a new user in the system.
 ///
+/// Validates that the email contains an '@' symbol and that registration
+/// is disabled when SSO is configured.
+///
 /// * **Parameters**
 ///   - `app_state`: Shared application state (DB pool, secret, etc.).
 ///   - `user_data`: JSON payload containing `username`, `email`, `password`, `role`.
@@ -120,6 +123,20 @@ pub async fn register(
     State(app_state): State<Arc<AppState>>,
     Json(user_data): Json<UserRegister>,
 ) -> Result<impl IntoResponse, AppError> {
+    // Disable registration if SSO is configured
+    if app_state.oidc_metadata.is_some() {
+        return Err(AppError::InvalidInput(
+            "Registration is disabled. Use SSO to sign in.".to_string(),
+        ));
+    }
+
+    // Validate email format (must contain @)
+    if !user_data.email.contains('@') {
+        return Err(AppError::InvalidInput(
+            format!("Invalid email: '{}' must contain '@'", user_data.email),
+        ));
+    }
+
     debug!("User data: {:?}", user_data);
     let user = User::create(
         &app_state.pool,
