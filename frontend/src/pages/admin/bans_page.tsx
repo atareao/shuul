@@ -1,14 +1,12 @@
 import React from "react";
 import { useNavigate } from 'react-router';
 import { useTranslation } from "react-i18next";
-import { Button, Space, Typography } from 'antd';
+import { Button, Space } from 'antd';
 import { DeleteFilled, PlusOutlined } from '@ant-design/icons';
 import type Ban from "@/models/ban";
 import CustomTable from '@/components/custom_table';
 import type { FieldDefinition } from '@/common/types';
 import type { DialogMessages } from '@/components/dialogs/custom_dialog';
-
-const { Text } = Typography;
 const TITLE = "Active Bans";
 const ENDPOINT = "bans";
 

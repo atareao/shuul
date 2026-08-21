@@ -227,6 +227,7 @@ pub async fn sso_status(
 }
 
 /// Response from the OIDC token endpoint.
+#[allow(dead_code)]
 #[derive(Debug, Deserialize)]
 struct TokenResponse {
     access_token: String,

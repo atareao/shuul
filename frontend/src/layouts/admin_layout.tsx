@@ -10,6 +10,7 @@ import {
     LogoutOutlined,
     UserOutlined,
     StopOutlined,
+    AppstoreOutlined,
     SettingOutlined,
 } from '@ant-design/icons';
 
@@ -46,7 +47,8 @@ const navigations:{[key: string]: string}  = {
     4: "/admin/charts",
     5: "/admin/users",
     6: "/admin/bans",
-    7: "/admin/settings",
+    7: "/admin/templates",
+    8: "/admin/settings",
 }
 
 const items: MenuItem[] = [
@@ -56,7 +58,8 @@ const items: MenuItem[] = [
     getItem('Charts', '4', <PieChartOutlined />),
     getItem('Users', '5', <UserOutlined />),
     getItem('Bans', '6', <StopOutlined />),
-    getItem('Settings', '7', <SettingOutlined />),
+    getItem('Templates', '7', <AppstoreOutlined />),
+    getItem('Settings', '8', <SettingOutlined />),
 ];
 
 

@@ -17,12 +17,14 @@ mod response;
 mod rule;
 mod user;
 
-pub use ban_manager::{BanInfo, BanManager};
+pub use ban_manager::BanManager;
 pub use data::Data;
 pub use error::AppError as Error;
 pub use ipdata::IPData;
 pub use oidc::{JwtValidator, OidcMetadata};
-pub use rate_limiter::{CircularTimestamps, RateLimiter};
+pub use rate_limiter::RateLimiter;
+#[allow(unused_imports)]
+pub use rate_limiter::CircularTimestamps;
 pub use request::{NewRequest, ReadRequestParams, Request};
 pub use response::{ApiResponse, EmptyResponse, PagedResponse, Pagination};
 pub use rule::{CacheRule, NewRule, ReadRuleParams, Rule, UpdateRule};
@@ -42,6 +44,7 @@ pub struct AppState {
     pub cache: Mutex<Vec<NewRequest>>,
     pub cache_enabled: bool,
     pub cache_size: usize,
+    #[allow(dead_code)]
     pub static_dir: String,
     pub ban_manager: Mutex<BanManager>,
     pub rate_limiter: Mutex<HashMap<i32, RateLimiter>>, // rule_id → RateLimiter

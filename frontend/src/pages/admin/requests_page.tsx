@@ -41,7 +41,7 @@ export default function Page() {
             defaultSortField="created_at"
             defaultSortDesc={true}
             autoRefresh={true}
-            autoRefreshInterval={10}
+            autoRefreshInterval={30}
         />
     );
 }

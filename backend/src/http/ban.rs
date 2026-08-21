@@ -14,8 +14,6 @@ use axum::{
 use serde::{Deserialize, Serialize};
 use std::net::IpAddr;
 use std::sync::Arc;
-use tracing::debug;
-
 pub fn ban_router() -> Router<Arc<AppState>> {
     Router::new()
         .route("/", routing::get(list_handler))
