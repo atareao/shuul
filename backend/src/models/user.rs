@@ -1,9 +1,19 @@
-use serde::{Serialize, Deserialize};
+//! # Modelo de usuarios
+//!
+//! Define [`User`], [`UserSchema`], [`UserRegister`] y [`TokenClaims`].
+//! Gestiona la autenticación mediante JWT y el hashing de contraseñas
+//! con bcrypt.
+
 use chrono::{DateTime, Utc};
-use sqlx::{postgres::{PgPool, PgRow}, query, Row, Error};
+use serde::{Deserialize, Serialize};
+use sqlx::{
+    Error, Row,
+    postgres::{PgPool, PgRow},
+    query,
+};
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
-pub struct User{
+pub struct User {
     id: i32,
     pub username: String,
     pub email: String,
@@ -36,20 +46,9 @@ pub struct UserRegister {
     pub role: String,
 }
 
-#[derive(Debug, Serialize)]
-pub struct FilteredUser {
-    pub id: i32,
-    pub username: String,
-    pub role: String,
-    pub verified: bool,
-    pub created_at: DateTime<Utc>,
-    pub updated_at: DateTime<Utc>,
-}
-
-
-impl User{
-    fn from_row(row: PgRow) -> Self{
-        Self{
+impl User {
+    fn from_row(row: PgRow) -> Self {
+        Self {
             id: row.get("id"),
             username: row.get("username"),
             email: row.get("email"),
@@ -61,8 +60,16 @@ impl User{
         }
     }
 
-    pub async fn create(pool: &PgPool, username: &str, email: &str, password: &str, role: &str) -> Result<User, Error> {
-        let hashed_password = bcrypt::hash(password, bcrypt::DEFAULT_COST).unwrap();
+    pub async fn create(
+        pool: &PgPool,
+        username: &str,
+        email: &str,
+        password: &str,
+        role: &str,
+    ) -> Result<Self, Error> {
+        // Propagar error de bcrypt usando `?`
+        let hashed_password = bcrypt::hash(password, bcrypt::DEFAULT_COST)
+            .map_err(|e| Error::Protocol(format!("Bcrypt error: {e}")))?;
 
         let sql = "INSERT INTO users (username, email, hashed_password, role) VALUES ($1, $2, $3, $4) RETURNING *";
         query(sql)
@@ -75,7 +82,7 @@ impl User{
             .await
     }
 
-    pub async fn get_by_email(pool: &PgPool, email: &str) -> Result<User, Error>{
+    pub async fn get_by_email(pool: &PgPool, email: &str) -> Result<Self, Error> {
         let sql = "SELECT * FROM users WHERE email = $1";
         query(sql)
             .bind(email)
@@ -84,12 +91,9 @@ impl User{
             .await
     }
 
-    pub async fn read_all(pool: &PgPool) -> Result<Vec<User>, Error> {
+    pub async fn read_all(pool: &PgPool) -> Result<Vec<Self>, Error> {
         let sql = "SELECT * FROM users";
-        query(sql)
-            .map(Self::from_row)
-            .fetch_all(pool)
-            .await
+        query(sql).map(Self::from_row).fetch_all(pool).await
     }
 
     pub async fn any_user_exists(pool: &PgPool) -> Result<bool, Error> {
