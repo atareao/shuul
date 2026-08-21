@@ -23,6 +23,7 @@ use crate::models::AppState;
 /// - `/api/v1/shuul`
 /// - `/api/v1/util`
 /// - `/api/v1/templates`
+/// - `/api/v1/users/any` (necesario para saber si hay usuarios en el login)
 pub async fn require_auth(
     State(app_state): State<Arc<AppState>>,
     req: Request,
@@ -35,6 +36,7 @@ pub async fn require_auth(
         || path.starts_with("/api/v1/shuul")
         || path.starts_with("/api/v1/util")
         || path.starts_with("/api/v1/templates")
+        || path == "/api/v1/users/any"
     {
         return Ok(next.run(req).await);
     }
