@@ -1,20 +1,31 @@
-mod user;
-mod rule;
+//! # Modelos de datos
+//!
+//! Define las estructuras principales del dominio: `User`, `Rule`, `Request`,
+//! y los tipos de respuesta de la API (`ApiResponse`, `PagedResponse`, etc.).
+//!
+//! También contiene el tipo de error central [`AppError`] y el estado
+//! compartido de la aplicación ([`AppState`]).
+
+mod data;
+pub mod error;
+mod ipdata;
+mod rate_limiter;
 mod request;
 mod response;
-mod data;
-mod ipdata;
+mod rule;
+mod user;
 
 pub use data::Data;
+pub use error::AppError as Error;
 pub use ipdata::IPData;
-pub use rule::{Rule, NewRule, UpdateRule, ReadRuleParams, CacheRule};
-pub use request::{Request, NewRequest, ReadRequestParams};
+pub use rate_limiter::{CircularTimestamps, RateLimiter};
+pub use request::{NewRequest, ReadRequestParams, Request};
 pub use response::{ApiResponse, EmptyResponse, PagedResponse, Pagination};
-pub use user::{User, TokenClaims, UserSchema, UserRegister};
-pub type Error = Box<dyn std::error::Error>;
+pub use rule::{CacheRule, NewRule, ReadRuleParams, Rule, UpdateRule};
+pub use user::{TokenClaims, User, UserRegister, UserSchema};
 
-use sqlx::postgres::PgPool;
 use maxminddb::Reader;
+use sqlx::postgres::PgPool;
 use std::sync::Mutex;
 
 pub struct AppState {
