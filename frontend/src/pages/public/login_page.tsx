@@ -180,7 +180,37 @@ export default class LoginPage extends React.Component<{}, State> {
     render = () => {
         console.log("Rendering login page");
         console.log(`Users exist: ${this.state.usersExist}`);
-        if(this.state.usersExist === false) {
+        console.log(`SSO configured: ${this.state.ssoConfigured}`);
+
+        // If already logged in, redirect
+        if (this.context.isLoggedIn) {
+            console.log(`Role: ${this.context.role}`);
+            if (this.context.role === "admin") {
+                return (
+                    <Navigate to="/admin/" />
+                );
+            }
+            return (
+                <Navigate to="/" />
+            );
+        }
+
+        // SSO configured: only show the PocketID button (no local login/register)
+        if (this.state.ssoConfigured) {
+            return (
+                <Flex justify="center" align="center">
+                    <Flex gap="middle" align="center" vertical>
+                        <img src={Logo} alt="Logo" style={{ width: 200, marginBottom: 20 }} />
+                        <Button type="primary" size="large" onClick={this.handleSsoLogin}>
+                            Sign in with PocketID
+                        </Button>
+                    </Flex>
+                </Flex>
+            );
+        }
+
+        // No SSO: show register if no users exist, otherwise show login
+        if (this.state.usersExist === false) {
             return (
                 <Flex justify="center" align="center">
                     <Flex gap="middle" align="center" vertical>
@@ -193,37 +223,18 @@ export default class LoginPage extends React.Component<{}, State> {
                 </Flex>
             );
         }
-        if (this.context.isLoggedIn) {
-            console.log(`Role: ${this.context.role}`);
-            if (this.context.role === "admin") {
-                return (
-                    <Navigate to="/admin/" />
-                );
-            }
-            return (
-                <Navigate to="/" />
-            );
-        } else {
-            return (
-                <Flex justify="center" align="center">
-                    <Flex gap="middle" align="center" vertical>
-                        <img src={Logo} alt="Logo" style={{ width: 200, marginBottom: 20 }} />
-                        <SignIn
-                            onSubmit={this.handleSubmit}
-                            responseMessage={this.state.responseMessage}
-                        />
-                        {this.state.ssoConfigured && (
-                            <>
-                                <span style={{ color: '#888' }}>or</span>
-                                <Button type="primary" ghost onClick={this.handleSsoLogin}>
-                                    Sign in with PocketID
-                                </Button>
-                            </>
-                        )}
-                    </Flex>
+
+        return (
+            <Flex justify="center" align="center">
+                <Flex gap="middle" align="center" vertical>
+                    <img src={Logo} alt="Logo" style={{ width: 200, marginBottom: 20 }} />
+                    <SignIn
+                        onSubmit={this.handleSubmit}
+                        responseMessage={this.state.responseMessage}
+                    />
                 </Flex>
-            );
-        }
+            </Flex>
+        );
     }
 }
 
