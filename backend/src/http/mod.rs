@@ -14,6 +14,7 @@ mod health;
 mod request;
 mod rule;
 mod shuul;
+mod template;
 mod user;
 mod util;
 
@@ -22,5 +23,6 @@ pub use health::health_router;
 pub use request::request_router;
 pub use rule::rule_router;
 pub use shuul::shuul_router;
+pub use template::template_router;
 pub use user::{api_user_router, user_router};
 pub use util::util_router;
