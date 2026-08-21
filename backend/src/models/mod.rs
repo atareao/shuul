@@ -6,6 +6,7 @@
 //! También contiene el tipo de error central [`AppError`] y el estado
 //! compartido de la aplicación ([`AppState`]).
 
+mod ban_manager;
 mod data;
 pub mod error;
 mod ipdata;
@@ -15,6 +16,7 @@ mod response;
 mod rule;
 mod user;
 
+pub use ban_manager::{BanInfo, BanManager};
 pub use data::Data;
 pub use error::AppError as Error;
 pub use ipdata::IPData;
