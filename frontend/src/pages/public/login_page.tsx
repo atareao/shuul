@@ -122,10 +122,22 @@ export default class LoginPage extends React.Component<{}, State> {
             });
             const responseJson = await response.json();
             console.log("Response JSON:", responseJson);
+            if (response.ok) {
+                // Auto-login after successful registration
+                this.setState({ email, password });
+                await this.login(email, password);
+            } else {
+                console.error('Registration failed:', responseJson);
+                this.setState({
+                    responseMessage: responseJson.message || "Registration failed",
+                });
+            }
         }catch (error) {
             console.error('Error:', error);
+            this.setState({
+                responseMessage: "Error registering user",
+            });
         }
-
     }
 
 
