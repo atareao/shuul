@@ -43,9 +43,8 @@ build:
         --tag={{user}}/{{name}}:latest .
 
 push:
-    @podman image push \
-        {{user}}/{{name}}:{{version}} \
-        {{user}}/{{name}}:latest .
+    @podman image push docker.io/{{user}}/{{name}}:{{version}}
+    @podman image push docker.io/{{user}}/{{name}}:latest
 
 upgrade:
     #!/bin/fish
