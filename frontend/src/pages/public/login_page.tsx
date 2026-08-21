@@ -4,27 +4,16 @@ import { Button, Flex } from 'antd';
 
 import AuthContext from '@/components/auth_context';
 import { BASE_URL } from '@/constants';
-import { jwtDecode } from 'jwt-decode';
 import Logo from "@/assets/logo.svg";
-import SignIn from "@/components/signin";
-import Register from "@/components/register";
 
 
 interface State {
-    email: string
-    password: string
-    responseMessage: string;
     redirect: boolean;
     redirectToAdmin: boolean;
-    usersExist: boolean;
-    redirectToLogin: boolean;
-    ssoConfigured: boolean;
-}
-interface UserData {
-    email: string;
-    password: string;
 }
 
+// SSO-only login: no local registration, no local login.
+// If SSO is not configured, the backend will refuse to start.
 export default class LoginPage extends React.Component<{}, State> {
 
     static contextType = AuthContext;
@@ -34,165 +23,17 @@ export default class LoginPage extends React.Component<{}, State> {
         console.log("Constructing login page");
         super(props);
         this.state = {
-            email: "",
-            password: "",
-            responseMessage: "",
             redirect: false,
             redirectToAdmin: false,
-            usersExist: false,
-            redirectToLogin: false,
-            ssoConfigured: false,
         };
-    }
-
-    handleSubmit = (userData: UserData) => {
-        console.log("Submitting user data:", userData);
-        this.setState({ email: userData.email, password: userData.password });
-        this.login(userData.email, userData.password);
-    };
-
-    handleRegisterSubmit = (userData: UserData) => {
-        console.log("Submitting user data:", userData);
-        this.setState({ email: userData.email, password: userData.password });
-        this.register(userData.email, userData.password);
-    };
-
-    setToken = (token: string) => {
-        localStorage.setItem('token', token);
-    }
-
-    getToken = () => {
-        return localStorage.getItem('token');
-    }
-
-    existsUsers = async () => {
-        console.log("Checking if users exist");
-        try {
-            console.log("Chaecking users at:", `${BASE_URL}/api/v1/users/any`);
-            const response = await fetch(`${BASE_URL}/api/v1/users/any`, {
-                method: 'GET',
-                });
-            const responseJson = await response.json();
-            if (response.ok){
-                console.log("Users exist:", responseJson);
-                this.setState({usersExist: responseJson.data.any_user_exists});
-            }
-        }catch (error) {
-            console.error('Error:', error);
-        }
-    }
-
-    componentDidMount = async () => {
-        console.log("Mounting login page");
-        await this.existsUsers();
-        await this.checkSsoStatus();
-    }
-
-    checkSsoStatus = async () => {
-        try {
-            const response = await fetch(`${BASE_URL}/api/v1/auth/sso-status`);
-            const responseJson = await response.json();
-            if (response.ok && responseJson.data?.sso_configured) {
-                this.setState({ ssoConfigured: true });
-            }
-        } catch (error) {
-            console.error('Error checking SSO status:', error);
-        }
     }
 
     handleSsoLogin = () => {
         window.location.href = `${BASE_URL}/api/v1/auth/sso`;
     }
 
-    register = async (email: string, password: string) => {
-        console.log("Registering user");
-        try {
-            console.log(`${BASE_URL}/api/v1/auth/register`);
-            const response = await fetch(`${BASE_URL}/api/v1/auth/register`, {
-                method: 'POST',
-                headers: {
-                    'Content-Type': 'application/json',
-                },
-                body: JSON.stringify({
-                    username: email.split('@')[0],
-                    email: email,
-                    password: password,
-                    role: "admin",
-                }),
-            });
-            const responseJson = await response.json();
-            console.log("Response JSON:", responseJson);
-            if (response.ok) {
-                // Auto-login after successful registration
-                this.setState({ email, password });
-                await this.login(email, password);
-            } else {
-                console.error('Registration failed:', responseJson);
-                this.setState({
-                    responseMessage: responseJson.message || "Registration failed",
-                });
-            }
-        }catch (error) {
-            console.error('Error:', error);
-            this.setState({
-                responseMessage: "Error registering user",
-            });
-        }
-    }
-
-
-    login = async (email: string, password: string) => {
-        console.log("Logging in user");
-        try {
-            console.log(`${BASE_URL}/api/v1/auth/login`);
-            const response = await fetch(`${BASE_URL}/api/v1/auth/login`, {
-                method: 'POST',
-                headers: {
-                    'Content-Type': 'application/json',
-                },
-                body: JSON.stringify({
-                    email: email,
-                    password: password,
-                }),
-            });
-            const responseJson = await response.json();
-            if (response.ok) {
-                this.setToken(responseJson.data.token);
-                //const expirationTime = new Date(new Date().getTime() + 3600 * 1000);
-                const value = this.context;
-                console.log("================");
-                console.log(`Value1: ${value}`);
-                console.log("----------------");
-                const decoded = jwtDecode(responseJson.data.token);
-                console.log("Decoded:", JSON.stringify(decoded));
-                console.log("----------------");
-                this.context.login(responseJson.data.token);
-                console.log("================");
-                //LoginPage.authContext.login(responseJson.data.token);
-                this.setState({
-                    responseMessage: responseJson.message,
-                    redirect: true,
-                    redirectToAdmin: decoded.role === "admin",
-                });
-            } else {
-                console.error('Login failed:', responseJson);
-                this.setState({
-                    responseMessage: responseJson.message,
-                });
-            }
-        } catch (error) {
-            console.error('Error:', error);
-            this.setState({
-                responseMessage: "Error logging in user",
-            });
-        }
-    }
-
-
     render = () => {
         console.log("Rendering login page");
-        console.log(`Users exist: ${this.state.usersExist}`);
-        console.log(`SSO configured: ${this.state.ssoConfigured}`);
 
         // If already logged in, redirect
         if (this.context.isLoggedIn) {
@@ -207,43 +48,13 @@ export default class LoginPage extends React.Component<{}, State> {
             );
         }
 
-        // SSO configured: only show the PocketID button (no local login/register)
-        if (this.state.ssoConfigured) {
-            return (
-                <Flex justify="center" align="center">
-                    <Flex gap="middle" align="center" vertical>
-                        <img src={Logo} alt="Logo" style={{ width: 200, marginBottom: 20 }} />
-                        <Button type="primary" size="large" onClick={this.handleSsoLogin}>
-                            Sign in with PocketID
-                        </Button>
-                    </Flex>
-                </Flex>
-            );
-        }
-
-        // No SSO: show register if no users exist, otherwise show login
-        if (this.state.usersExist === false) {
-            return (
-                <Flex justify="center" align="center">
-                    <Flex gap="middle" align="center" vertical>
-                        <img src={Logo} alt="Logo" style={{ width: 200, marginBottom: 20 }} />
-                        <Register
-                            onSubmit={this.handleRegisterSubmit}
-                            responseMessage={this.state.responseMessage}
-                        />
-                    </Flex>
-                </Flex>
-            );
-        }
-
         return (
-            <Flex justify="center" align="center">
+            <Flex justify="center" align="center" style={{ minHeight: '100vh' }}>
                 <Flex gap="middle" align="center" vertical>
                     <img src={Logo} alt="Logo" style={{ width: 200, marginBottom: 20 }} />
-                    <SignIn
-                        onSubmit={this.handleSubmit}
-                        responseMessage={this.state.responseMessage}
-                    />
+                    <Button type="primary" size="large" onClick={this.handleSsoLogin}>
+                        Sign in with PocketID
+                    </Button>
                 </Flex>
             </Flex>
         );

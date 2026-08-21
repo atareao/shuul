@@ -28,7 +28,7 @@ pub use rate_limiter::CircularTimestamps;
 pub use request::{NewRequest, ReadRequestParams, Request};
 pub use response::{ApiResponse, EmptyResponse, PagedResponse, Pagination};
 pub use rule::{CacheRule, NewRule, ReadRuleParams, Rule, UpdateRule};
-pub use user::{TokenClaims, User, UserRegister, UserSchema};
+pub use user::{TokenClaims, User};
 
 use maxminddb::Reader;
 use sqlx::postgres::PgPool;
