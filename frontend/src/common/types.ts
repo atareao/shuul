@@ -24,6 +24,7 @@ export interface FieldDefinition<T>{
     key: NestedKeyOf<T> & string; // La clave debe ser una clave de T y también un string
     labelKey?: NestedKeyOf<T> & string; // La clave debe ser una clave de T y también un string
     label: string;
+    dialogTab?: string;
     type: 'boolean' | 'number' | 'date' | 'string' | 'select';
     value?: T[keyof T & string]; // Valor inicial de ese tipo
     customSorter?: (a: T, b: T) => number;

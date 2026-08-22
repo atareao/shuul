@@ -1,7 +1,7 @@
 import React from "react";
 import { useNavigate } from 'react-router';
 import { useTranslation } from "react-i18next";
-import { Modal, Typography, Flex, Input, InputNumber, Switch, Select, Alert } from "antd";
+import { Modal, Typography, Flex, Input, InputNumber, Switch, Select, Alert, Tabs } from "antd";
 
 const { Text } = Typography;
 
@@ -306,13 +306,103 @@ class InnerDialog<T> extends React.Component<Props<T>, State<T>> {
         this.hideMessage();
     }
 
-    render = () => {
-        const { showMessage, messageText, messageType } = this.state;
-        const dialogMode = this.props.dialogMode;
+    getVisibleFields = () => {
         const rateLimitEnabled = Boolean(getNestedValue(this.state.data, 'rate_limit_enabled'));
         const bantimeIncrement = Boolean(getNestedValue(this.state.data, 'bantime_increment'));
         const rateLimitOnlyFields = ['max_retry', 'find_time_seconds', 'ban_time_seconds', 'bantime_increment', 'ignoreip', 'webhook'];
         const escalationOnlyFields = ['bantime_multipliers', 'bantime_maxtime_seconds', 'ban_count_decay_days'];
+
+        return this.props.fields.filter((field) => {
+            if (!field.visible) {
+                return false;
+            }
+            if (rateLimitOnlyFields.includes(field.key) && !rateLimitEnabled) {
+                return false;
+            }
+            if (escalationOnlyFields.includes(field.key) && (!rateLimitEnabled || !bantimeIncrement)) {
+                return false;
+            }
+            return true;
+        });
+    }
+
+    renderField = (field: FieldDefinition<T>, disabled: boolean) => (
+        <Flex key={field.key}>
+            <Flex vertical style={{ width: 200 }}>
+                <Text>{field.label}</Text>
+                {field.help && <Text type="secondary">{field.help}</Text>}
+            </Flex>
+            {field.type === 'boolean' &&
+                <Switch
+                    defaultChecked={this.getValue(field.key as keyof T & string) as boolean}
+                    onChange={(checked) => this.onChange(field.key as keyof T & string, checked)}
+                    disabled={disabled}
+                />
+            }
+            {field.type === 'string' &&
+                <Input
+                    style={{ width: '100%' }}
+                    defaultValue={this.getValue(field.key as keyof T & string) as string}
+                    placeholder={field.label}
+                    onChange={(e) => this.onChange(field.key as keyof T & string, e.target.value)}
+                    disabled={disabled || field.editable === false}
+                />
+            }
+            {field.type === 'number' &&
+                <InputNumber
+                    style={{ width: '100%' }}
+                    defaultValue={this.getValue(field.key as keyof T & string) as number}
+                    placeholder={field.label}
+                    onChange={(value) => this.onChange(field.key as keyof T & string, value)}
+                    min={field.min}
+                    max={field.max}
+                    disabled={disabled || field.editable === false}
+                />
+            }
+            {field.type === 'select' &&
+                <Select
+                    style={{ width: '100%' }}
+                    defaultValue={this.getValue(field.key as keyof T & string) as any}
+                    onChange={(value) => this.onChange(field.key as keyof T & string, value)}
+                    disabled={disabled}
+                    options={field.options}
+                />
+            }
+        </Flex>
+    )
+
+    renderFormFields = (disabled: boolean) => {
+        const fields = this.getVisibleFields();
+        const tabs = Array.from(new Set(fields.map((field) => field.dialogTab).filter(Boolean)));
+
+        if (tabs.length <= 1) {
+            return (
+                <Flex vertical gap="small">
+                    {fields.map((field) => this.renderField(field, disabled))}
+                </Flex>
+            );
+        }
+
+        return (
+            <Tabs
+                items={tabs.map((tab) => ({
+                    key: tab!,
+                    label: tab,
+                    children: (
+                        <Flex vertical gap="small">
+                            {fields
+                                .filter((field) => field.dialogTab === tab)
+                                .map((field) => this.renderField(field, disabled))}
+                        </Flex>
+                    ),
+                }))}
+            />
+        );
+    }
+
+    render = () => {
+        const { showMessage, messageText, messageType } = this.state;
+        const dialogMode = this.props.dialogMode;
         // Obtener la clave 'id' de forma segura para usar en el mensaje de borrado.
         const data_id = this.state.data ? (this.state.data as any).id : undefined;
         const disabled = dialogMode === DialogModes.READ;
@@ -369,6 +459,8 @@ class InnerDialog<T> extends React.Component<Props<T>, State<T>> {
                         }}
                         okText={this.props.t('Ok')}
                         cancelText={this.props.t('Cancel')}
+                        width={900}
+                        styles={{ body: { maxHeight: '70vh', overflowY: 'auto' } }}
                     >
                         {showMessage && (
                             <Alert
@@ -380,66 +472,7 @@ class InnerDialog<T> extends React.Component<Props<T>, State<T>> {
                                 style={{ margin: 16 }}
                             />
                         )}
-                        <Flex vertical gap="small">
-                            {/* Uso de this.props.fields */}
-                            {this.props.fields && this.props.fields.map((field) => {
-                                if (!field.visible) {
-                                    return null;
-                                }
-
-                                if (rateLimitOnlyFields.includes(field.key) && !rateLimitEnabled) {
-                                    return null;
-                                }
-                                if (escalationOnlyFields.includes(field.key) && (!rateLimitEnabled || !bantimeIncrement)) {
-                                    return null;
-                                }
-
-                                return (
-                                    <Flex key={field.key}>
-                                        <Flex vertical style={{ width: 200 }}>
-                                            <Text>{field.label}</Text>
-                                            {field.help && <Text type="secondary">{field.help}</Text>}
-                                        </Flex>
-                                        {field.type === 'boolean' &&
-                                            <Switch
-                                                defaultChecked={this.getValue(field.key as keyof T & string) as boolean}
-                                                onChange={(checked) => this.onChange(field.key as keyof T & string, checked)}
-                                                disabled={disabled}
-                                            />
-                                        }
-                                        {field.type === 'string' &&
-                                            <Input
-                                                style={{ width: '100%' }}
-                                                defaultValue={this.getValue(field.key as keyof T & string) as string}
-                                                placeholder={field.label}
-                                                onChange={(e) => this.onChange(field.key as keyof T & string, e.target.value)}
-                                                disabled={disabled || field.editable === false}
-                                            />
-                                        }
-                                        {field.type === 'number' &&
-                                            <InputNumber
-                                                style={{ width: '100%' }}
-                                                defaultValue={this.getValue(field.key as keyof T & string) as number}
-                                                placeholder={field.label}
-                                                onChange={(value) => this.onChange(field.key as keyof T & string, value)}
-                                                min={field.min}
-                                                max={field.max}
-                                                disabled={disabled || field.editable === false}
-                                            />
-                                        }
-                                        {field.type === 'select' &&
-                                            <Select
-                                                style={{ width: '100%' }}
-                                                defaultValue={this.getValue(field.key as keyof T & string) as any}
-                                                onChange={(value) => this.onChange(field.key as keyof T & string, value)}
-                                                disabled={disabled}
-                                                options={field.options}
-                                            />
-                                        }
-                                    </Flex>
-                                );
-                            })}
-                        </Flex>
+                        {this.renderFormFields(disabled)}
                     </Modal>
                 }
             </>
