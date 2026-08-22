@@ -27,8 +27,8 @@ const FIELDS: FieldDefinition<Item>[] = [
     { key: 'path', label: 'Path', dialogTab: 'Matching', type: 'string', value: "", width: 140, filterKey: "path", visible: true },
     { key: 'query', label: 'Query', dialogTab: 'Matching', type: 'string', value: "", filterKey: "query", visible: true },
     { key: 'city_name', label: 'City Name', dialogTab: 'Matching', type: 'string', value: "", width: 150, filterKey: "city_name", visible: true },
-    { key: 'country_name', label: 'Contry Name', dialogTab: 'Matching', type: 'string', value: "", width: 150, filterKey: "country_name", visible: true },
-    { key: 'country_code', label: 'Contry Code', dialogTab: 'Matching', type: 'string', value: "", width: 150, filterKey: "country_code", visible: true },
+    { key: 'country_name', label: 'Country Name', dialogTab: 'Matching', type: 'string', value: "", width: 150, filterKey: "country_name", visible: true },
+    { key: 'country_code', label: 'Country Code', dialogTab: 'Matching', type: 'string', value: "", width: 150, filterKey: "country_code", visible: true },
     // Rate limiting fields
     { key: 'rate_limit_enabled', label: 'Rate Limit', dialogTab: 'Rate limiting', type: 'boolean', value: false, width: 100, visible: true, help: 'Enable rate limiting for this rule' },
     { key: 'max_retry', label: 'Max Retry', dialogTab: 'Rate limiting', type: 'number', value: 5, width: 100, visible: true, min: 1, help: 'Requests allowed before ban' },
