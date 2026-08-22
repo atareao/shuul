@@ -155,6 +155,7 @@ async fn main() -> Result<(), Error> {
                     rule_id: ban.rule_id,
                     reason: ban.reason.unwrap_or_else(|| ban.jail_name.clone()),
                 },
+                i64::from(ban.ban_count_decay_days.unwrap_or(30)),
             );
         }
     }

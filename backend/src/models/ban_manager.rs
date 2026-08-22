@@ -88,13 +88,19 @@ pub struct BanManager {
     escalation_counts: HashMap<BanScope, EscalationState>,
 }
 
-impl BanManager {
-    /// Create a new BanManager with default settings.
-    pub fn new() -> Self {
+impl Default for BanManager {
+    fn default() -> Self {
         Self {
             bans: HashMap::new(),
             escalation_counts: HashMap::new(),
         }
+    }
+}
+
+impl BanManager {
+    /// Create a new BanManager with default settings.
+    pub fn new() -> Self {
+        Self::default()
     }
 
     /// Check if an IP is currently banned.
@@ -109,7 +115,7 @@ impl BanManager {
     ///
     /// If `ban_duration_override` is `Some`, it is used as the ban duration
     /// instead of the calculated escalation-based duration.
-    pub fn restore(&mut self, ip: IpAddr, ban_info: BanInfo) {
+    pub fn restore(&mut self, ip: IpAddr, ban_info: BanInfo, decay_days: i64) {
         let scope = BanScope {
             ip,
             rule_id: ban_info.rule_id,
@@ -123,7 +129,7 @@ impl BanManager {
             .or_insert(EscalationState {
                 level: ban_info.escalation_level + 1,
                 last_ban: ban_info.banned_at,
-                decay_days: BanSettings::default().ban_count_decay_days,
+                decay_days,
             });
         self.bans.entry(ip).or_default().push(ban_info);
     }

@@ -33,6 +33,32 @@ interface Props<T> {
     t: any;
 }
 
+const isValidIpv4Address = (value: string): boolean => {
+    const parts = value.split('.');
+    return parts.length === 4 && parts.every((part) => /^\d{1,3}$/.test(part) && Number(part) <= 255);
+};
+
+const isValidIpv6Address = (value: string): boolean => {
+    if (!/^[0-9a-fA-F:]+$/.test(value) || value.includes(':::')) {
+        return false;
+    }
+
+    const hasCompression = value.includes('::');
+    if (hasCompression && value.indexOf('::') !== value.lastIndexOf('::')) {
+        return false;
+    }
+
+    const parts = value.split(':').filter(Boolean);
+    if (!parts.every((part) => /^[0-9a-fA-F]{1,4}$/.test(part))) {
+        return false;
+    }
+
+    return hasCompression ? parts.length < 8 : parts.length === 8;
+};
+
+const isValidIpAddress = (value: string): boolean =>
+    isValidIpv4Address(value) || isValidIpv6Address(value);
+
 // El componente de clase se hace genérico: InnerDialog<T>
 class InnerDialog<T> extends React.Component<Props<T>, State<T>> {
 
@@ -227,17 +253,16 @@ class InnerDialog<T> extends React.Component<Props<T>, State<T>> {
                     }
                 }
                 if (field.key === 'ip_address' && typeof fieldValue === 'string' && fieldValue.trim() !== '') {
-                    const isIp = /^((25[0-5]|2[0-4]\d|1?\d?\d)\.){3}(25[0-5]|2[0-4]\d|1?\d?\d)$|^[0-9a-fA-F:]+$/.test(fieldValue.trim());
-                    if (!isIp) {
-                        this.showMessage(`Invalid IP address: ${fieldValue}`, "error");
+                    if (!isValidIpAddress(fieldValue.trim())) {
+                        this.showMessage(`La dirección IP no es válida: ${fieldValue}`, "error");
                         return;
                     }
                 }
                 if (field.key === 'ignoreip') {
                     const ignoreIps = this.serializeFieldValue(field, fieldValue) as string[];
-                    const invalidIp = ignoreIps.find((ip) => !/^((25[0-5]|2[0-4]\d|1?\d?\d)\.){3}(25[0-5]|2[0-4]\d|1?\d?\d)$|^[0-9a-fA-F:]+$/.test(ip));
+                    const invalidIp = ignoreIps.find((ip) => !isValidIpAddress(ip));
                     if (invalidIp) {
-                        this.showMessage(`Invalid ignored IP address: ${invalidIp}`, "error");
+                        this.showMessage(`La IP ignorada no es válida: ${invalidIp}`, "error");
                         return;
                     }
                 }
@@ -248,7 +273,7 @@ class InnerDialog<T> extends React.Component<Props<T>, State<T>> {
                             throw new Error("invalid protocol");
                         }
                     } catch {
-                        this.showMessage(`Invalid webhook URL: ${fieldValue}`, "error");
+                        this.showMessage(`La URL del webhook no es válida: ${fieldValue}`, "error");
                         return;
                     }
                 }
@@ -284,6 +309,10 @@ class InnerDialog<T> extends React.Component<Props<T>, State<T>> {
     render = () => {
         const { showMessage, messageText, messageType } = this.state;
         const dialogMode = this.props.dialogMode;
+        const rateLimitEnabled = Boolean(getNestedValue(this.state.data, 'rate_limit_enabled'));
+        const bantimeIncrement = Boolean(getNestedValue(this.state.data, 'bantime_increment'));
+        const rateLimitOnlyFields = ['max_retry', 'find_time_seconds', 'ban_time_seconds', 'bantime_increment', 'ignoreip', 'webhook'];
+        const escalationOnlyFields = ['bantime_multipliers', 'bantime_maxtime_seconds', 'ban_count_decay_days'];
         // Obtener la clave 'id' de forma segura para usar en el mensaje de borrado.
         const data_id = this.state.data ? (this.state.data as any).id : undefined;
         const disabled = dialogMode === DialogModes.READ;
@@ -357,11 +386,6 @@ class InnerDialog<T> extends React.Component<Props<T>, State<T>> {
                                 if (!field.visible) {
                                     return null;
                                 }
-
-                                const rateLimitEnabled = Boolean(getNestedValue(this.state.data, 'rate_limit_enabled'));
-                                const bantimeIncrement = Boolean(getNestedValue(this.state.data, 'bantime_increment'));
-                                const rateLimitOnlyFields = ['max_retry', 'find_time_seconds', 'ban_time_seconds', 'ignoreip', 'webhook'];
-                                const escalationOnlyFields = ['bantime_multipliers', 'bantime_maxtime_seconds', 'ban_count_decay_days'];
 
                                 if (rateLimitOnlyFields.includes(field.key) && !rateLimitEnabled) {
                                     return null;

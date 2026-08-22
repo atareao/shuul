@@ -68,18 +68,21 @@ pub async fn shuul(
         // ── Step 3: Rate limiter check ──
         if cache_rule.rule.rate_limit_enabled
             && let Some(ip_str) = &request.ip_address
+            && let Ok(ip) = ip_str.parse::<IpAddr>()
         {
-            if cache_rule
+            let ignored = cache_rule
                 .rule
                 .ignoreip
                 .iter()
-                .any(|ignored_ip| ignored_ip == ip_str)
-            {
+                .filter_map(|ignored_ip| ignored_ip.parse::<IpAddr>().ok())
+                .any(|ignored_ip| ignored_ip == ip);
+
+            if ignored {
                 debug!(
                     "Skipping rate limit for ignored IP {} on rule {}",
-                    ip_str, cache_rule.rule.id
+                    ip, cache_rule.rule.id
                 );
-            } else if let Ok(ip) = ip_str.parse::<IpAddr>() {
+            } else {
                 let should_ban = if let Ok(mut rate_limiters) = app_state.rate_limiter.lock() {
                     let rl = rate_limiters.entry(cache_rule.rule.id).or_insert_with(|| {
                         RateLimiter::new(

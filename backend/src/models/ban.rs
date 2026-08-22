@@ -21,6 +21,7 @@ pub struct Ban {
     pub reason: Option<String>,
     pub expired: bool,
     pub created_at: DateTime<Utc>,
+    pub ban_count_decay_days: Option<i32>,
 }
 
 #[derive(Debug, Clone)]
@@ -47,6 +48,7 @@ impl Ban {
             reason: row.get("reason"),
             expired: row.get("expired"),
             created_at: row.get("created_at"),
+            ban_count_decay_days: row.try_get("ban_count_decay_days").ok(),
         }
     }
 
@@ -70,7 +72,9 @@ impl Ban {
     }
 
     pub async fn read_active(pool: &PgPool) -> Result<Vec<Self>, Error> {
-        let sql = "SELECT * FROM bans
+        let sql = "SELECT bans.*, rules.ban_count_decay_days
+            FROM bans
+            LEFT JOIN rules ON rules.id = bans.rule_id
             WHERE expired = FALSE
               AND banned_at + (ban_duration_seconds * INTERVAL '1 second') > NOW()
             ORDER BY banned_at DESC";
