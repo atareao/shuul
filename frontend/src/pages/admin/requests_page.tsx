@@ -1,7 +1,11 @@
+import { Button } from "antd";
+import { FilterFilled } from "@ant-design/icons";
 import { useTranslation } from "react-i18next";
-import CustomTable from '@/components/custom_table'; 
-import type { FieldDefinition } from '@/common/types'; 
-import type Item from "@/models/record"; 
+
+import CustomTable from '@/components/custom_table';
+import RequestActionDialog from "@/components/dialogs/request_action_dialog";
+import type { FieldDefinition } from '@/common/types';
+import type Item from "@/models/record";
 
 const TITLE = "Requests";
 const ENDPOINT = "requests";
@@ -23,16 +27,18 @@ const RecordsFields: FieldDefinition<Item>[] = [
 
 export default function Page() {
     const { t } = useTranslation();
-    // No necesitamos 'navigate' si no se usa
-
-    // Adaptamos las etiquetas para usar la función 't'
     const translatedFields: FieldDefinition<Item>[] = RecordsFields.map(field => ({
         ...field,
         label: t(field.label),
     }));
 
+    const renderActionColumn = (item: Item, onEdit: (item: Item) => void) => (
+        <Button onClick={() => onEdit(item)} title={t("Create action from request")}>
+            <FilterFilled />
+        </Button>
+    );
+
     return (
-        // Usamos el CustomTable con el tipo Item para la inferencia de TypeScript
         <CustomTable<Item>
             title={TITLE}
             endpoint={ENDPOINT}
@@ -42,6 +48,15 @@ export default function Page() {
             defaultSortDesc={true}
             autoRefresh={true}
             autoRefreshInterval={30}
+            hasActions={true}
+            renderActionColumn={renderActionColumn}
+            dialogRenderer={({ dialogMode, selectedItem, handleCloseDialog }) => (
+                <RequestActionDialog
+                    request={selectedItem}
+                    dialogMode={dialogMode}
+                    onClose={() => handleCloseDialog(undefined)}
+                />
+            )}
         />
     );
 }
