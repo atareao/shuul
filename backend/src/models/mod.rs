@@ -6,6 +6,7 @@
 //! También contiene el tipo de error central [`AppError`] y el estado
 //! compartido de la aplicación ([`AppState`]).
 
+mod ban;
 mod ban_manager;
 mod data;
 pub mod error;
@@ -17,14 +18,15 @@ mod response;
 mod rule;
 mod user;
 
-pub use ban_manager::BanManager;
+pub use ban::{Ban, NewBan};
+pub use ban_manager::{BanInfo, BanManager, BanSettings};
 pub use data::Data;
 pub use error::AppError as Error;
 pub use ipdata::IPData;
 pub use oidc::{JwtValidator, OidcMetadata};
-pub use rate_limiter::RateLimiter;
 #[allow(unused_imports)]
 pub use rate_limiter::CircularTimestamps;
+pub use rate_limiter::RateLimiter;
 pub use request::{NewRequest, ReadRequestParams, Request};
 pub use response::{ApiResponse, EmptyResponse, PagedResponse, Pagination};
 pub use rule::{CacheRule, NewRule, ReadRuleParams, Rule, UpdateRule};

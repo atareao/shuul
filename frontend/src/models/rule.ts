@@ -11,7 +11,7 @@ export default interface Rule {
     city_name?: string;
     country_name?: string;
     country_code?: string;
-    active?: number;
+    active?: boolean;
     created_at?: Date;
     updated_at?: Date;
 

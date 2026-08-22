@@ -36,6 +36,9 @@ export interface FieldDefinition<T>{
     options?: { value: any; label: string }[];
     required?: boolean;
     visible?: boolean;
+    min?: number;
+    max?: number;
+    help?: string;
 }
 
 export type LanguageCode = "es" | "va";
@@ -65,4 +68,3 @@ export interface PuntoPreemerMarker {
     description: string;
     address?: string;
 }
-

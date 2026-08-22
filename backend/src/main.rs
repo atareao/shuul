@@ -32,11 +32,11 @@ use http::{
 };
 use maxminddb::Reader;
 use models::CacheRule;
-use models::{AppState, BanManager, Error, JwtValidator, OidcMetadata, RateLimiter};
+use models::{AppState, Ban, BanInfo, BanManager, Error, JwtValidator, OidcMetadata, RateLimiter};
 use sqlx::{
+    Row,
     migrate::{MigrateDatabase, Migrator},
     postgres::PgPoolOptions,
-    Row,
 };
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
@@ -143,13 +143,22 @@ async fn main() -> Result<(), Error> {
 
     let rules = Mutex::new(CacheRule::read_all_active(&pool).await.unwrap_or_default());
     let cache = Mutex::new(Vec::new());
-    let ban_manager = Mutex::new(BanManager::new(
-        3600,    // default_ban_duration (1h)
-        false,   // bantime_increment (per-rule config)
-        vec![1, 2, 4, 8],
-        604800,  // bantime_maxtime (1w)
-        30,      // ban_count_decay_days
-    ));
+    let mut runtime_ban_manager = BanManager::new();
+    for ban in Ban::read_active(&pool).await.unwrap_or_default() {
+        if let Ok(ip) = ban.ip_address.parse() {
+            runtime_ban_manager.restore(
+                ip,
+                BanInfo {
+                    banned_at: ban.banned_at,
+                    ban_duration_seconds: i64::from(ban.ban_duration_seconds),
+                    escalation_level: ban.escalation_level as u32,
+                    rule_id: ban.rule_id,
+                    reason: ban.reason.unwrap_or_else(|| ban.jail_name.clone()),
+                },
+            );
+        }
+    }
+    let ban_manager = Mutex::new(runtime_ban_manager);
     let rate_limiter: Mutex<HashMap<i32, RateLimiter>> = Mutex::new(HashMap::new());
 
     // ── OIDC / SSO Configuration ──
@@ -224,6 +233,13 @@ async fn main() -> Result<(), Error> {
                     debug!("Ban cleanup: {} → {} active bans", before, after);
                 }
             }
+            match Ban::expire_elapsed(&cleanup_state.pool).await {
+                Ok(expired) if !expired.is_empty() => {
+                    debug!("Marked {} persisted bans as expired", expired.len());
+                },
+                Ok(_) => {},
+                Err(e) => error!("Ban persistence cleanup failed: {}", e),
+            }
             if let Ok(mut rate_limiters) = cleanup_state.rate_limiter.lock() {
                 rate_limiters.retain(|_, rl| {
                     rl.cleanup_expired();
@@ -252,9 +268,13 @@ async fn main() -> Result<(), Error> {
             match models::Request::delete_before(&cleanup_state2.pool, days).await {
                 Ok(deleted) => {
                     if !deleted.is_empty() {
-                        debug!("Daily cleanup: deleted {} old requests (retention: {} days)", deleted.len(), days);
+                        debug!(
+                            "Daily cleanup: deleted {} old requests (retention: {} days)",
+                            deleted.len(),
+                            days
+                        );
                     }
-                }
+                },
                 Err(e) => error!("Daily cleanup failed: {}", e),
             }
         }
@@ -274,7 +294,10 @@ async fn main() -> Result<(), Error> {
         .nest("/bans", ban_router())
         .nest("/templates", template_router())
         .nest("/settings", settings_router())
-        .route_layer(axum_middleware::from_fn_with_state(app_state.clone(), require_auth))
+        .route_layer(axum_middleware::from_fn_with_state(
+            app_state.clone(),
+            require_auth,
+        ))
         .with_state(app_state);
 
     let app = Router::new()

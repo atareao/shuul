@@ -82,13 +82,23 @@ class InnerDialog<T> extends React.Component<Props<T>, State<T>> {
                 queryString = searchParams.toString();
             }
             string_body = null;
-        } else if (this.props.dialogMode === DialogModes.UPDATE) {
-            method = 'PATCH';
-            string_body = JSON.stringify(this.state.data);
         } else if (this.props.dialogMode === DialogModes.CREATE) {
             method = 'POST';
             const body = this.props.fields.reduce((acc: any, field: FieldDefinition<T>) => {
-                acc[field.key] = getNestedValue(dataWithId, field.key as string);
+                acc[field.key] = this.serializeFieldValue(
+                    field,
+                    getNestedValue(dataWithId, field.key as string),
+                );
+                return acc;
+            }, {})
+            string_body = JSON.stringify(body);
+        } else if (this.props.dialogMode === DialogModes.UPDATE) {
+            method = 'PATCH';
+            const body = this.props.fields.reduce((acc: any, field: FieldDefinition<T>) => {
+                acc[field.key] = this.serializeFieldValue(
+                    field,
+                    getNestedValue(dataWithId, field.key as string),
+                );
                 return acc;
             }, {})
             string_body = JSON.stringify(body);
@@ -148,6 +158,31 @@ class InnerDialog<T> extends React.Component<Props<T>, State<T>> {
         }
     }
 
+    serializeFieldValue = (field: FieldDefinition<T>, value: any) => {
+        if (field.key === 'bantime_multipliers') {
+            if (Array.isArray(value)) {
+                return value.map((item) => Number(item)).filter((item) => !Number.isNaN(item));
+            }
+            return String(value ?? "")
+                .split(",")
+                .map((item) => Number(item.trim()))
+                .filter((item) => !Number.isNaN(item));
+        }
+        if (field.key === 'ignoreip') {
+            if (Array.isArray(value)) {
+                return value.map((item) => String(item).trim()).filter(Boolean);
+            }
+            return String(value ?? "")
+                .split(",")
+                .map((item) => item.trim())
+                .filter(Boolean);
+        }
+        if (typeof value === 'string' && value.trim() === "") {
+            return null;
+        }
+        return value;
+    }
+
     componentDidUpdate(prevProps: Props<T>) {
         if (prevProps.dialogMode !== this.props.dialogMode ||
             (this.props.dialogMode !== DialogModes.CREATE &&
@@ -174,9 +209,46 @@ class InnerDialog<T> extends React.Component<Props<T>, State<T>> {
             for (const field of this.props.fields) {
                 console.log(field);
                 console.log(getNestedValue(this.state.data, field.key as string));
+                const fieldValue = getNestedValue(this.state.data, field.key as string);
                 if (field.required) {
-                    if (getNestedValue(this.state.data, field.key as string) === undefined || getNestedValue(this.state.data, field.key as string) === null || getNestedValue(this.state.data, field.key as string) === '') {
+                    if (fieldValue === undefined || fieldValue === null || fieldValue === '') {
                         this.showMessage(`El campo ${field.label} es obligatorio`, "error");
+                        return;
+                    }
+                }
+                if (field.type === 'number' && typeof fieldValue === 'number') {
+                    if (field.min !== undefined && fieldValue < field.min) {
+                        this.showMessage(`El campo ${field.label} debe ser mayor o igual a ${field.min}`, "error");
+                        return;
+                    }
+                    if (field.max !== undefined && fieldValue > field.max) {
+                        this.showMessage(`El campo ${field.label} debe ser menor o igual a ${field.max}`, "error");
+                        return;
+                    }
+                }
+                if (field.key === 'ip_address' && typeof fieldValue === 'string' && fieldValue.trim() !== '') {
+                    const isIp = /^((25[0-5]|2[0-4]\d|1?\d?\d)\.){3}(25[0-5]|2[0-4]\d|1?\d?\d)$|^[0-9a-fA-F:]+$/.test(fieldValue.trim());
+                    if (!isIp) {
+                        this.showMessage(`Invalid IP address: ${fieldValue}`, "error");
+                        return;
+                    }
+                }
+                if (field.key === 'ignoreip') {
+                    const ignoreIps = this.serializeFieldValue(field, fieldValue) as string[];
+                    const invalidIp = ignoreIps.find((ip) => !/^((25[0-5]|2[0-4]\d|1?\d?\d)\.){3}(25[0-5]|2[0-4]\d|1?\d?\d)$|^[0-9a-fA-F:]+$/.test(ip));
+                    if (invalidIp) {
+                        this.showMessage(`Invalid ignored IP address: ${invalidIp}`, "error");
+                        return;
+                    }
+                }
+                if (field.key === 'webhook' && typeof fieldValue === 'string' && fieldValue.trim() !== '') {
+                    try {
+                        const url = new URL(fieldValue);
+                        if (!['http:', 'https:'].includes(url.protocol)) {
+                            throw new Error("invalid protocol");
+                        }
+                    } catch {
+                        this.showMessage(`Invalid webhook URL: ${fieldValue}`, "error");
                         return;
                     }
                 }
@@ -281,48 +353,68 @@ class InnerDialog<T> extends React.Component<Props<T>, State<T>> {
                         )}
                         <Flex vertical gap="small">
                             {/* Uso de this.props.fields */}
-                            {this.props.fields && this.props.fields.map((field) => (
-                                // Casting de field.key a keyof T & string es seguro aquí
-                                    field.visible === true &&
-                                        <Flex key={field.key}>
-                                            <Text style={{ width: 200 }}>{field.label}</Text>
-                                            {field.type === 'boolean' && field.visible == true &&
-                                                <Switch
-                                                    // Se requiere casting a los tipos específicos
-                                                    defaultChecked={this.getValue(field.key as keyof T & string) as boolean}
-                                                    onChange={(checked) => this.onChange(field.key as keyof T & string, checked)}
-                                                    disabled={disabled}
-                                                />
-                                            }
-                                            {field.type === 'string' && field.visible == true &&
-                                                <Input
-                                                    style={{ width: '100%' }}
-                                                    defaultValue={this.getValue(field.key as keyof T & string) as string}
-                                                    placeholder={field.label}
-                                                    onChange={(e) => this.onChange(field.key as keyof T & string, e.target.value)}
-                                                    disabled={disabled || field.editable === false}
-                                                />
-                                            }
-                                            {field.type === 'number' && field.visible == true &&
-                                                <InputNumber
-                                                    style={{ width: '100%' }}
-                                                    defaultValue={this.getValue(field.key as keyof T & string) as number}
-                                                    placeholder={field.label}
-                                                    onChange={(value) => this.onChange(field.key as keyof T & string, value)}
-                                                    disabled={disabled || field.editable === false}
-                                                />
-                                            }
-                                            {field.type === 'select' && field.visible == true &&
-                                                <Select
-                                                    style={{ width: '100%' }}
-                                                    defaultValue={this.getValue(field.key as keyof T & string) as any}
-                                                    onChange={(value) => this.onChange(field.key as keyof T & string, value)}
-                                                    disabled={disabled}
-                                                    options={field.options}
-                                                />
-                                            }
+                            {this.props.fields && this.props.fields.map((field) => {
+                                if (!field.visible) {
+                                    return null;
+                                }
+
+                                const rateLimitEnabled = Boolean(getNestedValue(this.state.data, 'rate_limit_enabled'));
+                                const bantimeIncrement = Boolean(getNestedValue(this.state.data, 'bantime_increment'));
+                                const rateLimitOnlyFields = ['max_retry', 'find_time_seconds', 'ban_time_seconds', 'ignoreip', 'webhook'];
+                                const escalationOnlyFields = ['bantime_multipliers', 'bantime_maxtime_seconds', 'ban_count_decay_days'];
+
+                                if (rateLimitOnlyFields.includes(field.key) && !rateLimitEnabled) {
+                                    return null;
+                                }
+                                if (escalationOnlyFields.includes(field.key) && (!rateLimitEnabled || !bantimeIncrement)) {
+                                    return null;
+                                }
+
+                                return (
+                                    <Flex key={field.key}>
+                                        <Flex vertical style={{ width: 200 }}>
+                                            <Text>{field.label}</Text>
+                                            {field.help && <Text type="secondary">{field.help}</Text>}
                                         </Flex>
-                            ))}
+                                        {field.type === 'boolean' &&
+                                            <Switch
+                                                defaultChecked={this.getValue(field.key as keyof T & string) as boolean}
+                                                onChange={(checked) => this.onChange(field.key as keyof T & string, checked)}
+                                                disabled={disabled}
+                                            />
+                                        }
+                                        {field.type === 'string' &&
+                                            <Input
+                                                style={{ width: '100%' }}
+                                                defaultValue={this.getValue(field.key as keyof T & string) as string}
+                                                placeholder={field.label}
+                                                onChange={(e) => this.onChange(field.key as keyof T & string, e.target.value)}
+                                                disabled={disabled || field.editable === false}
+                                            />
+                                        }
+                                        {field.type === 'number' &&
+                                            <InputNumber
+                                                style={{ width: '100%' }}
+                                                defaultValue={this.getValue(field.key as keyof T & string) as number}
+                                                placeholder={field.label}
+                                                onChange={(value) => this.onChange(field.key as keyof T & string, value)}
+                                                min={field.min}
+                                                max={field.max}
+                                                disabled={disabled || field.editable === false}
+                                            />
+                                        }
+                                        {field.type === 'select' &&
+                                            <Select
+                                                style={{ width: '100%' }}
+                                                defaultValue={this.getValue(field.key as keyof T & string) as any}
+                                                onChange={(value) => this.onChange(field.key as keyof T & string, value)}
+                                                disabled={disabled}
+                                                options={field.options}
+                                            />
+                                        }
+                                    </Flex>
+                                );
+                            })}
                         </Flex>
                     </Modal>
                 }

@@ -101,6 +101,23 @@ async fn test_requests_table_exists() {
     assert_eq!(count, 1, "La tabla 'requests' debe existir");
 }
 
+#[tokio::test]
+async fn test_bans_table_exists() {
+    let Some(pool) = setup_pool().await else {
+        eprintln!("⚠️  DATABASE_URL no configurada, saltando test");
+        return;
+    };
+
+    let result: Result<(i64,), _> =
+        sqlx::query_as("SELECT COUNT(*) FROM information_schema.tables WHERE table_name = 'bans'")
+            .fetch_one(&pool)
+            .await;
+
+    assert!(result.is_ok());
+    let (count,) = result.unwrap();
+    assert_eq!(count, 1, "La tabla 'bans' debe existir");
+}
+
 // ──────────────────────────────────────────────
 // Tests CRUD de Users
 // ──────────────────────────────────────────────
@@ -254,6 +271,79 @@ async fn test_rule_crud() {
         .expect("Error verificando eliminación");
 
     assert_eq!(count, 0);
+}
+
+#[tokio::test]
+async fn test_rule_rate_limiting_fields_are_persisted() {
+    let Some(pool) = setup_pool().await else {
+        eprintln!("⚠️  DATABASE_URL no configurada, saltando test");
+        return;
+    };
+
+    let rule_id: i32 = sqlx::query_scalar(
+        "INSERT INTO rules (
+            weight, allow, store, fqdn, rate_limit_enabled, max_retry, find_time_seconds,
+            ban_time_seconds, bantime_increment, bantime_multipliers,
+            bantime_maxtime_seconds, ban_count_decay_days, ignoreip, active
+        ) VALUES (
+            $1, $2, $3, $4, $5, $6, $7,
+            $8, $9, $10, $11, $12, $13, $14
+        ) RETURNING id",
+    )
+    .bind(250i32)
+    .bind(true)
+    .bind(true)
+    .bind("^example\\.com$")
+    .bind(true)
+    .bind(7i32)
+    .bind(120i32)
+    .bind(1800i32)
+    .bind(true)
+    .bind(vec![1i32, 3, 9])
+    .bind(7200i32)
+    .bind(14i32)
+    .bind(vec!["127.0.0.1".to_string(), "10.0.0.1".to_string()])
+    .bind(true)
+    .fetch_one(&pool)
+    .await
+    .expect("Error creando regla con rate limiting");
+
+    let (
+        rate_limit_enabled,
+        max_retry,
+        find_time_seconds,
+        ban_time_seconds,
+        bantime_increment,
+        bantime_multipliers,
+        ban_count_decay_days,
+        ignoreip,
+    ): (bool, i32, i32, i32, bool, Vec<i32>, i32, Vec<String>) = sqlx::query_as(
+        "SELECT rate_limit_enabled, max_retry, find_time_seconds, ban_time_seconds,
+            bantime_increment, bantime_multipliers, ban_count_decay_days, ignoreip
+         FROM rules WHERE id = $1",
+    )
+    .bind(rule_id)
+    .fetch_one(&pool)
+    .await
+    .expect("Error leyendo campos de rate limiting");
+
+    assert!(rate_limit_enabled);
+    assert_eq!(max_retry, 7);
+    assert_eq!(find_time_seconds, 120);
+    assert_eq!(ban_time_seconds, 1800);
+    assert!(bantime_increment);
+    assert_eq!(bantime_multipliers, vec![1, 3, 9]);
+    assert_eq!(ban_count_decay_days, 14);
+    assert_eq!(
+        ignoreip,
+        vec!["127.0.0.1".to_string(), "10.0.0.1".to_string()]
+    );
+
+    sqlx::query("DELETE FROM rules WHERE id = $1")
+        .bind(rule_id)
+        .execute(&pool)
+        .await
+        .expect("Error eliminando regla con rate limiting");
 }
 
 // ──────────────────────────────────────────────

@@ -7,14 +7,10 @@
 //! 4. Reglas estáticas (allow/deny)
 //! 5. Persistir si la regla lo indica
 
-use crate::models::{AppState, EmptyResponse, NewRequest, RateLimiter, Request};
-use axum::{
-    Router,
-    extract::State,
-    http::StatusCode,
-    response::IntoResponse,
-    routing,
+use crate::models::{
+    AppState, Ban, BanSettings, EmptyResponse, NewBan, NewRequest, RateLimiter, Request,
 };
+use axum::{Router, extract::State, http::StatusCode, response::IntoResponse, routing};
 use std::mem;
 use std::net::IpAddr;
 use std::sync::Arc;
@@ -53,59 +49,102 @@ pub async fn shuul(
     let mut allow = true;
     let mut save = true;
 
-    if let Ok(rules) = app_state.rules.lock() {
-        for cache_rule in rules.iter() {
-            if cache_rule.matches(&request) {
-                request.rule_id = Some(cache_rule.rule.id);
-                debug!("Selected rule: {:?}", cache_rule.rule);
-                save = cache_rule.rule.store;
-                allow = cache_rule.rule.allow;
+    let matched_rule = if let Ok(rules) = app_state.rules.lock() {
+        rules
+            .iter()
+            .find(|cache_rule| cache_rule.matches(&request))
+            .cloned()
+    } else {
+        error!("Rules mutex poisoned");
+        None
+    };
 
-                // ── Step 3: Rate limiter check ──
-                if cache_rule.rule.rate_limit_enabled {
-                    if let Some(ip_str) = &request.ip_address {
-                        if let Ok(ip) = ip_str.parse::<IpAddr>() {
-let should_ban = {
-                                    if let Ok(mut rate_limiters) = app_state.rate_limiter.lock() {
-                                        let rl = rate_limiters
-                                            .entry(cache_rule.rule.id)
-                                            .or_insert_with(|| RateLimiter::new(
-                                                cache_rule.rule.max_retry as u32,
-                                                cache_rule.rule.find_time_seconds,
-                                            ));
-                                        rl.record(ip)
-                                    } else {
-                                        error!("Rate limiter mutex poisoned");
-                                        false
-                                    }
-                                };
+    if let Some(cache_rule) = matched_rule {
+        request.rule_id = Some(cache_rule.rule.id);
+        debug!("Selected rule: {:?}", cache_rule.rule);
+        save = cache_rule.rule.store;
+        allow = cache_rule.rule.allow;
 
-                            if should_ban {
-                                debug!(
-                                    "IP {} exceeded rate limit for rule {}, banning",
-                                    ip, cache_rule.rule.id
-                                );
-                                if let Ok(mut ban_manager) = app_state.ban_manager.lock() {
-                                    ban_manager.ban(
-                                        ip,
-                                        Some(cache_rule.rule.id),
-                                        format!(
-                                            "Rate limit: {} requests in {}s",
-                                            cache_rule.rule.max_retry,
-                                            cache_rule.rule.find_time_seconds
-                                        ),
-                                        None,
-                                    );
-                                } else {
-                                    error!("Ban manager mutex poisoned during rate limit ban");
-                                }
-                                allow = false;
-                            }
-                        }
+        // ── Step 3: Rate limiter check ──
+        if cache_rule.rule.rate_limit_enabled
+            && let Some(ip_str) = &request.ip_address
+        {
+            if cache_rule
+                .rule
+                .ignoreip
+                .iter()
+                .any(|ignored_ip| ignored_ip == ip_str)
+            {
+                debug!(
+                    "Skipping rate limit for ignored IP {} on rule {}",
+                    ip_str, cache_rule.rule.id
+                );
+            } else if let Ok(ip) = ip_str.parse::<IpAddr>() {
+                let should_ban = if let Ok(mut rate_limiters) = app_state.rate_limiter.lock() {
+                    let rl = rate_limiters.entry(cache_rule.rule.id).or_insert_with(|| {
+                        RateLimiter::new(
+                            cache_rule.rule.max_retry as u32,
+                            cache_rule.rule.find_time_seconds,
+                        )
+                    });
+                    rl.record(ip)
+                } else {
+                    error!("Rate limiter mutex poisoned");
+                    false
+                };
+
+                if should_ban {
+                    debug!(
+                        "IP {} exceeded rate limit for rule {}, banning",
+                        ip, cache_rule.rule.id
+                    );
+                    let settings = BanSettings {
+                        ban_time_seconds: cache_rule.rule.ban_time_seconds,
+                        bantime_increment: cache_rule.rule.bantime_increment,
+                        bantime_multipliers: cache_rule
+                            .rule
+                            .bantime_multipliers
+                            .iter()
+                            .map(|value| (*value).max(1) as u32)
+                            .collect(),
+                        bantime_maxtime_seconds: cache_rule.rule.bantime_maxtime_seconds,
+                        ban_count_decay_days: i64::from(cache_rule.rule.ban_count_decay_days),
+                    };
+                    let ban = if let Ok(mut ban_manager) = app_state.ban_manager.lock() {
+                        ban_manager
+                            .ban(
+                                ip,
+                                Some(cache_rule.rule.id),
+                                format!(
+                                    "Rate limit: {} requests in {}s",
+                                    cache_rule.rule.max_retry, cache_rule.rule.find_time_seconds
+                                ),
+                                &settings,
+                                None,
+                            )
+                            .clone()
+                    } else {
+                        error!("Ban manager mutex poisoned during rate limit ban");
+                        return EmptyResponse::create(StatusCode::FORBIDDEN, "Ko");
+                    };
+                    if let Err(e) = Ban::create(
+                        &app_state.pool,
+                        NewBan {
+                            ip_address: ip.to_string(),
+                            rule_id: Some(cache_rule.rule.id),
+                            jail_name: format!("rule-{}", cache_rule.rule.id),
+                            banned_at: ban.banned_at,
+                            ban_duration_seconds: ban.ban_duration_seconds as i32,
+                            escalation_level: ban.escalation_level as i32,
+                            reason: Some(ban.reason.clone()),
+                        },
+                    )
+                    .await
+                    {
+                        error!("Failed to persist automatic ban: {}", e);
                     }
+                    allow = false;
                 }
-
-                break;
             }
         }
     }

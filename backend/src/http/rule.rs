@@ -51,6 +51,7 @@ pub async fn create_handler(
             .lock()
             .map_err(|_| AppError::CachePoisoned)?;
         rules_guard.push(rule.clone().into());
+        rules_guard.sort_by_key(|item| item.rule.weight);
         debug!("Rule updated: {:?}", rules_guard);
     }
     // Propagar error de serialización con `?`
@@ -211,6 +212,16 @@ pub async fn delete_handler(
         .ok_or_else(|| AppError::InvalidInput("id parameter is required".to_string()))?;
     let rule = Rule::delete(&app_state.pool, id).await?;
     debug!("Rule deleted: {:?}", rule);
+    {
+        let mut rules_guard = app_state
+            .rules
+            .lock()
+            .map_err(|_| AppError::CachePoisoned)?;
+        rules_guard.retain(|cached_rule| cached_rule.rule.id != id);
+    }
+    if let Ok(mut rate_limiters) = app_state.rate_limiter.lock() {
+        rate_limiters.remove(&id);
+    }
     Ok(ApiResponse::new(
         StatusCode::OK,
         "Rules deleted",

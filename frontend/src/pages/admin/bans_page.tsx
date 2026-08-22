@@ -11,11 +11,15 @@ const TITLE = "Active Bans";
 const ENDPOINT = "bans";
 
 const FIELDS: FieldDefinition<Ban>[] = [
-    { key: 'id', label: 'Id', type: 'number', value: 0, editable: false, fixed: 'left', width: 80 },
-    { key: 'ip_address', label: 'IP Address', type: 'string', value: "", width: 150, visible: true },
+    { key: 'id', label: 'Id', type: 'number', value: 0, editable: false, fixed: 'left', width: 80, visible: false },
+    { key: 'ip_address', label: 'IP Address', type: 'string', value: "", width: 150, visible: true, required: true },
+    { key: 'jail_name', label: 'Jail', type: 'string', value: "manual", width: 120, visible: false },
+    { key: 'banned_at', label: 'Banned At', type: 'string', value: "", width: 220, visible: false, editable: false },
     { key: 'reason', label: 'Reason', type: 'string', value: "", width: 200, visible: true },
-    { key: 'ban_duration_seconds', label: 'Duration (s)', type: 'number', value: 0, width: 120, visible: true },
-    { key: 'escalation_level', label: 'Level', type: 'number', value: 0, width: 80, visible: true },
+    { key: 'ban_duration_seconds', label: 'Duration (s)', type: 'number', value: 3600, width: 120, visible: true, min: 1 },
+    { key: 'time_remaining_seconds', label: 'Remaining (s)', type: 'number', value: 0, width: 140, visible: false, editable: false },
+    { key: 'escalation_level', label: 'Level', type: 'number', value: 0, width: 80, visible: false },
+    { key: 'expired', label: 'Expired', type: 'boolean', value: false, width: 100, visible: false, editable: false },
 ];
 
 const BAN_DIALOG_MESSAGES: DialogMessages = {

@@ -9,4 +9,5 @@ export default interface Ban {
     reason?: string;
     expired: boolean;
     created_at: string;
+    time_remaining_seconds?: number;
 }
