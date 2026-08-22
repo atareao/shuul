@@ -229,30 +229,30 @@ class InnerDialog<T> extends React.Component<Props<T>, State<T>> {
         if (ok) {
             if (this.state.data === undefined) {
                 const requiredFields = this.props.fields.filter(field => field.required).map(field => field.label).join(", ");
-                this.showMessage(this.props.t(`Los siguientes campos son obligatorios: ${requiredFields}`), "error");
+                this.showMessage(this.props.t('Los siguientes campos son obligatorios: {{fields}}', { fields: requiredFields }), "error");
                 return;
             }
             for (const field of this.props.fields) {
                 const fieldValue = getNestedValue(this.state.data, field.key as string);
                 if (field.required) {
                     if (fieldValue === undefined || fieldValue === null || fieldValue === '') {
-                        this.showMessage(this.props.t(`El campo ${field.label} es obligatorio`), "error");
+                        this.showMessage(this.props.t('El campo {{field}} es obligatorio', { field: field.label }), "error");
                         return;
                     }
                 }
                 if (field.type === 'number' && typeof fieldValue === 'number') {
                     if (field.min !== undefined && fieldValue < field.min) {
-                        this.showMessage(this.props.t(`El campo ${field.label} debe ser mayor o igual a ${field.min}`), "error");
+                        this.showMessage(this.props.t('El campo {{field}} debe ser mayor o igual a {{min}}', { field: field.label, min: field.min }), "error");
                         return;
                     }
                     if (field.max !== undefined && fieldValue > field.max) {
-                        this.showMessage(this.props.t(`El campo ${field.label} debe ser menor o igual a ${field.max}`), "error");
+                        this.showMessage(this.props.t('El campo {{field}} debe ser menor o igual a {{max}}', { field: field.label, max: field.max }), "error");
                         return;
                     }
                 }
                 if (field.key === 'ip_address' && typeof fieldValue === 'string' && fieldValue.trim() !== '') {
                     if (!isValidIpAddress(fieldValue.trim())) {
-                        this.showMessage(this.props.t(`La dirección IP no es válida: ${fieldValue}`), "error");
+                        this.showMessage(this.props.t('La dirección IP no es válida: {{ip}}', { ip: fieldValue }), "error");
                         return;
                     }
                 }
@@ -260,7 +260,7 @@ class InnerDialog<T> extends React.Component<Props<T>, State<T>> {
                     const ignoreIps = this.serializeFieldValue(field, fieldValue) as string[];
                     const invalidIp = ignoreIps.find((ip) => !isValidIpAddress(ip));
                     if (invalidIp) {
-                        this.showMessage(this.props.t(`La IP ignorada no es válida: ${invalidIp}`), "error");
+                        this.showMessage(this.props.t('La IP ignorada no es válida: {{ip}}', { ip: invalidIp }), "error");
                         return;
                     }
                 }
@@ -271,7 +271,7 @@ class InnerDialog<T> extends React.Component<Props<T>, State<T>> {
                             throw new Error("invalid protocol");
                         }
                     } catch {
-                        this.showMessage(this.props.t(`La URL del webhook no es válida: ${fieldValue}`), "error");
+                        this.showMessage(this.props.t('La URL del webhook no es válida: {{url}}', { url: fieldValue }), "error");
                         return;
                     }
                 }
