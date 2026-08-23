@@ -36,6 +36,7 @@ export interface FieldDefinition<T>{
     options?: { value: any; label: string }[];
     required?: boolean;
     visible?: boolean;
+    tab?: string; // Nombre de la pestaña donde agrupar este campo
 }
 
 export type LanguageCode = "es" | "va";

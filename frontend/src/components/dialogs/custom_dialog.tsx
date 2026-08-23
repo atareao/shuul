@@ -1,7 +1,8 @@
 import React from "react";
 import { useNavigate } from 'react-router';
 import { useTranslation } from "react-i18next";
-import { Modal, Typography, Flex, Input, InputNumber, Switch, Select, Alert } from "antd";
+import { Modal, Typography, Flex, Input, InputNumber, Switch, Select, Alert, Tabs } from "antd";
+import type { TabsProps } from "antd";
 
 const { Text } = Typography;
 
@@ -12,6 +13,8 @@ import { BASE_URL } from '@/constants';
 import type { DialogMode, FieldDefinition } from '@/common/types';
 import { DialogModes } from '@/common/types';
 import { getNestedValue, debounce } from "@/common/utils";
+
+const DEFAULT_TAB = "General";
 
 // Interfaces de State y Props, ahora genéricas en T
 interface State<T> {
@@ -31,6 +34,19 @@ interface Props<T> {
     onClose: (data?: WithOptionalId<T>) => void;
     navigate: any;
     t: any;
+}
+
+// Helper para agrupar campos por pestaña
+function groupFieldsByTab<T>(fields: FieldDefinition<T>[]): Map<string, FieldDefinition<T>[]> {
+    const groups = new Map<string, FieldDefinition<T>[]>();
+    for (const field of fields) {
+        const tabName = field.tab || DEFAULT_TAB;
+        if (!groups.has(tabName)) {
+            groups.set(tabName, []);
+        }
+        groups.get(tabName)!.push(field);
+    }
+    return groups;
 }
 
 // El componente de clase se hace genérico: InnerDialog<T>
@@ -53,9 +69,6 @@ class InnerDialog<T> extends React.Component<Props<T>, State<T>> {
             this.setState({ showMessage: false });
         }, 3000);
     }
-
-    // Los 'fields' ya no son una propiedad de clase fija, sino que se acceden desde this.props.fields
-    // Se han eliminado los 'fields' estáticos de la clase.
 
     getValue = (key: keyof T & string) => {
         if (this.state.data) {
@@ -125,7 +138,6 @@ class InnerDialog<T> extends React.Component<Props<T>, State<T>> {
             console.log("Response Status:", response.status);
             console.log("====================");
             if (!response.ok || response.status > 299) {
-                // ... (lógica de manejo de errores, sin cambios)
                 let errorBody: { message?: string } = {};
                 try {
                     errorBody = await response.json();
@@ -141,7 +153,6 @@ class InnerDialog<T> extends React.Component<Props<T>, State<T>> {
             // Pasar el objeto completo (content.data) al onClose
             this.props.onClose(content.data as WithOptionalId<T>);
         } catch (error) {
-            // ... (lógica de manejo de errores de red, sin cambios)
             const msg = error instanceof Error ? error.message : String(error);
             console.error('Network Error or Fetch Failure:', msg, error);
 
@@ -155,10 +166,10 @@ class InnerDialog<T> extends React.Component<Props<T>, State<T>> {
     componentDidUpdate(prevProps: Props<T>) {
         if (prevProps.dialogMode !== this.props.dialogMode ||
             (this.props.dialogMode !== DialogModes.CREATE &&
-                prevProps.data?.id !== this.props.data?.id)) { // Renombrado de 'rule' a 'data'
+                prevProps.data?.id !== this.props.data?.id)) {
             if (this.props.data && this.props.dialogMode !== DialogModes.CREATE) {
                 this.setState({
-                    data: { // Renombrado de 'rule' a 'data'
+                    data: {
                         ...prevProps.data,
                         ...this.props.data
                     },
@@ -189,14 +200,14 @@ class InnerDialog<T> extends React.Component<Props<T>, State<T>> {
             console.log(response);
             this.showMessage(response?.message || "Operación realizada con éxito", response && response.status && response.status >= 200 && response.status < 300 ? "success" : "error");
         }else{
-            this.props.onClose(undefined); // Renombrado de 'rule' a 'data'
+            this.props.onClose(undefined);
         }
     }
 
     // La clave ahora está tipada como keyof T & string
     onChange = (key: keyof T & string, value: any) => {
         this.setState((prevState) => ({
-            data: { // Renombrado de 'rule' a 'data'
+            data: {
                 ...prevState.data,
                 [key]: value,
             } as WithOptionalId<T>,
@@ -213,27 +224,88 @@ class InnerDialog<T> extends React.Component<Props<T>, State<T>> {
         this.hideMessage();
     }
 
+    // Renderiza un grupo de campos para una pestaña
+    renderFields = (fields: FieldDefinition<T>[], disabled: boolean) => {
+        return (
+            <Flex vertical gap="small" style={{ paddingTop: 16 }}>
+                {fields.map((field) => (
+                    field.visible !== false &&
+                        <Flex key={field.key} align="center" gap="middle">
+                            <Text style={{ width: 160, flexShrink: 0 }}>{field.label}</Text>
+                            {field.type === 'boolean' &&
+                                <Switch
+                                    defaultChecked={this.getValue(field.key as keyof T & string) as boolean}
+                                    onChange={(checked) => this.onChange(field.key as keyof T & string, checked)}
+                                    disabled={disabled}
+                                />
+                            }
+                            {field.type === 'string' &&
+                                <Input
+                                    style={{ width: '100%' }}
+                                    defaultValue={this.getValue(field.key as keyof T & string) as string}
+                                    placeholder={field.label}
+                                    onChange={(e) => this.onChange(field.key as keyof T & string, e.target.value)}
+                                    disabled={disabled || field.editable === false}
+                                />
+                            }
+                            {field.type === 'number' &&
+                                <InputNumber
+                                    style={{ width: '100%' }}
+                                    defaultValue={this.getValue(field.key as keyof T & string) as number}
+                                    placeholder={field.label}
+                                    onChange={(value) => this.onChange(field.key as keyof T & string, value)}
+                                    disabled={disabled || field.editable === false}
+                                />
+                            }
+                            {field.type === 'select' &&
+                                <Select
+                                    style={{ width: '100%' }}
+                                    defaultValue={this.getValue(field.key as keyof T & string) as any}
+                                    onChange={(value) => this.onChange(field.key as keyof T & string, value)}
+                                    disabled={disabled}
+                                    options={field.options}
+                                />
+                            }
+                        </Flex>
+                ))}
+            </Flex>
+        );
+    }
+
     render = () => {
         const { showMessage, messageText, messageType } = this.state;
         const dialogMode = this.props.dialogMode;
-        // Obtener la clave 'id' de forma segura para usar en el mensaje de borrado.
         const data_id = this.state.data ? (this.state.data as any).id : undefined;
         const disabled = dialogMode === DialogModes.READ;
         let title = "";
         let message = "";
         if (dialogMode === DialogModes.CREATE) {
-            title = this.props.t(this.props.dialogMessages?.createTitle); // Título genérico
+            title = this.props.t(this.props.dialogMessages?.createTitle);
         } else if (dialogMode === DialogModes.UPDATE) {
-            title = this.props.t(this.props.dialogMessages?.updateTitle); // Título genérico
+            title = this.props.t(this.props.dialogMessages?.updateTitle);
         } else if (dialogMode === DialogModes.READ) {
-            title = this.props.t(this.props.dialogMessages?.readTitle); // Título genérico
+            title = this.props.t(this.props.dialogMessages?.readTitle);
         } else if (dialogMode === DialogModes.DELETE) {
-            title = this.props.t(this.props.dialogMessages?.deleteTitle); // Título genérico
-            message = this.props.t(this.props.dialogMessages?.confirmDeleteMessage(data_id)); // Mensaje genérico
+            title = this.props.t(this.props.dialogMessages?.deleteTitle);
+            message = this.props.t(this.props.dialogMessages?.confirmDeleteMessage(data_id));
         }
+
+        // Agrupar campos visibles por pestaña
+        const groups = groupFieldsByTab(this.props.fields);
+        const tabItems: TabsProps['items'] = [];
+        groups.forEach((tabFields, tabName) => {
+            const visibleFields = tabFields.filter(f => f.visible !== false);
+            if (visibleFields.length > 0) {
+                tabItems.push({
+                    key: tabName,
+                    label: this.props.t(tabName),
+                    children: this.renderFields(visibleFields, disabled),
+                });
+            }
+        });
+
         return (
             <>
-                {/* Alerta de campos obligatorios */}
                 {(dialogMode === DialogModes.DELETE) &&
                     <Modal
                         title={title}
@@ -272,6 +344,8 @@ class InnerDialog<T> extends React.Component<Props<T>, State<T>> {
                         }}
                         okText={this.props.t('Ok')}
                         cancelText={this.props.t('Cancel')}
+                        width={640}
+                        styles={{ body: { maxHeight: '60vh', overflowY: 'auto' } }}
                     >
                         {showMessage && (
                             <Alert
@@ -280,54 +354,16 @@ class InnerDialog<T> extends React.Component<Props<T>, State<T>> {
                                 showIcon
                                 closable
                                 onClose={() => this.setState({ showMessage: false })}
-                                style={{ margin: 16 }}
+                                style={{ marginBottom: 16 }}
                             />
                         )}
-                        <Flex vertical gap="small">
-                            {/* Uso de this.props.fields */}
-                            {this.props.fields && this.props.fields.map((field) => (
-                                // Casting de field.key a keyof T & string es seguro aquí
-                                    field.visible === true &&
-                                        <Flex key={field.key}>
-                                            <Text style={{ width: 200 }}>{field.label}</Text>
-                                            {field.type === 'boolean' && field.visible == true &&
-                                                <Switch
-                                                    // Se requiere casting a los tipos específicos
-                                                    defaultChecked={this.getValue(field.key as keyof T & string) as boolean}
-                                                    onChange={(checked) => this.onChange(field.key as keyof T & string, checked)}
-                                                    disabled={disabled}
-                                                />
-                                            }
-                                            {field.type === 'string' && field.visible == true &&
-                                                <Input
-                                                    style={{ width: '100%' }}
-                                                    defaultValue={this.getValue(field.key as keyof T & string) as string}
-                                                    placeholder={field.label}
-                                                    onChange={(e) => this.onChange(field.key as keyof T & string, e.target.value)}
-                                                    disabled={disabled || field.editable === false}
-                                                />
-                                            }
-                                            {field.type === 'number' && field.visible == true &&
-                                                <InputNumber
-                                                    style={{ width: '100%' }}
-                                                    defaultValue={this.getValue(field.key as keyof T & string) as number}
-                                                    placeholder={field.label}
-                                                    onChange={(value) => this.onChange(field.key as keyof T & string, value)}
-                                                    disabled={disabled || field.editable === false}
-                                                />
-                                            }
-                                            {field.type === 'select' && field.visible == true &&
-                                                <Select
-                                                    style={{ width: '100%' }}
-                                                    defaultValue={this.getValue(field.key as keyof T & string) as any}
-                                                    onChange={(value) => this.onChange(field.key as keyof T & string, value)}
-                                                    disabled={disabled}
-                                                    options={field.options}
-                                                />
-                                            }
-                                        </Flex>
-                            ))}
-                        </Flex>
+                        {tabItems.length > 0 && (
+                            <Tabs
+                                defaultActiveKey={tabItems[0].key}
+                                items={tabItems}
+                                size="middle"
+                            />
+                        )}
                     </Modal>
                 }
             </>
