@@ -229,7 +229,7 @@ export default class CustomTable<T extends { id: number | string }> extends Reac
                 dataIndex: field.key.toString(),
                 key: field.key.toString(),
                 sorter: field.type !== 'boolean',
-                ellipsis: true,
+                ellipsis: { showTitle: true },
                 width: field.width || 100,
                 render: (content: any, record: T) => field.render ? field.render(content, record ) : finalRender(content, record),
                 fixed: field.fixed || undefined,
