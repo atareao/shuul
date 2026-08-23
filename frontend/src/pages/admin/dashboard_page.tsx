@@ -20,6 +20,7 @@ interface State {
     total_active_rules: number,
     total_requests: number,
     total_filtered_requests: number,
+    total_active_bans: number,
 }
 
 
@@ -33,6 +34,7 @@ export class InnerPage extends react.Component<Props, State> {
             total_active_rules: 0,
             total_requests: 0,
             total_filtered_requests: 0,
+            total_active_bans: 0,
         }
     }
     componentDidMount = async () => {
@@ -41,6 +43,7 @@ export class InnerPage extends react.Component<Props, State> {
         const total_active_rules = await loadData("rules/info", new Map([["option", "active"]]))
         const total_requests = await loadData("requests/info", new Map([["option", "total"]]))
         const total_filtered_requests = await loadData("requests/info", new Map([["option", "filtered"]]))
+        const total_active_bans = await loadData("bans/info", new Map());
         console.log("Totals loaded:", total_rules, total_active_rules, total_requests, total_filtered_requests);
         this.setState({
             loading: false,
@@ -48,6 +51,7 @@ export class InnerPage extends react.Component<Props, State> {
             total_active_rules: total_active_rules.status === 200 ? total_active_rules.data as number : 0,
             total_requests: total_requests.status === 200 ? total_requests.data as number : 0,
             total_filtered_requests: total_filtered_requests.status === 200 ? total_filtered_requests.data as number : 0,
+            total_active_bans: total_active_bans.status === 200 ? total_active_bans.data as number : 0,
         });
 
     }
@@ -88,6 +92,13 @@ export class InnerPage extends react.Component<Props, State> {
                                     onClick={() => this.props.navigate("/admin/records")}
                                 >
                                     {`${this.props.t("Total of filtered requests")}: ${this.state.total_filtered_requests}`}
+                                </Typography.Title>
+                                <Typography.Title
+                                    level={4}
+                                    style={{ margin: 5, cursor: "pointer" }}
+                                    onClick={() => this.props.navigate("/admin/bans")}
+                                >
+                                    {`${this.props.t("Active bans")}: ${this.state.total_active_bans}`}
                                 </Typography.Title>
                             </>
                         }

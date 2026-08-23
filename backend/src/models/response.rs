@@ -1,23 +1,18 @@
+//! # Tipos de respuesta de la API
+//!
+//! Define las estructuras estándar de respuesta: [`ApiResponse`], [`PagedResponse`],
+//! [`EmptyResponse`], [`ApiResponse`] y [`PagedResponse`]. Todas implementan [`IntoResponse`]
+//! para su uso directo en handlers de Axum.
+
 use axum::{
-    http::StatusCode,
     Json,
     body::Body,
-    response::{
-        Response,
-        IntoResponse,
-    }
+    http::StatusCode,
+    response::{IntoResponse, Response},
 };
 use serde::Serialize;
 
 use super::Data;
-
-#[derive(Debug, Clone)]
-pub enum CustomResponse {
-    Api(ApiResponse),
-    Empty(EmptyResponse),
-    Paged(PagedResponse),
-}
-
 
 #[derive(Debug, Clone)]
 pub struct EmptyResponse {
@@ -27,18 +22,22 @@ pub struct EmptyResponse {
 impl EmptyResponse {
     pub fn create(status: StatusCode, message: &str) -> Response<Body> {
         Response::builder()
-            .status(status) 
-            .body(Body::from(message.to_string())) // Cuerpo de la respuesta
-            .unwrap()
+            .status(status)
+            .body(Body::from(message.to_string()))
+            .unwrap_or_else(|_| {
+                Response::builder()
+                    .status(StatusCode::INTERNAL_SERVER_ERROR)
+                    .body(Body::from("Internal Server Error"))
+                    .unwrap()
+            })
     }
 }
 
 impl IntoResponse for EmptyResponse {
     fn into_response(self) -> Response {
-        EmptyResponse::create(self.status, self.message.as_str())
+        Self::create(self.status, self.message.as_str())
     }
 }
-
 
 #[derive(Debug, Serialize, Clone)]
 pub struct ApiResponse {
@@ -55,19 +54,26 @@ impl ApiResponse {
             data,
         }
     }
-    pub fn create(status: StatusCode, message: &str, data: Data) -> Json<ApiResponse> {
-        Json(ApiResponse::new(status, message, data))
+    pub fn create(status: StatusCode, message: &str, data: Data) -> Json<Self> {
+        Json(Self::new(status, message, data))
     }
 }
 
 impl IntoResponse for ApiResponse {
     fn into_response(self) -> Response {
-        let body = serde_json::to_string(&self).unwrap();
+        let body = serde_json::to_string(&self).unwrap_or_else(|_| {
+            r#"{"status":500,"message":"Serialization error","data":null}"#.to_string()
+        });
         Response::builder()
             .status(self.status)
             .header("Content-Type", "application/json")
             .body(Body::from(body))
-            .unwrap()
+            .unwrap_or_else(|_| {
+                Response::builder()
+                    .status(StatusCode::INTERNAL_SERVER_ERROR)
+                    .body(Body::from("Internal Server Error"))
+                    .unwrap()
+            })
     }
 }
 
@@ -80,7 +86,6 @@ pub struct Pagination {
     pub prev: Option<String>, // previous page
     pub next: Option<String>, // next page
 }
-
 
 #[derive(Debug, Clone, Serialize)]
 pub struct PagedResponse {
@@ -99,28 +104,34 @@ impl PagedResponse {
             pagination,
         }
     }
-    pub fn create(status: StatusCode, message: &str, data: Data, pagination: Pagination) -> Json<PagedResponse> {
-        Json(PagedResponse::new(status, message, data, pagination))
+    #[allow(dead_code)]
+    pub fn create(
+        status: StatusCode,
+        message: &str,
+        data: Data,
+        pagination: Pagination,
+    ) -> Json<Self> {
+        Json(Self::new(status, message, data, pagination))
     }
 }
 
 impl IntoResponse for PagedResponse {
     fn into_response(self) -> Response {
-        let body = serde_json::to_string(&self).unwrap();
+        let body = serde_json::to_string(&self).unwrap_or_else(|_| {
+            r#"{"status":500,"message":"Serialization error","data":null,"pagination":null}"#
+                .to_string()
+        });
         Response::builder()
             .status(self.status)
             .header("Content-Type", "application/json")
             .body(Body::from(body))
-            .unwrap()
+            .unwrap_or_else(|_| {
+                Response::builder()
+                    .status(StatusCode::INTERNAL_SERVER_ERROR)
+                    .body(Body::from("Internal Server Error"))
+                    .unwrap()
+            })
     }
 }
 
-impl IntoResponse for CustomResponse {
-    fn into_response(self) -> Response {
-        match self {
-            CustomResponse::Empty(empty_response) => empty_response.into_response(),
-            CustomResponse::Api(api_response) => api_response.into_response(),
-            CustomResponse::Paged(page_response) => page_response.into_response(),
-        }
-    }
-}
+

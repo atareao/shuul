@@ -1,3 +1,9 @@
+//! # Modelo de peticiones HTTP
+//!
+//! Define [`Request`] y [`NewRequest`], las estructuras que representan
+//! las peticiones HTTP capturadas por el servicio. Incluye operaciones
+//! CRUD y consultas estadísticas (top países, top reglas, evolución temporal).
+
 use chrono::{DateTime, Utc};
 use http::Uri;
 use maxminddb::Reader;
@@ -80,24 +86,24 @@ impl NewRequest {
         let protocol = headers
             .get("x-forwarded-proto")
             .map(|s| s.to_str())
-            .and_then(|result| result.ok())
+            .and_then(std::result::Result::ok)
             .unwrap_or("");
         let host = headers
             .get("x-forwarded-host")
             .map(|s| s.to_str())
-            .and_then(|result| result.ok())
+            .and_then(std::result::Result::ok)
             .unwrap_or("");
         let uri = headers
             .get("x-forwarded-uri")
             .map(|s| s.to_str())
-            .and_then(|result| result.ok())
+            .and_then(std::result::Result::ok)
             .unwrap_or("")
             .parse::<Uri>()
             .unwrap_or_default();
         let ip = headers
             .get("x-forwarded-for")
             .map(|s| s.to_str())
-            .and_then(|result| result.ok())
+            .and_then(std::result::Result::ok)
             .unwrap_or("");
         let ip_data = IPData::complete(maxmind_db, ip);
         let ip_address = if ip.is_empty() {
@@ -127,28 +133,10 @@ impl NewRequest {
                 Some(s.to_string())
             }
         });
-        let city_name = ip_data.city_name.and_then(|s| {
-            if s.is_empty() {
-                None
-            } else {
-                Some(s.to_string())
-            }
-        });
-        let country_name = ip_data.country_name.and_then(|s| {
-            if s.is_empty() {
-                None
-            } else {
-                Some(s.to_string())
-            }
-        });
-        let country_code = ip_data.country_code.and_then(|s| {
-            if s.is_empty() {
-                None
-            } else {
-                Some(s.to_string())
-            }
-        });
-        NewRequest {
+        let city_name = ip_data.city_name.filter(|s| !s.is_empty());
+        let country_name = ip_data.country_name.filter(|s| !s.is_empty());
+        let country_code = ip_data.country_code.filter(|s| !s.is_empty());
+        Self {
             ip_address,
             protocol,
             fqdn,
@@ -180,7 +168,7 @@ impl Request {
         }
     }
 
-    pub async fn create(pool: &PgPool, request: NewRequest) -> Result<Request, Error> {
+    pub async fn create(pool: &PgPool, request: NewRequest) -> Result<Self, Error> {
         let sql = "INSERT INTO requests (ip_address, protocol, fqdn, path, query, city_name, country_name, country_code, rule_id, created_at) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10) RETURNING *";
         query(sql)
             .bind(request.ip_address)
@@ -198,7 +186,7 @@ impl Request {
             .await
     }
 
-    pub async fn read(pool: &PgPool, id: i32) -> Result<Request, Error> {
+    pub async fn read(pool: &PgPool, id: i32) -> Result<Self, Error> {
         let sql = "SELECT * FROM requests WHERE id = $1";
         query(sql)
             .bind(id)
@@ -221,10 +209,7 @@ impl Request {
             .await
     }
 
-    pub async fn create_bulk(
-        pool: &PgPool,
-        requests: Vec<NewRequest>,
-    ) -> Result<Vec<Request>, Error> {
+    pub async fn create_bulk(pool: &PgPool, requests: Vec<NewRequest>) -> Result<Vec<Self>, Error> {
         if requests.is_empty() {
             return Ok(Vec::new());
         }
@@ -253,13 +238,13 @@ impl Request {
         }
         let base_sql = "INSERT INTO requests (ip_address, protocol,
         fqdn, path, query, city_name, country_name, country_code, rule_id, created_at) VALUES ";
-        let full_sql = format!("{} {} RETURNING *", base_sql, placeholders);
+        let full_sql = format!("{base_sql} {placeholders} RETURNING *");
 
         // 2. Ejecutar la consulta con Transaction para el binding
         let mut transaction = pool.begin().await?;
 
         // Necesitamos usar `query_as` o `query` para el binding dinámico.
-        let mut query_builder = query_as::<_, Request>(&full_sql);
+        let mut query_builder = query_as::<_, Self>(&full_sql);
 
         for request in &requests {
             query_builder = query_builder
@@ -295,12 +280,12 @@ impl Request {
         ];
         let active_filters: Vec<(&str, String)> = filters
             .into_iter()
-            .filter_map(|(col, val)| val.as_ref().map(|v| (col, v.to_string())))
+            .filter_map(|(col, val)| val.as_ref().map(|v| (col, v.clone())))
             .collect();
         let mut sql = "SELECT COUNT(*) total FROM requests WHERE 1=1".to_string();
         for (i, (col, _)) in active_filters.iter().enumerate() {
             let param_index = i + 1;
-            sql.push_str(&format!(" AND {} LIKE ${}", col, param_index));
+            sql.push_str(&format!(" AND {col} LIKE ${param_index}"));
         }
         let mut query = query(&sql);
         for (_, value) in active_filters {
@@ -315,10 +300,7 @@ impl Request {
             .await
     }
 
-    pub async fn read_paged(
-        pool: &PgPool,
-        params: &ReadRequestParams,
-    ) -> Result<Vec<Request>, Error> {
+    pub async fn read_paged(pool: &PgPool, params: &ReadRequestParams) -> Result<Vec<Self>, Error> {
         let filters = vec![
             ("ip_address", &params.ip_address),
             ("protocol", &params.protocol),
@@ -331,12 +313,12 @@ impl Request {
         ];
         let active_filters: Vec<(&str, String)> = filters
             .into_iter()
-            .filter_map(|(col, val)| val.as_ref().map(|v| (col, v.to_string())))
+            .filter_map(|(col, val)| val.as_ref().map(|v| (col, v.clone())))
             .collect();
         let mut sql = "SELECT * FROM requests WHERE 1=1".to_string();
         for (i, (col, _)) in active_filters.iter().enumerate() {
             let param_index = i + 1;
-            sql.push_str(&format!(" AND {} LIKE ${}", col, param_index));
+            sql.push_str(&format!(" AND {col} LIKE ${param_index}"));
         }
         let limit_index = active_filters.len() + 1;
         let offset_index = limit_index + 1;
@@ -355,12 +337,12 @@ impl Request {
         .contains(&sort_by)
         {
             if params.asc.unwrap_or(true) {
-                sql.push_str(&format!(" ORDER BY {} ASC", sort_by));
+                sql.push_str(&format!(" ORDER BY {sort_by} ASC"));
             } else {
-                sql.push_str(&format!(" ORDER BY {} DESC", sort_by));
+                sql.push_str(&format!(" ORDER BY {sort_by} DESC"));
             }
         }
-        sql.push_str(&format!(" LIMIT ${} OFFSET ${}", limit_index, offset_index));
+        sql.push_str(&format!(" LIMIT ${limit_index} OFFSET ${offset_index}"));
         let mut query = query(&sql);
         for (_, value) in active_filters {
             query = query.bind(value);
@@ -375,8 +357,8 @@ impl Request {
             .await
     }
 
-    pub async fn delete_before(pool: &PgPool, days: i32) -> Result<Vec<Request>, Error> {
-        let sql = "DELETE FROM requests WHERE created_at > $1 RETURNING *";
+    pub async fn delete_before(pool: &PgPool, days: i32) -> Result<Vec<Self>, Error> {
+        let sql = "DELETE FROM requests WHERE created_at < $1 RETURNING *";
         let now = Utc::now()
             .checked_sub_signed(chrono::Duration::days(days.into()))
             .unwrap();
@@ -387,6 +369,7 @@ impl Request {
             .await
     }
 
+    #[allow(clippy::needless_raw_string_hashes)]
     pub async fn top_rules(pool: &PgPool) -> Result<Vec<(String, i32, f32)>, Error> {
         debug!("Computing top rules");
         let sql = r#"SELECT
@@ -430,6 +413,7 @@ ORDER BY
             .fetch_all(pool)
             .await
     }
+    #[allow(clippy::needless_raw_string_hashes)]
     pub async fn top_countries(pool: &PgPool) -> Result<Vec<(String, i32, f32)>, Error> {
         debug!("Computing top countries");
         let sql = r#"SELECT
@@ -473,6 +457,7 @@ ORDER BY
     }
     // request.rs -> impl Request -> evolution
 
+    #[allow(clippy::needless_raw_string_hashes)]
     pub async fn evolution(pool: &PgPool, unit: &str, last: i32) -> Result<Vec<TimeSeries>, Error> {
         debug!("Evolution params - unit: {}, last: {}", unit, last);
 
