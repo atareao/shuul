@@ -35,6 +35,7 @@ use sqlx::postgres::PgPool;
 use std::collections::HashMap;
 use std::sync::Mutex;
 use std::time::Instant;
+use tracing::debug;
 
 pub struct AppState {
     pub pool: PgPool,
@@ -52,4 +53,18 @@ pub struct AppState {
     pub oidc_states: tokio::sync::Mutex<HashMap<String, (String, Instant)>>,
     pub oidc_client_id: Option<String>,
     pub oidc_redirect_url: Option<String>,
+}
+
+impl AppState {
+    /// Recarga la caché de reglas desde la base de datos.
+    ///
+    /// Solo se cargan reglas activas, ordenadas por peso ascendente (`ORDER BY weight ASC`).
+    /// Es seguro contra poison del `Mutex`.
+    pub async fn reload_rules(&self) -> Result<(), Error> {
+        let rules = CacheRule::read_all_active(&self.pool).await?;
+        let mut guard = self.rules.lock().map_err(|_| Error::CachePoisoned)?;
+        *guard = rules;
+        debug!("Rules cache reloaded: {} rules active", guard.len());
+        Ok(())
+    }
 }
