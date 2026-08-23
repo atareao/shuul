@@ -35,16 +35,10 @@ export default class LoginPage extends React.Component<{}, State> {
     render = () => {
         console.log("Rendering login page");
 
-        // If already logged in, redirect
+        // If already logged in, redirect to admin
         if (this.context.isLoggedIn) {
-            console.log(`Role: ${this.context.role}`);
-            if (this.context.role === "admin") {
-                return (
-                    <Navigate to="/admin/" />
-                );
-            }
             return (
-                <Navigate to="/" />
+                <Navigate to="/admin/" />
             );
         }
 

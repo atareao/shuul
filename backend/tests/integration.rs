@@ -50,23 +50,6 @@ async fn test_db_connection() {
 // ──────────────────────────────────────────────
 
 #[tokio::test]
-async fn test_users_table_exists() {
-    let Some(pool) = setup_pool().await else {
-        eprintln!("⚠️  DATABASE_URL no configurada, saltando test");
-        return;
-    };
-
-    let result: Result<(i64,), _> =
-        sqlx::query_as("SELECT COUNT(*) FROM information_schema.tables WHERE table_name = 'users'")
-            .fetch_one(&pool)
-            .await;
-
-    assert!(result.is_ok());
-    let (count,) = result.unwrap();
-    assert_eq!(count, 1, "La tabla 'users' debe existir");
-}
-
-#[tokio::test]
 async fn test_rules_table_exists() {
     let Some(pool) = setup_pool().await else {
         eprintln!("⚠️  DATABASE_URL no configurada, saltando test");
@@ -99,82 +82,6 @@ async fn test_requests_table_exists() {
     assert!(result.is_ok());
     let (count,) = result.unwrap();
     assert_eq!(count, 1, "La tabla 'requests' debe existir");
-}
-
-// ──────────────────────────────────────────────
-// Tests CRUD de Users
-// ──────────────────────────────────────────────
-
-#[tokio::test]
-async fn test_user_crud() {
-    let Some(pool) = setup_pool().await else {
-        eprintln!("⚠️  DATABASE_URL no configurada, saltando test");
-        return;
-    };
-
-    let email = format!("test_{}@example.com", uuid::Uuid::new_v4());
-    let username = format!("user_{}", uuid::Uuid::new_v4());
-    let password = "test_password_123";
-    let role = "admin";
-
-    // CREATE
-    let hashed = bcrypt::hash(password, bcrypt::DEFAULT_COST).expect("Error hasheando password");
-    let user_id: i32 = sqlx::query_scalar(
-        "INSERT INTO users (username, email, hashed_password, role, active) VALUES ($1, $2, $3, $4, $5) RETURNING id"
-    )
-    .bind(&username)
-    .bind(&email)
-    .bind(&hashed)
-    .bind(role)
-    .bind(true)
-    .fetch_one(&pool)
-    .await
-    .expect("Error creando usuario");
-
-    assert!(user_id > 0, "El ID del usuario debe ser positivo");
-
-    // READ
-    let (db_email, db_role): (String, String) =
-        sqlx::query_as("SELECT email, role FROM users WHERE id = $1")
-            .bind(user_id)
-            .fetch_one(&pool)
-            .await
-            .expect("Error leyendo usuario");
-
-    assert_eq!(db_email, email);
-    assert_eq!(db_role, role);
-
-    // UPDATE
-    let new_role = "user";
-    sqlx::query("UPDATE users SET role = $1 WHERE id = $2")
-        .bind(new_role)
-        .bind(user_id)
-        .execute(&pool)
-        .await
-        .expect("Error actualizando usuario");
-
-    let (updated_role,): (String,) = sqlx::query_as("SELECT role FROM users WHERE id = $1")
-        .bind(user_id)
-        .fetch_one(&pool)
-        .await
-        .expect("Error leyendo rol actualizado");
-
-    assert_eq!(updated_role, new_role);
-
-    // DELETE
-    sqlx::query("DELETE FROM users WHERE id = $1")
-        .bind(user_id)
-        .execute(&pool)
-        .await
-        .expect("Error eliminando usuario");
-
-    let count: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM users WHERE id = $1")
-        .bind(user_id)
-        .fetch_one(&pool)
-        .await
-        .expect("Error verificando eliminación");
-
-    assert_eq!(count, 0, "El usuario debe haber sido eliminado");
 }
 
 // ──────────────────────────────────────────────

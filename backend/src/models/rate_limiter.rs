@@ -77,12 +77,12 @@ pub struct RateLimiter {
     /// Maximum retries before ban
     max_retry: u32,
     /// Sliding window duration in seconds
-    find_time_seconds: i64,
+    find_time_seconds: i32,
 }
 
 impl RateLimiter {
     /// Create a new rate limiter with the given threshold.
-    pub fn new(max_retry: u32, find_time_seconds: i64) -> Self {
+    pub fn new(max_retry: u32, find_time_seconds: i32) -> Self {
         Self {
             ip_buffers: HashMap::new(),
             max_retry,
@@ -179,7 +179,7 @@ mod tests {
 
         assert!(!rl.record(ip)); // 1st
         assert!(!rl.record(ip)); // 2nd
-        assert!(rl.record(ip));  // 3rd → threshold reached
+        assert!(rl.record(ip)); // 3rd → threshold reached
     }
 
     #[test]

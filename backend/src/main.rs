@@ -27,16 +27,16 @@ use axum::{
 };
 use dotenv::dotenv;
 use http::{
-    api_user_router, auth_router, ban_router, health_router, request_router, require_auth,
-    rule_router, settings_router, shuul_router, template_router, util_router,
+    auth_router, ban_router, health_router, request_router, require_auth, rule_router,
+    settings_router, shuul_router, template_router, util_router,
 };
 use maxminddb::Reader;
 use models::CacheRule;
 use models::{AppState, BanManager, Error, JwtValidator, OidcMetadata, RateLimiter};
 use sqlx::{
+    Row,
     migrate::{MigrateDatabase, Migrator},
     postgres::PgPoolOptions,
-    Row,
 };
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
@@ -46,7 +46,7 @@ use tower_http::{
     cors::{Any, CorsLayer},
     trace::TraceLayer,
 };
-use tracing::{debug, error, info};
+use tracing::{debug, error, info, warn};
 use tracing_subscriber::{EnvFilter, layer::SubscriberExt, util::SubscriberInitExt};
 
 const STATIC_DIR: &str = "static";
@@ -144,43 +144,27 @@ async fn main() -> Result<(), Error> {
     let rules = Mutex::new(CacheRule::read_all_active(&pool).await.unwrap_or_default());
     let cache = Mutex::new(Vec::new());
     let ban_manager = Mutex::new(BanManager::new(
-        3600,    // default_ban_duration (1h)
-        false,   // bantime_increment (per-rule config)
+        3600,  // default_ban_duration (1h)
+        false, // bantime_increment (per-rule config)
         vec![1, 2, 4, 8],
-        604800,  // bantime_maxtime (1w)
-        30,      // ban_count_decay_days
+        604800, // bantime_maxtime (1w)
+        30,     // ban_count_decay_days
     ));
     let rate_limiter: Mutex<HashMap<i32, RateLimiter>> = Mutex::new(HashMap::new());
 
     // ── OIDC / SSO Configuration (REQUIRED) ──
-    let oidc_issuer_url = var("OIDC_ISSUER_URL").expect("OIDC_ISSUER_URL environment variable is mandatory");
-    let oidc_client_id = var("OIDC_CLIENT_ID").expect("OIDC_CLIENT_ID environment variable is mandatory");
-    let _oidc_client_secret = var("OIDC_CLIENT_SECRET").expect("OIDC_CLIENT_SECRET environment variable is mandatory");
+    let oidc_issuer_url =
+        var("OIDC_ISSUER_URL").expect("OIDC_ISSUER_URL environment variable is mandatory");
+    let oidc_client_id =
+        var("OIDC_CLIENT_ID").expect("OIDC_CLIENT_ID environment variable is mandatory");
+    let _oidc_client_secret =
+        var("OIDC_CLIENT_SECRET").expect("OIDC_CLIENT_SECRET environment variable is mandatory");
     let oidc_redirect_url = var("OIDC_REDIRECT_URL")
         .unwrap_or_else(|_| "http://localhost:3000/api/v1/auth/callback".to_string());
 
     info!("OIDC configured: issuer={oidc_issuer_url}, client_id={oidc_client_id}");
 
-    // Fetch OIDC discovery metadata
-    let discovery_url = format!("{}/.well-known/openid-configuration", oidc_issuer_url);
-    let metadata: OidcMetadata = reqwest::get(&discovery_url)
-        .await
-        .map_err(|e| Error::Other(format!("Failed to fetch OIDC metadata: {e}")))?
-        .json()
-        .await
-        .map_err(|e| Error::Other(format!("Failed to parse OIDC metadata: {e}")))?;
-
-    info!(
-        "OIDC discovery: issuer={}, auth_endpoint={}",
-        metadata.issuer, metadata.authorization_endpoint
-    );
-
-    // Create JWT validator and fetch JWKS
-    let mut validator = JwtValidator::new(&metadata.issuer, &oidc_client_id);
-    validator
-        .fetch_jwks(&metadata.jwks_uri)
-        .await
-        .map_err(|e| Error::Other(format!("Failed to fetch JWKS: {e}")))?;
+    // OIDC metadata y JWT validator se inicializan lazy en background task
 
     let app_state = Arc::new(AppState {
         pool,
@@ -194,11 +178,50 @@ async fn main() -> Result<(), Error> {
         cache_size,
         ban_manager,
         rate_limiter,
-        oidc_metadata: Some(metadata),
-        jwt_validator: validator,
+        oidc_metadata: tokio::sync::RwLock::new(None),
+        jwt_validator: tokio::sync::RwLock::new(None),
         oidc_states: tokio::sync::Mutex::new(HashMap::new()),
-        oidc_client_id: Some(oidc_client_id),
+        oidc_client_id: Some(oidc_client_id.clone()),
         oidc_redirect_url: Some(oidc_redirect_url),
+    });
+
+    // Spawn OIDC lazy initialization background task
+    let oidc_state = Arc::clone(&app_state);
+    let oidc_issuer_url = oidc_issuer_url.clone();
+    let oidc_client_id = oidc_client_id.clone();
+    tokio::spawn(async move {
+        let mut interval = tokio::time::interval(tokio::time::Duration::from_secs(30));
+        loop {
+            interval.tick().await;
+            let discovery_url = format!("{}/.well-known/openid-configuration", oidc_issuer_url);
+            match reqwest::get(&discovery_url).await {
+                Ok(resp) => match resp.json::<OidcMetadata>().await {
+                    Ok(metadata) => {
+                        let mut validator = JwtValidator::new(&metadata.issuer, &oidc_client_id);
+                        match validator.fetch_jwks(&metadata.jwks_uri).await {
+                            Ok(()) => {
+                                info!(
+                                    "OIDC initialized: issuer={}, auth_endpoint={}",
+                                    metadata.issuer, metadata.authorization_endpoint
+                                );
+                                *oidc_state.oidc_metadata.write().await = Some(metadata);
+                                *oidc_state.jwt_validator.write().await = Some(validator);
+                                break; // Success — task done
+                            },
+                            Err(e) => {
+                                warn!("Failed to fetch JWKS (will retry): {e}");
+                            },
+                        }
+                    },
+                    Err(e) => {
+                        warn!("Failed to parse OIDC metadata (will retry): {e}");
+                    },
+                },
+                Err(e) => {
+                    warn!("Failed to fetch OIDC metadata (will retry): {e}");
+                },
+            }
+        }
     });
 
     // Background task: cleanup expired bans every 60 seconds
@@ -243,9 +266,13 @@ async fn main() -> Result<(), Error> {
             match models::Request::delete_before(&cleanup_state2.pool, days).await {
                 Ok(deleted) => {
                     if !deleted.is_empty() {
-                        debug!("Daily cleanup: deleted {} old requests (retention: {} days)", deleted.len(), days);
+                        debug!(
+                            "Daily cleanup: deleted {} old requests (retention: {} days)",
+                            deleted.len(),
+                            days
+                        );
                     }
-                }
+                },
                 Err(e) => error!("Daily cleanup failed: {}", e),
             }
         }
@@ -257,13 +284,15 @@ async fn main() -> Result<(), Error> {
         .nest("/health", health_router())
         .nest("/auth", auth_router())
         // Protected routes (require JWT auth)
-        .nest("/users", api_user_router())
         .nest("/requests", request_router())
         .nest("/rules", rule_router())
         .nest("/bans", ban_router())
         .nest("/templates", template_router())
         .nest("/settings", settings_router())
-        .route_layer(axum_middleware::from_fn_with_state(app_state.clone(), require_auth))
+        .route_layer(axum_middleware::from_fn_with_state(
+            app_state.clone(),
+            require_auth,
+        ))
         .with_state(app_state);
 
     let app = Router::new()

@@ -1,17 +1,9 @@
 import React from 'react';
 import { jwtDecode } from 'jwt-decode';
 
-declare module 'jwt-decode' {
-    export interface JwtPayload {
-        role: string
-    }
-}
-
 export interface AuthContextInterface {
     token: string | null
     isLoggedIn: boolean
-    isAdmin: boolean
-    role: string
     login: Function
     logout: Function
 }
@@ -19,8 +11,6 @@ export interface AuthContextInterface {
 const AuthContext = React.createContext<AuthContextInterface>({
     token: "",
     isLoggedIn: false,
-    isAdmin: false,
-    role: "",
     login: (token: string) => { console.log(`token: ${token}`) },
     logout: () => { }
 
@@ -32,10 +22,8 @@ interface Props {
 }
 
 interface State {
-    role: string
     token: string | null
     isLoggedIn: boolean
-    isAdmin: boolean
 }
 
 export class AuthContextProvider extends React.Component<Props, State> {
@@ -48,15 +36,9 @@ export class AuthContextProvider extends React.Component<Props, State> {
         this.logoutTimer = null;
         const tokenData = this.retrieveStoredToken();
         if (tokenData && tokenData.token) {
-            if(jwtDecode(tokenData.token)){
-            const decoded = jwtDecode(tokenData.token);
-            const role = decoded.role;
             this.state = {
-                role: role,
                 token: tokenData.token,
                 isLoggedIn: true,
-                isAdmin: role === "admin"
-            }
             }
         }else{
             // Check for SSO token in sessionStorage
@@ -64,20 +46,14 @@ export class AuthContextProvider extends React.Component<Props, State> {
             if (ssoToken) {
                 sessionStorage.removeItem("sso_token");
                 localStorage.setItem("token", ssoToken);
-                const decoded = jwtDecode(ssoToken);
-                const role = decoded.role;
                 this.state = {
-                    role: role,
                     token: ssoToken,
                     isLoggedIn: true,
-                    isAdmin: role === "admin"
                 };
             } else {
                 this.state = {
-                    role: "",
                     token: null,
-                    isLoggedIn: false,
-                    isAdmin: false
+                    isLoggedIn: false
                 };
             }
         }
@@ -118,7 +94,6 @@ export class AuthContextProvider extends React.Component<Props, State> {
         console.log("Logging out");
         this.setState({
             isLoggedIn: false,
-            isAdmin: false,
             token: null
         });
         localStorage.removeItem("token");
@@ -144,11 +119,9 @@ export class AuthContextProvider extends React.Component<Props, State> {
             this.logoutHandler();
             return;
         }
-        this.logoutTimer = setTimeout(this.logoutHandler, remainingTime); // that will log the user out when this timer expires
+        this.logoutTimer = setTimeout(this.logoutHandler, remainingTime);
         this.setState({
             isLoggedIn: !!token,
-            isAdmin: decoded.role === "admin",
-            role: decoded.role,
             token: token
         });
     }
@@ -158,9 +131,7 @@ export class AuthContextProvider extends React.Component<Props, State> {
         return (
             <AuthContext.Provider value={{
                 token: this.state.token,
-                role: this.state.role,
                 isLoggedIn: this.state.isLoggedIn,
-                isAdmin: this.state.isAdmin,
                 login: this.loginHandler,
                 logout: this.logoutHandler
             }}>
@@ -170,4 +141,3 @@ export class AuthContextProvider extends React.Component<Props, State> {
     }
 }
 export default AuthContext;
-

@@ -3,7 +3,7 @@ import { Card, Collapse, Tag, Button, Typography, Flex, message, Input, Modal } 
 import { CheckCircleOutlined, CloseCircleOutlined, ThunderboltOutlined, SearchOutlined } from '@ant-design/icons';
 import type Item from "@/models/template";
 import { loadData } from '@/common/utils';
-import { BASE_URL, VERSION } from '@/constants';
+import { BASE_URL } from '@/constants';
 
 const { Text, Title } = Typography;
 
@@ -101,9 +101,13 @@ export default class TemplatesPage extends React.Component<{}, State> {
                 ban_count_decay_days: template.ban_count_decay_days,
                 active: true,
             };
-            const response = await fetch(`${BASE_URL}/api/${VERSION}/rules`, {
+            const token = localStorage.getItem("token");
+            const response = await fetch(`${BASE_URL}/api/v1/rules`, {
                 method: "POST",
-                headers: { "Content-Type": "application/json" },
+                headers: {
+                    "Content-Type": "application/json",
+                    ...(token ? { 'Authorization': `Bearer ${token}` } : {}),
+                },
                 body: JSON.stringify(body),
             });
             if (response.ok) {

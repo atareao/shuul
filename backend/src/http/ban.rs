@@ -92,7 +92,9 @@ pub async fn ban_handler(
             .ban_manager
             .lock()
             .map_err(|_| AppError::CachePoisoned)?;
-        ban_manager.ban(ip, params.rule_id, reason, params.ban_duration_seconds).clone()
+        ban_manager
+            .ban(ip, params.rule_id, reason, params.ban_duration_seconds)
+            .clone()
     };
 
     Ok(ApiResponse::new(
@@ -128,11 +130,7 @@ pub async fn unban_handler(
     };
 
     if removed {
-        Ok(ApiResponse::new(
-            StatusCode::OK,
-            "IP unbanned",
-            Data::None,
-        ))
+        Ok(ApiResponse::new(StatusCode::OK, "IP unbanned", Data::None))
     } else {
         Ok(ApiResponse::new(
             StatusCode::NOT_FOUND,

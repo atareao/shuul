@@ -40,8 +40,14 @@ pub async fn get_settings(
         .and_then(|v| v.parse().ok())
         .unwrap_or(30);
 
-    let settings = Settings { log_retention_days: days };
-    Ok(ApiResponse::new(StatusCode::OK, "Settings", Data::Some(serde_json::to_value(settings).map_err(AppError::from)?)))
+    let settings = Settings {
+        log_retention_days: days,
+    };
+    Ok(ApiResponse::new(
+        StatusCode::OK,
+        "Settings",
+        Data::Some(serde_json::to_value(settings).map_err(AppError::from)?),
+    ))
 }
 
 /// PUT /api/v1/settings — Updates settings
@@ -51,11 +57,13 @@ pub async fn update_settings(
 ) -> Result<impl IntoResponse, AppError> {
     if let Some(days) = update.log_retention_days {
         if days < 1 || days > 365 {
-            return Err(AppError::InvalidInput("log_retention_days must be between 1 and 365".to_string()));
+            return Err(AppError::InvalidInput(
+                "log_retention_days must be between 1 and 365".to_string(),
+            ));
         }
         sqlx::query(
             "INSERT INTO settings (key, value) VALUES ('log_retention_days', $1) 
-             ON CONFLICT (key) DO UPDATE SET value = EXCLUDED.value"
+             ON CONFLICT (key) DO UPDATE SET value = EXCLUDED.value",
         )
         .bind(days.to_string())
         .execute(&app_state.pool)

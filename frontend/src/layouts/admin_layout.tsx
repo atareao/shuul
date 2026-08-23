@@ -8,7 +8,6 @@ import {
     MenuUnfoldOutlined,
     PieChartOutlined,
     LogoutOutlined,
-    UserOutlined,
     StopOutlined,
     AppstoreOutlined,
     SettingOutlined,
@@ -19,7 +18,6 @@ import AuthContext from '@/components/auth_context';
 import { VERSION } from '@/constants';
 
 const TITLE = `Shuul (${VERSION})`;
-const ROLE = "admin";
 const { Header, Content, Footer, Sider } = Layout;
 
 type MenuItem = Required<MenuProps>['items'][number];
@@ -45,10 +43,9 @@ const navigations:{[key: string]: string}  = {
     2: "/admin/rules",
     3: "/admin/requests",
     4: "/admin/charts",
-    5: "/admin/users",
-    6: "/admin/bans",
-    7: "/admin/templates",
-    8: "/admin/settings",
+    5: "/admin/bans",
+    6: "/admin/templates",
+    7: "/admin/settings",
 }
 
 const items: MenuItem[] = [
@@ -56,10 +53,9 @@ const items: MenuItem[] = [
     getItem('Rules', '2', <OrderedListOutlined />),
     getItem('Requests', '3', <MenuUnfoldOutlined />),
     getItem('Charts', '4', <PieChartOutlined />),
-    getItem('Users', '5', <UserOutlined />),
-    getItem('Bans', '6', <StopOutlined />),
-    getItem('Templates', '7', <AppstoreOutlined />),
-    getItem('Settings', '8', <SettingOutlined />),
+    getItem('Bans', '5', <StopOutlined />),
+    getItem('Templates', '6', <AppstoreOutlined />),
+    getItem('Settings', '7', <SettingOutlined />),
 ];
 
 
@@ -94,8 +90,8 @@ class InnerAdminLayout extends react.Component<Props, State> {
         const selectedKey = Object.keys(navigations).find(key => navigations[key] === window.location.pathname) || '1';
         return (
             <AuthContext.Consumer>
-                {({ isLoggedIn, role}) => {
-                    if( isLoggedIn === false || role !== ROLE){
+                {({ isLoggedIn }) => {
+                    if( isLoggedIn === false){
                         return <Navigate to="/login" />;
                     }
                     return (

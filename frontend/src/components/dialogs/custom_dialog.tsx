@@ -108,12 +108,16 @@ class InnerDialog<T> extends React.Component<Props<T>, State<T>> {
 
         console.log("Request URL:", url);
         console.log("Body:", string_body);
+
+        const token = localStorage.getItem("token");
+
         try {
             const response = await fetch(url, {
                 method: method,
                 headers: {
                     "Content-Type": "application/json",
                     "Accept": "application/json",
+                    ...(token ? { 'Authorization': `Bearer ${token}` } : {}),
                 },
                 body: string_body,
             })
