@@ -19,7 +19,6 @@ mod rule;
 mod settings;
 mod shuul;
 mod template;
-mod user;
 mod util;
 
 pub use auth::auth_router;
@@ -31,5 +30,4 @@ pub use rule::rule_router;
 pub use settings::settings_router;
 pub use shuul::shuul_router;
 pub use template::template_router;
-pub use user::api_user_router;
 pub use util::util_router;

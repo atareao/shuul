@@ -83,18 +83,25 @@ impl BanManager {
     /// Check if an IP is currently banned.
     /// Returns the first active ban info, or None.
     pub fn is_banned(&self, ip: &IpAddr) -> Option<&BanInfo> {
-        self.bans.get(ip).and_then(|ban_list| {
-            ban_list.iter().find(|ban| !ban.is_expired())
-        })
+        self.bans
+            .get(ip)
+            .and_then(|ban_list| ban_list.iter().find(|ban| !ban.is_expired()))
     }
 
     /// Ban an IP address.
     ///
     /// If `ban_duration_override` is `Some`, it is used as the ban duration
     /// instead of the calculated escalation-based duration.
-    pub fn ban(&mut self, ip: IpAddr, rule_id: Option<i32>, reason: String, ban_duration_override: Option<i64>) -> &BanInfo {
+    pub fn ban(
+        &mut self,
+        ip: IpAddr,
+        rule_id: Option<i32>,
+        reason: String,
+        ban_duration_override: Option<i64>,
+    ) -> &BanInfo {
         let escalation_level = self.get_escalation_level(&ip);
-        let duration = ban_duration_override.unwrap_or_else(|| self.calculate_ban_duration(escalation_level));
+        let duration =
+            ban_duration_override.unwrap_or_else(|| self.calculate_ban_duration(escalation_level));
 
         let ban_info = BanInfo {
             banned_at: Instant::now(),
@@ -104,7 +111,7 @@ impl BanManager {
             reason,
         };
 
-        self.bans.entry(ip).or_default().push(ban_info.clone());
+        self.bans.entry(ip).or_default().push(ban_info);
         self.increment_escalation(&ip);
 
         // Return reference to the last added ban
@@ -140,9 +147,8 @@ impl BanManager {
         });
         // Decay escalation counters
         let decay_duration = Duration::from_secs(self.ban_count_decay_days as u64 * 86400);
-        self.escalation_counts.retain(|_, (_, last_ban)| {
-            Instant::now().duration_since(*last_ban) <= decay_duration
-        });
+        self.escalation_counts
+            .retain(|_, (_, last_ban)| Instant::now().duration_since(*last_ban) <= decay_duration);
     }
 
     /// Get all active (non-expired) bans.

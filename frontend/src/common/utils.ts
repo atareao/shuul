@@ -8,6 +8,8 @@ export const loadData = async <T>(
 ): Promise<Response<T>> => {
     console.log("Loading data");
 
+    const token = localStorage.getItem("token");
+
     const basePath = `${BASE_URL}/api/v1/${endpoint}`;
     const searchParams = new URLSearchParams();
     if (params) {
@@ -33,10 +35,9 @@ export const loadData = async <T>(
     try {
         const response = await fetch(url, {
             method: 'GET',
-            // El Content-Type es típicamente innecesario para un GET sin cuerpo,
-            // pero lo dejo si es una convención de tu API.
             headers: {
                 'Content-Type': 'application/json',
+                ...(token ? { 'Authorization': `Bearer ${token}` } : {}),
             },
         });
 
@@ -50,7 +51,7 @@ export const loadData = async <T>(
                 // Si falla al parsear, ignorar y usar un mensaje por defecto
             }
             const msg = errorBody.message || `Error HTTP: ${response.status} - ${response.statusText}`
-            console.error(`API Error Response: msg`);
+            console.error(`API Error Response: ${msg}`);
             return {
                 status: response.status,
                 message: msg,

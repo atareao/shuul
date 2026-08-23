@@ -30,8 +30,13 @@ export default class SettingsPage extends React.Component<{}, State> {
 
     loadSettings = async () => {
         this.setState({ loading: true });
+        const token = localStorage.getItem("token");
         try {
-            const response = await fetch(`${BASE_URL}/api/v1/settings`);
+            const response = await fetch(`${BASE_URL}/api/v1/settings`, {
+                headers: {
+                    ...(token ? { 'Authorization': `Bearer ${token}` } : {}),
+                },
+            });
             const json = await response.json();
             if (response.ok && json.data) {
                 this.setState({ settings: json.data });
@@ -45,10 +50,14 @@ export default class SettingsPage extends React.Component<{}, State> {
 
     handleSave = async (values: { log_retention_days: number }) => {
         this.setState({ saving: true });
+        const token = localStorage.getItem("token");
         try {
             const response = await fetch(`${BASE_URL}/api/v1/settings`, {
                 method: 'PUT',
-                headers: { 'Content-Type': 'application/json' },
+                headers: {
+                    'Content-Type': 'application/json',
+                    ...(token ? { 'Authorization': `Bearer ${token}` } : {}),
+                },
                 body: JSON.stringify(values),
             });
             const json = await response.json();

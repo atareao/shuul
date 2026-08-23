@@ -1,7 +1,7 @@
 //! Integration tests for rate limiting and ban functionality.
 
-use std::net::IpAddr;
 use backend::models::{BanManager, CircularTimestamps, RateLimiter};
+use std::net::IpAddr;
 
 #[tokio::test]
 async fn test_rate_limiter_integration() {

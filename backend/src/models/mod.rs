@@ -22,13 +22,13 @@ pub use data::Data;
 pub use error::AppError as Error;
 pub use ipdata::IPData;
 pub use oidc::{JwtValidator, OidcMetadata};
-pub use rate_limiter::RateLimiter;
 #[allow(unused_imports)]
 pub use rate_limiter::CircularTimestamps;
+pub use rate_limiter::RateLimiter;
 pub use request::{NewRequest, ReadRequestParams, Request};
 pub use response::{ApiResponse, EmptyResponse, PagedResponse, Pagination};
 pub use rule::{CacheRule, NewRule, ReadRuleParams, Rule, UpdateRule};
-pub use user::{TokenClaims, User};
+pub use user::TokenClaims;
 
 use maxminddb::Reader;
 use sqlx::postgres::PgPool;
@@ -49,8 +49,8 @@ pub struct AppState {
     pub ban_manager: Mutex<BanManager>,
     pub rate_limiter: Mutex<HashMap<i32, RateLimiter>>, // rule_id → RateLimiter
     // SSO / OIDC fields
-    pub oidc_metadata: Option<OidcMetadata>,
-    pub jwt_validator: JwtValidator,
+    pub oidc_metadata: tokio::sync::RwLock<Option<OidcMetadata>>,
+    pub jwt_validator: tokio::sync::RwLock<Option<JwtValidator>>,
     pub oidc_states: tokio::sync::Mutex<HashMap<String, (String, Instant)>>,
     pub oidc_client_id: Option<String>,
     pub oidc_redirect_url: Option<String>,

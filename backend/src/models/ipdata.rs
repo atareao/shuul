@@ -22,28 +22,37 @@ impl IPData {
         match ip_address.parse() {
             Ok(ip) => {
                 debug!("Look data for ip: {:?}", ip);
-                match maxmind_db.lookup::<geoip2::City>(ip).unwrap_or_default() {
-                    Some(result) => {
-                        debug!("result: {:?}", result);
-                        let country = result.country.as_ref();
-                        Self {
+                match maxmind_db.lookup(ip) {
+                    Ok(result) if result.has_data() => match result.decode::<geoip2::City>() {
+                        Ok(Some(city)) => {
+                            debug!("result: {:?}", city);
+                            Self {
+                                ip_address: ip_address.to_string(),
+                                city_name: if !city.city.is_empty() {
+                                    city.city.names.english.map(|s| s.to_string())
+                                } else {
+                                    None
+                                },
+                                country_name: if !city.country.is_empty() {
+                                    city.country.names.english.map(|s| s.to_string())
+                                } else {
+                                    None
+                                },
+                                country_code: if !city.country.is_empty() {
+                                    city.country.iso_code.map(|s| s.to_string())
+                                } else {
+                                    None
+                                },
+                            }
+                        },
+                        _ => Self {
                             ip_address: ip_address.to_string(),
-                            city_name: result
-                                .city
-                                .and_then(|c| c.names)
-                                .and_then(|n| n.get("en").copied())
-                                .map(std::string::ToString::to_string),
-                            country_name: country
-                                .and_then(|c| c.names.clone())
-                                .and_then(|n| n.get("en").copied())
-                                .map(std::string::ToString::to_string),
-                            country_code: result
-                                .country
-                                .and_then(|c| c.iso_code)
-                                .map(std::string::ToString::to_string),
-                        }
+                            city_name: None,
+                            country_name: None,
+                            country_code: None,
+                        },
                     },
-                    None => Self {
+                    _ => Self {
                         ip_address: ip_address.to_string(),
                         city_name: None,
                         country_name: None,
