@@ -28,7 +28,7 @@ use axum::{
 use dotenv::dotenv;
 use http::{
     api_user_router, auth_router, ban_router, health_router, request_router, require_auth,
-    rule_router, settings_router, shuul_router, template_router, user_router, util_router,
+    rule_router, settings_router, shuul_router, template_router, util_router,
 };
 use maxminddb::Reader;
 use models::CacheRule;
@@ -152,44 +152,35 @@ async fn main() -> Result<(), Error> {
     ));
     let rate_limiter: Mutex<HashMap<i32, RateLimiter>> = Mutex::new(HashMap::new());
 
-    // ── OIDC / SSO Configuration ──
-    let oidc_issuer_url = var("OIDC_ISSUER_URL").ok();
-    let oidc_client_id = var("OIDC_CLIENT_ID").ok();
-    let oidc_client_secret = var("OIDC_CLIENT_SECRET").ok();
+    // ── OIDC / SSO Configuration (REQUIRED) ──
+    let oidc_issuer_url = var("OIDC_ISSUER_URL").expect("OIDC_ISSUER_URL environment variable is mandatory");
+    let oidc_client_id = var("OIDC_CLIENT_ID").expect("OIDC_CLIENT_ID environment variable is mandatory");
+    let _oidc_client_secret = var("OIDC_CLIENT_SECRET").expect("OIDC_CLIENT_SECRET environment variable is mandatory");
     let oidc_redirect_url = var("OIDC_REDIRECT_URL")
         .unwrap_or_else(|_| "http://localhost:3000/api/v1/auth/callback".to_string());
 
-    let (oidc_metadata, jwt_validator) = if let (Some(issuer), Some(client_id), Some(_secret)) =
-        (&oidc_issuer_url, &oidc_client_id, &oidc_client_secret)
-    {
-        info!("OIDC configured: issuer={issuer}, client_id={client_id}");
+    info!("OIDC configured: issuer={oidc_issuer_url}, client_id={oidc_client_id}");
 
-        // Fetch OIDC discovery metadata
-        let discovery_url = format!("{}/.well-known/openid-configuration", issuer);
-        let metadata: OidcMetadata = reqwest::get(&discovery_url)
-            .await
-            .map_err(|e| Error::Other(format!("Failed to fetch OIDC metadata: {e}")))?
-            .json()
-            .await
-            .map_err(|e| Error::Other(format!("Failed to parse OIDC metadata: {e}")))?;
+    // Fetch OIDC discovery metadata
+    let discovery_url = format!("{}/.well-known/openid-configuration", oidc_issuer_url);
+    let metadata: OidcMetadata = reqwest::get(&discovery_url)
+        .await
+        .map_err(|e| Error::Other(format!("Failed to fetch OIDC metadata: {e}")))?
+        .json()
+        .await
+        .map_err(|e| Error::Other(format!("Failed to parse OIDC metadata: {e}")))?;
 
-        info!(
-            "OIDC discovery: issuer={}, auth_endpoint={}",
-            metadata.issuer, metadata.authorization_endpoint
-        );
+    info!(
+        "OIDC discovery: issuer={}, auth_endpoint={}",
+        metadata.issuer, metadata.authorization_endpoint
+    );
 
-        // Create JWT validator and fetch JWKS
-        let mut validator = JwtValidator::new(&metadata.issuer, client_id);
-        validator
-            .fetch_jwks(&metadata.jwks_uri)
-            .await
-            .map_err(|e| Error::Other(format!("Failed to fetch JWKS: {e}")))?;
-
-        (Some(metadata), validator)
-    } else {
-        info!("OIDC not configured — using dev-mode JWT validator");
-        (None, JwtValidator::dev())
-    };
+    // Create JWT validator and fetch JWKS
+    let mut validator = JwtValidator::new(&metadata.issuer, &oidc_client_id);
+    validator
+        .fetch_jwks(&metadata.jwks_uri)
+        .await
+        .map_err(|e| Error::Other(format!("Failed to fetch JWKS: {e}")))?;
 
     let app_state = Arc::new(AppState {
         pool,
@@ -203,10 +194,10 @@ async fn main() -> Result<(), Error> {
         cache_size,
         ban_manager,
         rate_limiter,
-        oidc_metadata,
-        jwt_validator,
+        oidc_metadata: Some(metadata),
+        jwt_validator: validator,
         oidc_states: tokio::sync::Mutex::new(HashMap::new()),
-        oidc_client_id,
+        oidc_client_id: Some(oidc_client_id),
         oidc_redirect_url: Some(oidc_redirect_url),
     });
 
@@ -264,8 +255,6 @@ async fn main() -> Result<(), Error> {
         .nest("/shuul", shuul_router())
         .nest("/util", util_router())
         .nest("/health", health_router())
-        .nest("/auth", user_router())
-        // SSO routes (public — no auth middleware)
         .nest("/auth", auth_router())
         // Protected routes (require JWT auth)
         .nest("/users", api_user_router())

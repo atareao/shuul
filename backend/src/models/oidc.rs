@@ -17,14 +17,12 @@ pub struct OidcMetadata {
 
 /// JWT validator that fetches JWKS from the OIDC provider.
 ///
-/// In dev mode (`is_dev = true`), any token is accepted (no signature verification).
-/// In production, it verifies the signature against the provider's JWKS and checks
+/// Verifies the signature against the provider's JWKS and checks
 /// issuer/audience claims.
 pub struct JwtValidator {
     issuer: String,
     client_id: String,
     jwks: Option<Vec<jsonwebtoken::jwk::Jwk>>,
-    is_dev: bool,
 }
 
 impl std::fmt::Debug for JwtValidator {
@@ -33,29 +31,17 @@ impl std::fmt::Debug for JwtValidator {
             .field("issuer", &self.issuer)
             .field("client_id", &self.client_id)
             .field("jwks_count", &self.jwks.as_ref().map(|j| j.len()))
-            .field("is_dev", &self.is_dev)
             .finish()
     }
 }
 
 impl JwtValidator {
-    /// Create a dev-mode validator (accepts any token without verification).
-    pub fn dev() -> Self {
-        Self {
-            issuer: String::new(),
-            client_id: String::new(),
-            jwks: None,
-            is_dev: true,
-        }
-    }
-
-    /// Create a production validator.
+    /// Create a new JWT validator.
     pub fn new(issuer: &str, client_id: &str) -> Self {
         Self {
             issuer: issuer.to_string(),
             client_id: client_id.to_string(),
             jwks: None,
-            is_dev: false,
         }
     }
 
@@ -81,22 +67,14 @@ impl JwtValidator {
 
     /// Validate a JWT token.
     ///
-    /// In dev mode, just decode the token and return the claims as a JSON value.
-    /// In production, find the matching JWK by `kid`, verify the signature, and
+    /// Find the matching JWK by `kid`, verify the signature, and
     /// validate the `iss` and `aud` claims.
     pub fn validate(&self, token: &str) -> Result<serde_json::Value, crate::models::error::AppError> {
         // Decode without verification first to get header and claims
         let header = jsonwebtoken::decode_header(token)
             .map_err(|_| crate::models::error::AppError::InvalidInput("Invalid JWT header".to_string()))?;
 
-        if self.is_dev {
-            // Dev mode: just decode and return claims
-            let token_data = jsonwebtoken::dangerous::insecure_decode::<serde_json::Value>(token)
-            .map_err(|e| crate::models::error::AppError::Jwt(e))?;
-            return Ok(token_data.claims);
-        }
-
-        // Production mode: verify signature against JWKS
+        // Verify signature against JWKS
         let jwks = self
             .jwks
             .as_ref()

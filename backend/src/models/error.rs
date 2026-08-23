@@ -24,9 +24,6 @@ pub enum AppError {
     #[error("Error de base de datos: {0}")]
     Database(#[from] sqlx::Error),
 
-    #[error("Error bcrypt: {0}")]
-    Bcrypt(#[from] bcrypt::BcryptError),
-
     #[error("Error JWT: {0}")]
     Jwt(#[from] jsonwebtoken::errors::Error),
 
@@ -53,7 +50,6 @@ impl IntoResponse for AppError {
     fn into_response(self) -> Response {
         let (status, message) = match &self {
             Self::Database(_) => (StatusCode::INTERNAL_SERVER_ERROR, self.to_string()),
-            Self::Bcrypt(_) => (StatusCode::BAD_REQUEST, self.to_string()),
             Self::Jwt(_) => (StatusCode::UNAUTHORIZED, self.to_string()),
             Self::Io(_) => (StatusCode::INTERNAL_SERVER_ERROR, self.to_string()),
             Self::SerdeJson(_) => (StatusCode::INTERNAL_SERVER_ERROR, self.to_string()),
