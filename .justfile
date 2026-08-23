@@ -18,13 +18,33 @@ frontend:
 backend:
     RUST_LOG=debug cargo run
 
+[working-directory("./backend")]
+lint:
+    cargo clippy --all-targets --all-features
+
+[working-directory("./backend")]
+fmt:
+    cargo fmt -- --check
+
+[working-directory("./backend")]
+fmt-fix:
+    cargo fmt
+
+[working-directory("./backend")]
+test-integration:
+    cargo test --test integration -- --nocapture
+
+test-integration-setup:
+    @cd .. && ./tests/setup_db.sh
+
 build:
-    @docker build \
-        --tag={{user}}/{{name}}:{{version}} \
-        --tag={{user}}/{{name}}:latest .
+    @podman build \
+        --tag=docker.io/{{user}}/{{name}}:{{version}} \
+        --tag=docker.io/{{user}}/{{name}}:latest .
 
 push:
-    @docker image push --all-tags {{user}}/{{name}}
+    @podman image push docker.io/{{user}}/{{name}}:{{version}}
+    @podman image push docker.io/{{user}}/{{name}}:latest
 
 upgrade:
     #!/bin/fish
@@ -35,8 +55,8 @@ upgrade:
     cd ..
     git commit -am "Upgrade to version $VERSION"
     git tag -a "$VERSION" -m "Version $VERSION"
-    # clean old docker images
-    docker image list  | grep {{name}} | sort -r | tail -n +5 | awk '{print $3}' | while read id; echo $id; docker rmi $id; end
+    # clean old podman images
+    podman image list  | grep {{name}} | sort -r | tail -n +5 | awk '{print $3}' | while read id; echo $id; podman rmi $id; end
     just build push
 
 [working-directory("./backend")]

@@ -1,3 +1,12 @@
+//! # Modelo de reglas de filtrado
+//!
+//! Define [`Rule`], [`NewRule`], [`UpdateRule`] y [`CacheRule`].
+//! Las reglas determinan si una petición HTTP debe ser permitida,
+//! denegada y/o almacenada en la base de datos.
+//!
+//! [`CacheRule`] envuelve una [`Rule`] con un [`Regex`] precompilado
+//! para la coincidencia rápida de URIs en memoria.
+
 use crate::models::request::NewRequest;
 use chrono::{DateTime, Utc};
 use regex::Regex;
@@ -7,8 +16,6 @@ use sqlx::{
     postgres::{PgPool, PgRow},
     query,
 };
-use std::convert::Into;
-
 #[derive(Debug, Serialize, Deserialize, Clone)]
 pub struct Rule {
     pub id: i32,
@@ -23,6 +30,16 @@ pub struct Rule {
     pub city_name: Option<String>,
     pub country_name: Option<String>,
     pub country_code: Option<String>,
+    pub rate_limit_enabled: bool,
+    pub max_retry: i32,
+    pub find_time_seconds: i64,
+    pub ban_time_seconds: i64,
+    pub bantime_increment: bool,
+    pub bantime_multipliers: Vec<i32>,
+    pub bantime_maxtime_seconds: i64,
+    pub ban_count_decay_days: i32,
+    pub ignoreip: Vec<String>,
+    pub webhook: Option<String>,
     pub active: bool,
     created_at: DateTime<Utc>,
     updated_at: DateTime<Utc>,
@@ -92,7 +109,7 @@ impl CacheRule {
         }
     }
 
-    pub async fn read_all_active(pool: &PgPool) -> Result<Vec<CacheRule>, Error> {
+    pub async fn read_all_active(pool: &PgPool) -> Result<Vec<Self>, Error> {
         let sql = "SELECT * FROM rules WHERE active = TRUE ORDER BY weight ASC";
         query(sql).map(Self::from_row).fetch_all(pool).await
     }
@@ -103,7 +120,7 @@ impl CacheRule {
                 (Some(regex), Some(value)) => {
                     // Si la regla está definida Y el valor existe, DEBE coincidir.
                     regex.is_match(value)
-                }
+                },
                 // Si la regla no está definida (None), la condición se cumple por defecto (true).
                 // Si la regla está definida pero el valor de la solicitud es None,
                 // asumimos que el valor no existe y la regla no se puede aplicar (true).
@@ -135,6 +152,16 @@ pub struct NewRule {
     pub city_name: Option<String>,
     pub country_name: Option<String>,
     pub country_code: Option<String>,
+    pub rate_limit_enabled: Option<bool>,
+    pub max_retry: Option<i32>,
+    pub find_time_seconds: Option<i64>,
+    pub ban_time_seconds: Option<i64>,
+    pub bantime_increment: Option<bool>,
+    pub bantime_multipliers: Option<Vec<i32>>,
+    pub bantime_maxtime_seconds: Option<i64>,
+    pub ban_count_decay_days: Option<i32>,
+    pub ignoreip: Option<Vec<String>>,
+    pub webhook: Option<String>,
     pub active: bool,
 }
 
@@ -152,8 +179,19 @@ pub struct UpdateRule {
     pub city_name: Option<String>,
     pub country_name: Option<String>,
     pub country_code: Option<String>,
+    pub rate_limit_enabled: Option<bool>,
+    pub max_retry: Option<i32>,
+    pub find_time_seconds: Option<i64>,
+    pub ban_time_seconds: Option<i64>,
+    pub bantime_increment: Option<bool>,
+    pub bantime_multipliers: Option<Vec<i32>>,
+    pub bantime_maxtime_seconds: Option<i64>,
+    pub ban_count_decay_days: Option<i32>,
+    pub ignoreip: Option<Vec<String>>,
+    pub webhook: Option<String>,
     pub active: bool,
 }
+#[allow(dead_code)]
 #[derive(Debug, Deserialize)]
 pub struct ReadRuleParams {
     pub id: Option<i32>,
@@ -168,6 +206,16 @@ pub struct ReadRuleParams {
     pub city_name: Option<String>,
     pub country_name: Option<String>,
     pub country_code: Option<String>,
+    pub rate_limit_enabled: Option<bool>,
+    pub max_retry: Option<i32>,
+    pub find_time_seconds: Option<i64>,
+    pub ban_time_seconds: Option<i64>,
+    pub bantime_increment: Option<bool>,
+    pub bantime_multipliers: Option<Vec<i32>>,
+    pub bantime_maxtime_seconds: Option<i64>,
+    pub ban_count_decay_days: Option<i32>,
+    pub ignoreip: Option<Vec<String>>,
+    pub webhook: Option<String>,
     pub active: Option<bool>,
     pub page: Option<u32>,
     pub limit: Option<u32>,
@@ -177,9 +225,9 @@ pub struct ReadRuleParams {
 use crate::constants::DEFAULT_LIMIT;
 use crate::constants::DEFAULT_PAGE;
 
-impl Into<CacheRule> for Rule {
-    fn into(self) -> CacheRule {
-        CacheRule::from_rule(self)
+impl From<Rule> for CacheRule {
+    fn from(val: Rule) -> Self {
+        CacheRule::from_rule(val)
     }
 }
 
@@ -198,17 +246,31 @@ impl Rule {
             city_name: row.get("city_name"),
             country_name: row.get("country_name"),
             country_code: row.get("country_code"),
+            rate_limit_enabled: row.get("rate_limit_enabled"),
+            max_retry: row.get("max_retry"),
+            find_time_seconds: row.get("find_time_seconds"),
+            ban_time_seconds: row.get("ban_time_seconds"),
+            bantime_increment: row.get("bantime_increment"),
+            bantime_multipliers: row.get("bantime_multipliers"),
+            bantime_maxtime_seconds: row.get("bantime_maxtime_seconds"),
+            ban_count_decay_days: row.get("ban_count_decay_days"),
+            ignoreip: row.get("ignoreip"),
+            webhook: row.get("webhook"),
             active: row.get("active"),
             created_at: row.get("created_at"),
             updated_at: row.get("updated_at"),
         }
     }
 
-    pub async fn create(pool: &PgPool, rule: NewRule) -> Result<Rule, Error> {
+    pub async fn create(pool: &PgPool, rule: NewRule) -> Result<Self, Error> {
         let sql = "INSERT INTO rules (weight, allow, store,
             ip_address, protocol, fqdn, path, query, city_name, country_name,
-            country_code, active, created_at, updated_at) VALUES ($1, $2, $3,
-            $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14) RETURNING *";
+            country_code, rate_limit_enabled, max_retry, find_time_seconds,
+            ban_time_seconds, bantime_increment, bantime_multipliers,
+            bantime_maxtime_seconds, ban_count_decay_days, ignoreip, webhook,
+            active, created_at, updated_at) VALUES ($1, $2, $3,
+            $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17,
+            $18, $19, $20, $21, $22, $23, $24) RETURNING *";
         let now = Utc::now();
         query(sql)
             .bind(rule.weight)
@@ -222,6 +284,16 @@ impl Rule {
             .bind(rule.city_name)
             .bind(rule.country_name)
             .bind(rule.country_code)
+            .bind(rule.rate_limit_enabled.unwrap_or(false))
+            .bind(rule.max_retry.unwrap_or(5))
+            .bind(rule.find_time_seconds.unwrap_or(600))
+            .bind(rule.ban_time_seconds.unwrap_or(3600))
+            .bind(rule.bantime_increment.unwrap_or(false))
+            .bind(rule.bantime_multipliers.unwrap_or(vec![1, 2, 4, 8]))
+            .bind(rule.bantime_maxtime_seconds.unwrap_or(604800))
+            .bind(rule.ban_count_decay_days.unwrap_or(30))
+            .bind(rule.ignoreip.unwrap_or_default())
+            .bind(rule.webhook)
             .bind(rule.active)
             .bind(now)
             .bind(now)
@@ -244,7 +316,7 @@ impl Rule {
             .await
     }
 
-    pub async fn update(pool: &PgPool, rule: UpdateRule) -> Result<Rule, Error> {
+    pub async fn update(pool: &PgPool, rule: UpdateRule) -> Result<Self, Error> {
         let sql = "UPDATE rules set
                 weight = $1,
                 allow = $2,
@@ -257,9 +329,19 @@ impl Rule {
                 city_name = $9,
                 country_name = $10,
                 country_code = $11,
-                active = $12,
-                updated_at = $13
-            WHERE id = $14
+                rate_limit_enabled = $12,
+                max_retry = $13,
+                find_time_seconds = $14,
+                ban_time_seconds = $15,
+                bantime_increment = $16,
+                bantime_multipliers = $17,
+                bantime_maxtime_seconds = $18,
+                ban_count_decay_days = $19,
+                ignoreip = $20,
+                webhook = $21,
+                active = $22,
+                updated_at = $23
+            WHERE id = $24
             RETURNING *";
         let now = Utc::now();
         query(sql)
@@ -274,6 +356,16 @@ impl Rule {
             .bind(rule.city_name)
             .bind(rule.country_name)
             .bind(rule.country_code)
+            .bind(rule.rate_limit_enabled.unwrap_or(false))
+            .bind(rule.max_retry.unwrap_or(5))
+            .bind(rule.find_time_seconds.unwrap_or(600))
+            .bind(rule.ban_time_seconds.unwrap_or(3600))
+            .bind(rule.bantime_increment.unwrap_or(false))
+            .bind(rule.bantime_multipliers.unwrap_or(vec![1, 2, 4, 8]))
+            .bind(rule.bantime_maxtime_seconds.unwrap_or(604800))
+            .bind(rule.ban_count_decay_days.unwrap_or(30))
+            .bind(rule.ignoreip.unwrap_or_default())
+            .bind(rule.webhook)
             .bind(rule.active)
             .bind(now)
             .bind(rule.id)
@@ -295,12 +387,12 @@ impl Rule {
         ];
         let active_filters: Vec<(&str, String)> = filters
             .into_iter()
-            .filter_map(|(col, val)| val.as_ref().map(|v| (col, v.to_string())))
+            .filter_map(|(col, val)| val.as_ref().map(|v| (col, v.clone())))
             .collect();
         let mut sql = "SELECT COUNT(*) total FROM rules WHERE 1=1".to_string();
         for (i, (col, _)) in active_filters.iter().enumerate() {
             let param_index = i + 1;
-            sql.push_str(&format!(" AND {} LIKE ${}", col, param_index));
+            sql.push_str(&format!(" AND {col} LIKE ${param_index}"));
         }
         let mut query = query(&sql);
         for (_, value) in active_filters {
@@ -315,7 +407,7 @@ impl Rule {
             .await
     }
 
-    pub async fn read_paged(pool: &PgPool, params: &ReadRuleParams) -> Result<Vec<Rule>, Error> {
+    pub async fn read_paged(pool: &PgPool, params: &ReadRuleParams) -> Result<Vec<Self>, Error> {
         let filters = vec![
             ("ip_address", &params.ip_address),
             ("protocol", &params.protocol),
@@ -328,12 +420,12 @@ impl Rule {
         ];
         let active_filters: Vec<(&str, String)> = filters
             .into_iter()
-            .filter_map(|(col, val)| val.as_ref().map(|v| (col, v.to_string())))
+            .filter_map(|(col, val)| val.as_ref().map(|v| (col, v.clone())))
             .collect();
         let mut sql = "SELECT * FROM rules WHERE 1=1".to_string();
         for (i, (col, _)) in active_filters.iter().enumerate() {
             let param_index = i + 1;
-            sql.push_str(&format!(" AND {} LIKE ${}", col, param_index));
+            sql.push_str(&format!(" AND {col} LIKE ${param_index}"));
         }
         let limit_index = active_filters.len() + 1;
         let offset_index = limit_index + 1;
@@ -350,12 +442,12 @@ impl Rule {
             .contains(&sort_by.as_str())
         {
             if params.asc.unwrap_or(true) {
-                sql.push_str(&format!(" ORDER BY {} ASC", sort_by));
+                sql.push_str(&format!(" ORDER BY {sort_by} ASC"));
             } else {
-                sql.push_str(&format!(" ORDER BY {} DESC", sort_by));
+                sql.push_str(&format!(" ORDER BY {sort_by} DESC"));
             }
         }
-        sql.push_str(&format!(" LIMIT ${} OFFSET ${}", limit_index, offset_index));
+        sql.push_str(&format!(" LIMIT ${limit_index} OFFSET ${offset_index}"));
         let mut query = query(&sql);
         for (_, value) in active_filters {
             query = query.bind(value);
@@ -370,7 +462,7 @@ impl Rule {
             .await
     }
 
-    pub async fn read(pool: &PgPool, id: i32) -> Result<Rule, Error> {
+    pub async fn read(pool: &PgPool, id: i32) -> Result<Self, Error> {
         let sql = "SELECT * FROM rules WHERE id = $1";
         query(sql)
             .bind(id)
@@ -379,12 +471,7 @@ impl Rule {
             .await
     }
 
-    pub async fn read_all_active(pool: &PgPool) -> Result<Vec<Rule>, Error> {
-        let sql = "SELECT * FROM rules WHERE active = TRUE ORDER BY weight ASC";
-        query(sql).map(Self::from_row).fetch_all(pool).await
-    }
-
-    pub async fn delete(pool: &PgPool, id: i32) -> Result<Rule, Error> {
+    pub async fn delete(pool: &PgPool, id: i32) -> Result<Self, Error> {
         let sql = "DELETE FROM rules WHERE id = $1 RETURNING *";
         query(sql)
             .bind(id)
