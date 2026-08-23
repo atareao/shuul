@@ -171,7 +171,6 @@ async fn main() -> Result<(), Error> {
         secret,
         maxmind_db: Reader::open_readfile(&maxmind_db_path)
             .map_err(|e| Error::Other(format!("Failed to open MaxMind DB: {e}")))?,
-        static_dir: STATIC_DIR.to_string(),
         rules,
         cache,
         cache_enabled,

@@ -64,4 +64,62 @@ impl JwtValidator {
         self.jwks = Some(jwk_set.keys);
         Ok(())
     }
+
+    /// Validate an `id_token` from the OIDC provider.
+    ///
+    /// Verifies:
+    /// - Signature against the provider's JWKS (matched by `kid`)
+    /// - `iss` claim matches the expected issuer
+    /// - `aud` claim matches the expected client_id
+    /// - `exp` claim is not expired
+    ///
+    /// Returns the decoded claims on success.
+    pub fn validate_id_token(
+        &self,
+        id_token: &str,
+    ) -> Result<serde_json::Value, crate::models::error::AppError> {
+        let jwks = self.jwks.as_ref().ok_or_else(|| {
+            crate::models::error::AppError::Other("JWKS not initialized".to_string())
+        })?;
+
+        // Decode header to find the key ID (kid)
+        let header = jsonwebtoken::decode_header(id_token).map_err(|e| {
+            crate::models::error::AppError::Other(format!("Failed to decode id_token header: {e}"))
+        })?;
+
+        // Find matching JWK by kid, or fall back to the first key
+        let jwk = if let Some(kid) = &header.kid {
+            jwks.iter()
+                .find(|j| j.common.key_id == Some(kid.clone()))
+                .ok_or_else(|| {
+                    crate::models::error::AppError::Other(format!(
+                        "No matching JWK found for kid: {kid}"
+                    ))
+                })?
+        } else {
+            jwks.first().ok_or_else(|| {
+                crate::models::error::AppError::Other("No JWKs available".to_string())
+            })?
+        };
+
+        // Create decoding key from the JWK
+        let key = jsonwebtoken::DecodingKey::from_jwk(jwk).map_err(|e| {
+            crate::models::error::AppError::Other(format!(
+                "Failed to create DecodingKey from JWK: {e}"
+            ))
+        })?;
+
+        // Validate with expected issuer and audience
+        let mut validation = jsonwebtoken::Validation::new(header.alg);
+        validation.set_issuer(&[&self.issuer]);
+        validation.set_audience(&[&self.client_id]);
+        validation.validate_exp = true;
+
+        let token_data = jsonwebtoken::decode::<serde_json::Value>(id_token, &key, &validation)
+            .map_err(|e| {
+                crate::models::error::AppError::Other(format!("id_token validation failed: {e}"))
+            })?;
+
+        Ok(token_data.claims)
+    }
 }
