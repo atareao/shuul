@@ -1,7 +1,13 @@
+//! # Datos de geolocalización IP
+//!
+//! [`IPData`] almacena la información de geolocalización obtenida
+//! de la base de datos MaxMind GeoIP2 para una dirección IP dada.
+
 use maxminddb::{Reader, geoip2};
 use serde::{Deserialize, Serialize};
 use tracing::{debug, error};
 
+/// Información de geolocalización asociada a una IP.
 #[derive(Debug, Serialize, Deserialize, Clone)]
 pub struct IPData {
     pub ip_address: String,
@@ -25,18 +31,18 @@ impl IPData {
                             city_name: result
                                 .city
                                 .and_then(|c| c.names)
-                                .and_then(|n| n.get("en").cloned())
-                                .map(|s| s.to_string()),
+                                .and_then(|n| n.get("en").copied())
+                                .map(std::string::ToString::to_string),
                             country_name: country
                                 .and_then(|c| c.names.clone())
-                                .and_then(|n| n.get("en").cloned())
-                                .map(|s| s.to_string()),
+                                .and_then(|n| n.get("en").copied())
+                                .map(std::string::ToString::to_string),
                             country_code: result
                                 .country
                                 .and_then(|c| c.iso_code)
-                                .map(|s| s.to_string()),
+                                .map(std::string::ToString::to_string),
                         }
-                    }
+                    },
                     None => Self {
                         ip_address: ip_address.to_string(),
                         city_name: None,
@@ -44,7 +50,7 @@ impl IPData {
                         country_code: None,
                     },
                 }
-            }
+            },
             Err(e) => {
                 error!("Look data for ip: {:?}: {}", ip_address, e);
                 Self {
@@ -53,7 +59,7 @@ impl IPData {
                     country_name: None,
                     country_code: None,
                 }
-            }
+            },
         }
     }
 }

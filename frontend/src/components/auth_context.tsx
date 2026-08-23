@@ -59,11 +59,26 @@ export class AuthContextProvider extends React.Component<Props, State> {
             }
             }
         }else{
-            this.state = {
-                role: "",
-                token: null,
-                isLoggedIn: false,
-                isAdmin: false
+            // Check for SSO token in sessionStorage
+            const ssoToken = sessionStorage.getItem("sso_token");
+            if (ssoToken) {
+                sessionStorage.removeItem("sso_token");
+                localStorage.setItem("token", ssoToken);
+                const decoded = jwtDecode(ssoToken);
+                const role = decoded.role;
+                this.state = {
+                    role: role,
+                    token: ssoToken,
+                    isLoggedIn: true,
+                    isAdmin: role === "admin"
+                };
+            } else {
+                this.state = {
+                    role: "",
+                    token: null,
+                    isLoggedIn: false,
+                    isAdmin: false
+                };
             }
         }
     }
