@@ -12,16 +12,16 @@ const ENDPOINT = "requests";
 
 // Definición de las columnas/campos para la tabla de Records
 const RecordsFields: FieldDefinition<Item>[] = [
-    { key: 'created_at', label: 'Created at', type: 'date'}, 
-    { key: 'ip_address', label: 'IP Address', type: 'string', filterKey: 'ip_address' },
-    { key: 'protocol', label: 'Protocol', type: 'string', filterKey: 'protocol' },
-    { key: 'fqdn', label: 'FQDN', type: 'string', filterKey: 'fqdn' },
-    { key: 'path', label: 'Path', type: 'string', filterKey: 'path' },
-    { key: 'query', label: 'Query', type: 'string', filterKey: 'query' },
-    { key: 'city_name', label: 'City Name', type: 'string', filterKey: 'city_name' },
-    { key: 'country_name', label: 'Country Name', type: 'string', filterKey: 'country_name' },
-    { key: 'country_code', label: 'Country Code', type: 'string', filterKey: 'country_code' },
-    { key: 'rule_id', label: 'Rule Id', type: 'number', filterKey: 'rule_id', fixed: 'right' }
+    { key: 'created_at', label: 'Created at', type: 'date', width: 170}, 
+    { key: 'ip_address', label: 'IP Address', type: 'string', filterKey: 'ip_address', width: 140 },
+    { key: 'protocol', label: 'Protocol', type: 'string', filterKey: 'protocol', width: 100 },
+    { key: 'fqdn', label: 'FQDN', type: 'string', filterKey: 'fqdn', width: 200 },
+    { key: 'path', label: 'Path', type: 'string', filterKey: 'path', width: 250 },
+    { key: 'query', label: 'Query', type: 'string', filterKey: 'query', width: 200 },
+    { key: 'city_name', label: 'City Name', type: 'string', filterKey: 'city_name', width: 150 },
+    { key: 'country_name', label: 'Country Name', type: 'string', filterKey: 'country_name', width: 150 },
+    { key: 'country_code', label: 'Country Code', type: 'string', filterKey: 'country_code', width: 130 },
+    { key: 'rule_id', label: 'Rule Id', type: 'number', filterKey: 'rule_id', width: 80, fixed: 'right' }
 ];
 
 

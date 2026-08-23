@@ -25,7 +25,7 @@ const FIELDS: FieldDefinition<Item>[] = [
     { key: 'protocol', label: 'Protocol', type: 'string', value: "", width: 120, filterKey: "protocol", visible: true },
     { key: 'fqdn', label: 'FQDN', type: 'string', value: "", width: 200, filterKey: "fqdn", visible: true },
     { key: 'path', label: 'Path', type: 'string', value: "", width: 140, filterKey: "path", visible: true },
-    { key: 'query', label: 'Query', type: 'string', value: "", filterKey: "query", visible: true },
+    { key: 'query', label: 'Query', type: 'string', value: "", width: 180, filterKey: "query", visible: true },
     { key: 'city_name', label: 'City Name', type: 'string', value: "", width: 150, filterKey: "city_name", visible: true },
     { key: 'country_name', label: 'Contry Name', type: 'string', value: "", width: 150, filterKey: "country_name", visible: true },
     { key: 'country_code', label: 'Contry Code', type: 'string', value: "", width: 150, filterKey: "country_code", visible: true },
