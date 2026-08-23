@@ -44,15 +44,8 @@ pub async fn create_handler(
     debug!("Rule: {:?}", rule);
     let rule = Rule::create(&app_state.pool, rule).await?;
     debug!("Rule created: {:?}", &rule);
-    {
-        // Lock the cache; map poisoning to AppError
-        let mut rules_guard = app_state
-            .rules
-            .lock()
-            .map_err(|_| AppError::CachePoisoned)?;
-        rules_guard.push(rule.clone().into());
-        debug!("Rule updated: {:?}", rules_guard);
-    }
+    app_state.reload_rules().await?;
+    debug!("Rules cache reloaded after create");
     // Propagar error de serialización con `?`
     Ok(ApiResponse::new(
         StatusCode::CREATED,
@@ -172,16 +165,8 @@ pub async fn update_handler(
 ) -> Result<impl IntoResponse, AppError> {
     debug!("Rule: {:?}", rule);
     let rule = Rule::update(&app_state.pool, rule).await?;
-    {
-        let mut rules_guard = app_state
-            .rules
-            .lock()
-            .map_err(|_| AppError::CachePoisoned)?;
-        rules_guard.retain(|r| r.rule.id != rule.id);
-        rules_guard.push(rule.clone().into());
-        rules_guard.sort_by_key(|r| r.rule.weight);
-        debug!("Rule updated: {:?}", rules_guard);
-    }
+    app_state.reload_rules().await?;
+    debug!("Rules cache reloaded after update");
     Ok(ApiResponse::new(
         StatusCode::OK,
         "Rule updated",
@@ -210,7 +195,8 @@ pub async fn delete_handler(
         .id
         .ok_or_else(|| AppError::InvalidInput("id parameter is required".to_string()))?;
     let rule = Rule::delete(&app_state.pool, id).await?;
-    debug!("Rule deleted: {:?}", rule);
+    app_state.reload_rules().await?;
+    debug!("Rules cache reloaded after delete");
     Ok(ApiResponse::new(
         StatusCode::OK,
         "Rules deleted",

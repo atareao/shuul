@@ -1,7 +1,11 @@
+import { useState } from "react";
 import { useTranslation } from "react-i18next";
+import { Button } from "antd";
+import { PlusOutlined } from '@ant-design/icons';
 import CustomTable from '@/components/custom_table'; 
 import type { FieldDefinition } from '@/common/types'; 
 import type Item from "@/models/record"; 
+import CreateRuleFromRequestDialog from '@/components/dialogs/create_rule_from_request_dialog';
 
 const TITLE = "Requests";
 const ENDPOINT = "requests";
@@ -23,7 +27,7 @@ const RecordsFields: FieldDefinition<Item>[] = [
 
 export default function Page() {
     const { t } = useTranslation();
-    // No necesitamos 'navigate' si no se usa
+    const [ruleDialogItem, setRuleDialogItem] = useState<Item | null>(null);
 
     // Adaptamos las etiquetas para usar la función 't'
     const translatedFields: FieldDefinition<Item>[] = RecordsFields.map(field => ({
@@ -32,16 +36,32 @@ export default function Page() {
     }));
 
     return (
-        // Usamos el CustomTable con el tipo Item para la inferencia de TypeScript
-        <CustomTable<Item>
-            title={TITLE}
-            endpoint={ENDPOINT}
-            fields={translatedFields}
-            t={t}
-            defaultSortField="created_at"
-            defaultSortDesc={true}
-            autoRefresh={true}
-            autoRefreshInterval={30}
-        />
+        <>
+            <CreateRuleFromRequestDialog
+                record={ruleDialogItem}
+                onClose={() => setRuleDialogItem(null)}
+                t={t}
+            />
+            <CustomTable<Item>
+                title={TITLE}
+                endpoint={ENDPOINT}
+                fields={translatedFields}
+                t={t}
+                defaultSortField="created_at"
+                defaultSortDesc={true}
+                autoRefresh={true}
+                autoRefreshInterval={30}
+                hasActions={true}
+                renderActionColumn={(item) => (
+                    <Button
+                        size="small"
+                        icon={<PlusOutlined />}
+                        onClick={() => setRuleDialogItem(item)}
+                    >
+                        {t('Rule')}
+                    </Button>
+                )}
+            />
+        </>
     );
 }
