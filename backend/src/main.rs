@@ -27,12 +27,13 @@ use axum::{
 };
 use dotenv::dotenv;
 use http::{
-    auth_router, ban_router, health_router, request_router, require_auth,
+    auth_router, ban_router, health_router, rate_limit_profile_router, report_router,
+    request_router, require_auth,
     rule_router, settings_router, shuul_router, template_router, util_router,
 };
 use maxminddb::Reader;
 use models::CacheRule;
-use models::{AppState, BanManager, Error, JwtValidator, OidcMetadata, RateLimiter};
+use models::{AppState, BanManager, Error, JwtValidator, OidcMetadata, RateLimiter, Settings};
 use sqlx::{
     migrate::{MigrateDatabase, Migrator},
     postgres::PgPoolOptions,
@@ -151,6 +152,7 @@ async fn main() -> Result<(), Error> {
         30,      // ban_count_decay_days
     ));
     let rate_limiter: Mutex<HashMap<i32, RateLimiter>> = Mutex::new(HashMap::new());
+    let settings = Mutex::new(Settings::load(&pool).await.unwrap_or_default());
 
     // ── OIDC / SSO Configuration (REQUIRED) ──
     let oidc_issuer_url = var("OIDC_ISSUER_URL").expect("OIDC_ISSUER_URL environment variable is mandatory");
@@ -175,6 +177,7 @@ async fn main() -> Result<(), Error> {
         cache_size,
         ban_manager,
         rate_limiter,
+        settings,
         oidc_metadata: tokio::sync::RwLock::new(None),
         jwt_validator: tokio::sync::RwLock::new(None),
         oidc_states: tokio::sync::Mutex::new(HashMap::new()),
@@ -276,17 +279,22 @@ async fn main() -> Result<(), Error> {
         .nest("/util", util_router())
         .nest("/health", health_router())
         .nest("/auth", auth_router())
-        // Protected routes (require JWT auth)
+        .nest("/report", report_router())
+        .with_state(app_state.clone());
+
+    let protected_routes = Router::new()
         .nest("/requests", request_router())
         .nest("/rules", rule_router())
         .nest("/bans", ban_router())
         .nest("/templates", template_router())
         .nest("/settings", settings_router())
+        .nest("/rate-limit-profiles", rate_limit_profile_router())
         .route_layer(axum_middleware::from_fn_with_state(app_state.clone(), require_auth))
         .with_state(app_state);
 
     let app = Router::new()
         .nest("/api/v1", api_routes)
+        .nest("/api/v1", protected_routes)
         .fallback_service(ServeDir::new(STATIC_DIR).fallback(ServeFile::new("static/index.html")))
         .layer(TraceLayer::new_for_http())
         .layer(cors);

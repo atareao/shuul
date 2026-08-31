@@ -26,6 +26,7 @@ pub struct RuleTemplate {
     pub bantime_maxtime_seconds: i32,
     pub ban_count_decay_days: i32,
     pub requires_fqdn: bool,
+    pub rate_limit_profile_id: Option<i32>,
 }
 
 /// All available templates, grouped by category.
@@ -53,6 +54,7 @@ pub fn all_templates() -> Vec<RuleTemplate> {
             bantime_maxtime_seconds: 604800,
             ban_count_decay_days: 30,
             requires_fqdn: true,
+            rate_limit_profile_id: None,
         },
         RuleTemplate {
             name: "WordPress - xmlrpc".into(),
@@ -73,6 +75,7 @@ pub fn all_templates() -> Vec<RuleTemplate> {
             bantime_maxtime_seconds: 604800,
             ban_count_decay_days: 30,
             requires_fqdn: true,
+            rate_limit_profile_id: None,
         },
         RuleTemplate {
             name: "WordPress - wp-admin".into(),
@@ -93,6 +96,7 @@ pub fn all_templates() -> Vec<RuleTemplate> {
             bantime_maxtime_seconds: 7200,
             ban_count_decay_days: 30,
             requires_fqdn: true,
+            rate_limit_profile_id: None,
         },
         RuleTemplate {
             name: "WordPress - REST API".into(),
@@ -113,6 +117,7 @@ pub fn all_templates() -> Vec<RuleTemplate> {
             bantime_maxtime_seconds: 3600,
             ban_count_decay_days: 30,
             requires_fqdn: true,
+            rate_limit_profile_id: None,
         },
         RuleTemplate {
             name: "WordPress - wp-content uploads".into(),
@@ -133,6 +138,7 @@ pub fn all_templates() -> Vec<RuleTemplate> {
             bantime_maxtime_seconds: 3600,
             ban_count_decay_days: 30,
             requires_fqdn: true,
+            rate_limit_profile_id: None,
         },
 
         // ════════════════════════════════════════════
@@ -157,6 +163,7 @@ pub fn all_templates() -> Vec<RuleTemplate> {
             bantime_maxtime_seconds: 604800,
             ban_count_decay_days: 30,
             requires_fqdn: true,
+            rate_limit_profile_id: None,
         },
         RuleTemplate {
             name: "Joomla - com_user".into(),
@@ -177,6 +184,7 @@ pub fn all_templates() -> Vec<RuleTemplate> {
             bantime_maxtime_seconds: 604800,
             ban_count_decay_days: 30,
             requires_fqdn: true,
+            rate_limit_profile_id: None,
         },
 
         // ════════════════════════════════════════════
@@ -201,6 +209,7 @@ pub fn all_templates() -> Vec<RuleTemplate> {
             bantime_maxtime_seconds: 604800,
             ban_count_decay_days: 30,
             requires_fqdn: true,
+            rate_limit_profile_id: None,
         },
         RuleTemplate {
             name: "Drupal - install.php".into(),
@@ -221,6 +230,7 @@ pub fn all_templates() -> Vec<RuleTemplate> {
             bantime_maxtime_seconds: 3600,
             ban_count_decay_days: 30,
             requires_fqdn: true,
+            rate_limit_profile_id: None,
         },
 
         // ════════════════════════════════════════════
@@ -245,6 +255,7 @@ pub fn all_templates() -> Vec<RuleTemplate> {
             bantime_maxtime_seconds: 3600,
             ban_count_decay_days: 30,
             requires_fqdn: true,
+            rate_limit_profile_id: None,
         },
         RuleTemplate {
             name: "Laravel - Telescope".into(),
@@ -265,6 +276,7 @@ pub fn all_templates() -> Vec<RuleTemplate> {
             bantime_maxtime_seconds: 3600,
             ban_count_decay_days: 30,
             requires_fqdn: true,
+            rate_limit_profile_id: None,
         },
 
         // ════════════════════════════════════════════
@@ -289,6 +301,7 @@ pub fn all_templates() -> Vec<RuleTemplate> {
             bantime_maxtime_seconds: 604800,
             ban_count_decay_days: 30,
             requires_fqdn: true,
+            rate_limit_profile_id: None,
         },
         RuleTemplate {
             name: "cPanel / WHM".into(),
@@ -309,6 +322,7 @@ pub fn all_templates() -> Vec<RuleTemplate> {
             bantime_maxtime_seconds: 604800,
             ban_count_decay_days: 30,
             requires_fqdn: true,
+            rate_limit_profile_id: None,
         },
         RuleTemplate {
             name: "Webmin / Usermin".into(),
@@ -329,6 +343,7 @@ pub fn all_templates() -> Vec<RuleTemplate> {
             bantime_maxtime_seconds: 604800,
             ban_count_decay_days: 30,
             requires_fqdn: true,
+            rate_limit_profile_id: None,
         },
         RuleTemplate {
             name: "Adminer".into(),
@@ -349,6 +364,7 @@ pub fn all_templates() -> Vec<RuleTemplate> {
             bantime_maxtime_seconds: 3600,
             ban_count_decay_days: 30,
             requires_fqdn: true,
+            rate_limit_profile_id: None,
         },
 
         // ════════════════════════════════════════════
@@ -373,6 +389,7 @@ pub fn all_templates() -> Vec<RuleTemplate> {
             bantime_maxtime_seconds: 604800,
             ban_count_decay_days: 30,
             requires_fqdn: true,
+            rate_limit_profile_id: None,
         },
         RuleTemplate {
             name: "API - register endpoint".into(),
@@ -393,6 +410,7 @@ pub fn all_templates() -> Vec<RuleTemplate> {
             bantime_maxtime_seconds: 604800,
             ban_count_decay_days: 30,
             requires_fqdn: true,
+            rate_limit_profile_id: None,
         },
         RuleTemplate {
             name: "API - password reset".into(),
@@ -413,6 +431,7 @@ pub fn all_templates() -> Vec<RuleTemplate> {
             bantime_maxtime_seconds: 604800,
             ban_count_decay_days: 30,
             requires_fqdn: true,
+            rate_limit_profile_id: None,
         },
         RuleTemplate {
             name: "API - GraphQL introspection".into(),
@@ -433,6 +452,7 @@ pub fn all_templates() -> Vec<RuleTemplate> {
             bantime_maxtime_seconds: 3600,
             ban_count_decay_days: 30,
             requires_fqdn: true,
+            rate_limit_profile_id: None,
         },
 
         // ════════════════════════════════════════════
@@ -457,6 +477,7 @@ pub fn all_templates() -> Vec<RuleTemplate> {
             bantime_maxtime_seconds: 604800,
             ban_count_decay_days: 30,
             requires_fqdn: true,
+            rate_limit_profile_id: None,
         },
         RuleTemplate {
             name: "Jenkins - login".into(),
@@ -477,6 +498,7 @@ pub fn all_templates() -> Vec<RuleTemplate> {
             bantime_maxtime_seconds: 604800,
             ban_count_decay_days: 30,
             requires_fqdn: true,
+            rate_limit_profile_id: None,
         },
         RuleTemplate {
             name: "Git - .git exposure".into(),
@@ -497,6 +519,7 @@ pub fn all_templates() -> Vec<RuleTemplate> {
             bantime_maxtime_seconds: 3600,
             ban_count_decay_days: 30,
             requires_fqdn: false,
+            rate_limit_profile_id: None,
         },
 
         // ════════════════════════════════════════════
@@ -521,6 +544,7 @@ pub fn all_templates() -> Vec<RuleTemplate> {
             bantime_maxtime_seconds: 3600,
             ban_count_decay_days: 30,
             requires_fqdn: false,
+            rate_limit_profile_id: None,
         },
         RuleTemplate {
             name: "Directorios de sistema".into(),
@@ -541,6 +565,7 @@ pub fn all_templates() -> Vec<RuleTemplate> {
             bantime_maxtime_seconds: 3600,
             ban_count_decay_days: 30,
             requires_fqdn: false,
+            rate_limit_profile_id: None,
         },
         RuleTemplate {
             name: "Path traversal probes".into(),
@@ -561,6 +586,7 @@ pub fn all_templates() -> Vec<RuleTemplate> {
             bantime_maxtime_seconds: 604800,
             ban_count_decay_days: 30,
             requires_fqdn: false,
+            rate_limit_profile_id: None,
         },
         RuleTemplate {
             name: "SQL injection probes".into(),
@@ -581,6 +607,7 @@ pub fn all_templates() -> Vec<RuleTemplate> {
             bantime_maxtime_seconds: 604800,
             ban_count_decay_days: 30,
             requires_fqdn: false,
+            rate_limit_profile_id: None,
         },
         RuleTemplate {
             name: "XSS probes".into(),
@@ -601,6 +628,7 @@ pub fn all_templates() -> Vec<RuleTemplate> {
             bantime_maxtime_seconds: 604800,
             ban_count_decay_days: 30,
             requires_fqdn: false,
+            rate_limit_profile_id: None,
         },
         RuleTemplate {
             name: "phpinfo exposure".into(),
@@ -621,6 +649,7 @@ pub fn all_templates() -> Vec<RuleTemplate> {
             bantime_maxtime_seconds: 3600,
             ban_count_decay_days: 30,
             requires_fqdn: false,
+            rate_limit_profile_id: None,
         },
 
         // ════════════════════════════════════════════
@@ -645,6 +674,7 @@ pub fn all_templates() -> Vec<RuleTemplate> {
             bantime_maxtime_seconds: 3600,
             ban_count_decay_days: 30,
             requires_fqdn: false,
+            rate_limit_profile_id: None,
         },
         RuleTemplate {
             name: "Rate limit - scraping".into(),
@@ -665,6 +695,7 @@ pub fn all_templates() -> Vec<RuleTemplate> {
             bantime_maxtime_seconds: 86400,
             ban_count_decay_days: 7,
             requires_fqdn: false,
+            rate_limit_profile_id: None,
         },
 
         // ════════════════════════════════════════════
@@ -689,6 +720,7 @@ pub fn all_templates() -> Vec<RuleTemplate> {
             bantime_maxtime_seconds: 3600,
             ban_count_decay_days: 30,
             requires_fqdn: false,
+            rate_limit_profile_id: None,
         },
         RuleTemplate {
             name: "Bloquear tráfico hosting/VPS".into(),
@@ -709,6 +741,7 @@ pub fn all_templates() -> Vec<RuleTemplate> {
             bantime_maxtime_seconds: 3600,
             ban_count_decay_days: 30,
             requires_fqdn: false,
+            rate_limit_profile_id: None,
         },
         // ════════════════════════════════════════════
         // CMS
@@ -732,6 +765,7 @@ pub fn all_templates() -> Vec<RuleTemplate> {
             bantime_maxtime_seconds: 604800,
             ban_count_decay_days: 30,
             requires_fqdn: true,
+            rate_limit_profile_id: None,
         },
         RuleTemplate {
             name: "Magento - API".into(),
@@ -752,6 +786,7 @@ pub fn all_templates() -> Vec<RuleTemplate> {
             bantime_maxtime_seconds: 3600,
             ban_count_decay_days: 30,
             requires_fqdn: true,
+            rate_limit_profile_id: None,
         },
         RuleTemplate {
             name: "Magento - checkout".into(),
@@ -772,6 +807,7 @@ pub fn all_templates() -> Vec<RuleTemplate> {
             bantime_maxtime_seconds: 86400,
             ban_count_decay_days: 14,
             requires_fqdn: true,
+            rate_limit_profile_id: None,
         },
         RuleTemplate {
             name: "PrestaShop - admin".into(),
@@ -792,6 +828,7 @@ pub fn all_templates() -> Vec<RuleTemplate> {
             bantime_maxtime_seconds: 604800,
             ban_count_decay_days: 30,
             requires_fqdn: true,
+            rate_limit_profile_id: None,
         },
         RuleTemplate {
             name: "PrestaShop - install".into(),
@@ -812,6 +849,7 @@ pub fn all_templates() -> Vec<RuleTemplate> {
             bantime_maxtime_seconds: 3600,
             ban_count_decay_days: 30,
             requires_fqdn: true,
+            rate_limit_profile_id: None,
         },
         RuleTemplate {
             name: "Nextcloud - login".into(),
@@ -832,6 +870,7 @@ pub fn all_templates() -> Vec<RuleTemplate> {
             bantime_maxtime_seconds: 604800,
             ban_count_decay_days: 30,
             requires_fqdn: true,
+            rate_limit_profile_id: None,
         },
         RuleTemplate {
             name: "Nextcloud - shared links".into(),
@@ -852,6 +891,7 @@ pub fn all_templates() -> Vec<RuleTemplate> {
             bantime_maxtime_seconds: 3600,
             ban_count_decay_days: 7,
             requires_fqdn: true,
+            rate_limit_profile_id: None,
         },
         RuleTemplate {
             name: "MediaWiki - api.php".into(),
@@ -872,6 +912,7 @@ pub fn all_templates() -> Vec<RuleTemplate> {
             bantime_maxtime_seconds: 86400,
             ban_count_decay_days: 14,
             requires_fqdn: true,
+            rate_limit_profile_id: None,
         },
         RuleTemplate {
             name: "Ghost - admin".into(),
@@ -892,6 +933,7 @@ pub fn all_templates() -> Vec<RuleTemplate> {
             bantime_maxtime_seconds: 604800,
             ban_count_decay_days: 30,
             requires_fqdn: true,
+            rate_limit_profile_id: None,
         },
 
         // ════════════════════════════════════════════
@@ -916,6 +958,7 @@ pub fn all_templates() -> Vec<RuleTemplate> {
             bantime_maxtime_seconds: 604800,
             ban_count_decay_days: 30,
             requires_fqdn: true,
+            rate_limit_profile_id: None,
         },
         RuleTemplate {
             name: "Kibana - dashboard".into(),
@@ -936,6 +979,7 @@ pub fn all_templates() -> Vec<RuleTemplate> {
             bantime_maxtime_seconds: 604800,
             ban_count_decay_days: 30,
             requires_fqdn: true,
+            rate_limit_profile_id: None,
         },
         RuleTemplate {
             name: "Kubernetes Dashboard".into(),
@@ -956,6 +1000,7 @@ pub fn all_templates() -> Vec<RuleTemplate> {
             bantime_maxtime_seconds: 604800,
             ban_count_decay_days: 30,
             requires_fqdn: true,
+            rate_limit_profile_id: None,
         },
         RuleTemplate {
             name: "Portainer - login".into(),
@@ -976,6 +1021,7 @@ pub fn all_templates() -> Vec<RuleTemplate> {
             bantime_maxtime_seconds: 604800,
             ban_count_decay_days: 30,
             requires_fqdn: true,
+            rate_limit_profile_id: None,
         },
         RuleTemplate {
             name: "Traefik Dashboard".into(),
@@ -996,6 +1042,7 @@ pub fn all_templates() -> Vec<RuleTemplate> {
             bantime_maxtime_seconds: 604800,
             ban_count_decay_days: 30,
             requires_fqdn: true,
+            rate_limit_profile_id: None,
         },
         RuleTemplate {
             name: "pgAdmin - login".into(),
@@ -1016,6 +1063,7 @@ pub fn all_templates() -> Vec<RuleTemplate> {
             bantime_maxtime_seconds: 604800,
             ban_count_decay_days: 30,
             requires_fqdn: true,
+            rate_limit_profile_id: None,
         },
         RuleTemplate {
             name: "Home Assistant - login".into(),
@@ -1036,6 +1084,7 @@ pub fn all_templates() -> Vec<RuleTemplate> {
             bantime_maxtime_seconds: 604800,
             ban_count_decay_days: 30,
             requires_fqdn: true,
+            rate_limit_profile_id: None,
         },
 
         // ════════════════════════════════════════════
@@ -1060,6 +1109,7 @@ pub fn all_templates() -> Vec<RuleTemplate> {
             bantime_maxtime_seconds: 604800,
             ban_count_decay_days: 30,
             requires_fqdn: false,
+            rate_limit_profile_id: None,
         },
         RuleTemplate {
             name: "Docker socket exposure".into(),
@@ -1080,6 +1130,7 @@ pub fn all_templates() -> Vec<RuleTemplate> {
             bantime_maxtime_seconds: 3600,
             ban_count_decay_days: 30,
             requires_fqdn: false,
+            rate_limit_profile_id: None,
         },
         RuleTemplate {
             name: "AWS metadata endpoint".into(),
@@ -1100,6 +1151,7 @@ pub fn all_templates() -> Vec<RuleTemplate> {
             bantime_maxtime_seconds: 604800,
             ban_count_decay_days: 30,
             requires_fqdn: false,
+            rate_limit_profile_id: None,
         },
         RuleTemplate {
             name: "SSTI probes".into(),
@@ -1120,6 +1172,7 @@ pub fn all_templates() -> Vec<RuleTemplate> {
             bantime_maxtime_seconds: 604800,
             ban_count_decay_days: 30,
             requires_fqdn: false,
+            rate_limit_profile_id: None,
         },
         RuleTemplate {
             name: "Command injection probes".into(),
@@ -1140,6 +1193,7 @@ pub fn all_templates() -> Vec<RuleTemplate> {
             bantime_maxtime_seconds: 604800,
             ban_count_decay_days: 30,
             requires_fqdn: false,
+            rate_limit_profile_id: None,
         },
         RuleTemplate {
             name: "Open redirect probes".into(),
@@ -1160,6 +1214,7 @@ pub fn all_templates() -> Vec<RuleTemplate> {
             bantime_maxtime_seconds: 86400,
             ban_count_decay_days: 14,
             requires_fqdn: false,
+            rate_limit_profile_id: None,
         },
 
         // ════════════════════════════════════════════
@@ -1184,6 +1239,7 @@ pub fn all_templates() -> Vec<RuleTemplate> {
             bantime_maxtime_seconds: 604800,
             ban_count_decay_days: 30,
             requires_fqdn: true,
+            rate_limit_profile_id: None,
         },
         RuleTemplate {
             name: "RainLoop / SnappyMail login".into(),
@@ -1204,10 +1260,121 @@ pub fn all_templates() -> Vec<RuleTemplate> {
             bantime_maxtime_seconds: 604800,
             ban_count_decay_days: 30,
             requires_fqdn: true,
+            rate_limit_profile_id: None,
         },
 
         // ════════════════════════════════════════════
         // Fin de plantillas
         // ════════════════════════════════════════════
+    ]
+}
+
+/// All rule templates (alias for backward compatibility).
+pub fn all_rule_templates() -> Vec<RuleTemplate> {
+    all_templates()
+}
+
+/// Rate limit profile templates for the frontend.
+#[derive(Debug, Serialize, Clone)]
+pub struct RateLimitProfileTemplate {
+    pub name: String,
+    pub description: String,
+    pub max_retry: i32,
+    pub find_time_seconds: i32,
+    pub ban_time_seconds: i32,
+    pub bantime_increment: bool,
+    pub bantime_multipliers: Vec<i32>,
+    pub bantime_maxtime_seconds: i32,
+    pub ban_count_decay_days: i32,
+    pub fail_codes: Vec<i32>,
+}
+
+/// All available rate limit profile templates.
+pub fn all_rate_limit_profile_templates() -> Vec<RateLimitProfileTemplate> {
+    vec![
+        RateLimitProfileTemplate {
+            name: "Auth Brute Force".into(),
+            description: "5 requests in 5 minutes → 15min ban with escalation".into(),
+            max_retry: 5,
+            find_time_seconds: 300,
+            ban_time_seconds: 900,
+            bantime_increment: true,
+            bantime_multipliers: vec![1, 2, 4, 8],
+            bantime_maxtime_seconds: 604800,
+            ban_count_decay_days: 30,
+            fail_codes: vec![401],
+        },
+        RateLimitProfileTemplate {
+            name: "Admin Guard".into(),
+            description: "3 requests in 5 minutes → 24h ban with escalation".into(),
+            max_retry: 3,
+            find_time_seconds: 300,
+            ban_time_seconds: 86400,
+            bantime_increment: true,
+            bantime_multipliers: vec![1, 2, 4, 8],
+            bantime_maxtime_seconds: 604800,
+            ban_count_decay_days: 30,
+            fail_codes: vec![401, 403],
+        },
+        RateLimitProfileTemplate {
+            name: "Path Scanning".into(),
+            description: "15 requests in 10 minutes → 1h ban".into(),
+            max_retry: 15,
+            find_time_seconds: 600,
+            ban_time_seconds: 3600,
+            bantime_increment: false,
+            bantime_multipliers: vec![1],
+            bantime_maxtime_seconds: 3600,
+            ban_count_decay_days: 30,
+            fail_codes: vec![401, 403, 404],
+        },
+        RateLimitProfileTemplate {
+            name: "API Abuse".into(),
+            description: "30 requests in 1 minute → 10min ban".into(),
+            max_retry: 30,
+            find_time_seconds: 60,
+            ban_time_seconds: 600,
+            bantime_increment: false,
+            bantime_multipliers: vec![1],
+            bantime_maxtime_seconds: 600,
+            ban_count_decay_days: 30,
+            fail_codes: vec![401, 403, 429, 500],
+        },
+        RateLimitProfileTemplate {
+            name: "Scraping".into(),
+            description: "60 requests in 1 minute → 5min ban with escalation".into(),
+            max_retry: 60,
+            find_time_seconds: 60,
+            ban_time_seconds: 300,
+            bantime_increment: true,
+            bantime_multipliers: vec![1, 2, 4, 8],
+            bantime_maxtime_seconds: 86400,
+            ban_count_decay_days: 7,
+            fail_codes: vec![403, 429, 500],
+        },
+        RateLimitProfileTemplate {
+            name: "Health & Webhooks".into(),
+            description: "100 requests in 60 seconds → 1min ban".into(),
+            max_retry: 100,
+            find_time_seconds: 60,
+            ban_time_seconds: 60,
+            bantime_increment: false,
+            bantime_multipliers: vec![1],
+            bantime_maxtime_seconds: 60,
+            ban_count_decay_days: 30,
+            fail_codes: vec![500],
+        },
+        RateLimitProfileTemplate {
+            name: "Recidive".into(),
+            description: "3 reincidences in 48h → 7-day ban (max 30 days)".into(),
+            max_retry: 3,
+            find_time_seconds: 172800,
+            ban_time_seconds: 604800,
+            bantime_increment: true,
+            bantime_multipliers: vec![1, 2, 4, 8],
+            bantime_maxtime_seconds: 2592000,
+            ban_count_decay_days: 60,
+            fail_codes: vec![403, 429],
+        },
     ]
 }

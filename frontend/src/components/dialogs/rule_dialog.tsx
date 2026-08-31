@@ -246,6 +246,11 @@ export default function RuleDialog({
     const isUpdate = dialogMode === DialogModes.UPDATE;
     const isFormMode = isCreate || isUpdate || dialogMode === DialogModes.READ;
 
+    // Find selected profile for read-only info display
+    const selectedProfile = profiles.find(
+        p => p.id === formValues.rate_limit_profile_id
+    ) ?? null;
+
     let title = "";
     let confirmMessage = "";
 
@@ -349,6 +354,31 @@ export default function RuleDialog({
                 { value: undefined, label: "None" },
                 ...profiles.map(p => ({ value: p.id, label: p.name })),
             ])}
+            {selectedProfile && (
+                <Flex vertical gap={4} style={{
+                    background: "var(--color-bg-layout)",
+                    borderRadius: 6,
+                    padding: "8px 12px",
+                    fontSize: 12,
+                    border: "1px solid var(--color-border)",
+                }}>
+                    <Text strong style={{ fontSize: 13, marginBottom: 4 }}>
+                        {selectedProfile.name}
+                    </Text>
+                    <Text type="secondary" style={{ fontSize: 11 }}>
+                        {selectedProfile.description}
+                    </Text>
+                    <Flex wrap gap="small" style={{ marginTop: 4 }}>
+                        <Text><Text strong>Max Retry:</Text> {selectedProfile.max_retry}</Text>
+                        <Text><Text strong>Find Time:</Text> {selectedProfile.find_time_seconds}s</Text>
+                        <Text><Text strong>Ban Time:</Text> {selectedProfile.ban_time_seconds}s</Text>
+                        <Text><Text strong>Escalate:</Text> {selectedProfile.bantime_increment ? "Yes" : "No"}</Text>
+                        <Text><Text strong>Max Ban:</Text> {selectedProfile.bantime_maxtime_seconds}s</Text>
+                        <Text><Text strong>Decay:</Text> {selectedProfile.ban_count_decay_days}d</Text>
+                        <Text><Text strong>Fail Codes:</Text> {selectedProfile.fail_codes?.join(", ")}</Text>
+                    </Flex>
+                </Flex>
+            )}
         </Flex>
     );
 
