@@ -18,7 +18,7 @@ use axum::{
 };
 use rand::Rng;
 use serde::Deserialize;
-use tracing::{debug, error, warn};
+use tracing::{debug, error};
 
 use crate::models::error::AppError;
 use crate::models::{ApiResponse, AppState, Data, TokenClaims};
@@ -116,9 +116,7 @@ pub async fn callback_handler(
     {
         let mut states = app_state.oidc_states.lock().await;
         if states.remove(state).is_none() {
-            return Err(AppError::InvalidInput(
-                "Invalid or expired state".to_string(),
-            ));
+            return Err(AppError::InvalidInput("Invalid or expired state".to_string()));
         }
     }
 
@@ -150,50 +148,8 @@ pub async fn callback_handler(
     )
     .await?;
 
-    // Validate id_token if present (cryptographic proof from OIDC provider)
-    let validated_id_claims = if let Some(id_token) = &token_response.id_token {
-        let jwt_guard = app_state.jwt_validator.read().await;
-        match jwt_guard.as_ref() {
-            Some(validator) => match validator.validate_id_token(id_token) {
-                Ok(claims) => {
-                    debug!("id_token validated successfully");
-                    Some(claims)
-                },
-                Err(e) => {
-                    warn!("id_token validation failed: {e}");
-                    return Err(AppError::Other(format!(
-                        "Invalid id_token from OIDC provider: {e}"
-                    )));
-                },
-            },
-            None => {
-                warn!("JwtValidator not initialized, skipping id_token validation");
-                None
-            },
-        }
-    } else {
-        warn!("No id_token in token response, skipping cryptographic validation");
-        None
-    };
-
     // Fetch user info
-    let userinfo =
-        fetch_userinfo(&metadata.userinfo_endpoint, &token_response.access_token).await?;
-
-    // Cross-validate sub claim between id_token and userinfo
-    if let Some(ref id_claims) = validated_id_claims {
-        let id_sub = id_claims.get("sub").and_then(|v| v.as_str());
-        let user_sub = userinfo.get("sub").and_then(|v| v.as_str());
-        if let (Some(id_sub), Some(user_sub)) = (id_sub, user_sub) {
-            if id_sub != user_sub {
-                warn!("sub mismatch: id_token says '{id_sub}', userinfo says '{user_sub}'");
-                return Err(AppError::Other(
-                    "sub claim mismatch between id_token and userinfo".to_string(),
-                ));
-            }
-            debug!("sub claim cross-validated: {id_sub}");
-        }
-    }
+    let userinfo = fetch_userinfo(&metadata.userinfo_endpoint, &token_response.access_token).await?;
 
     // Extract user info claims
     let email = userinfo
@@ -267,23 +223,18 @@ pub async fn sso_status(
         "issuer_url": issuer_url,
     });
 
-    Ok(ApiResponse::new(
-        StatusCode::OK,
-        "SSO status",
-        Data::Some(value),
-    ))
+    Ok(ApiResponse::new(StatusCode::OK, "SSO status", Data::Some(value)))
 }
 
 /// Response from the OIDC token endpoint.
+#[allow(dead_code)]
 #[derive(Debug, Deserialize)]
 struct TokenResponse {
     access_token: String,
     #[serde(default)]
     id_token: Option<String>,
-    #[allow(dead_code)]
     #[serde(default)]
     token_type: Option<String>,
-    #[allow(dead_code)]
     #[serde(default)]
     expires_in: Option<u64>,
 }

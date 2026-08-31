@@ -19,7 +19,7 @@ use crate::models::IPData;
 
 #[derive(Debug, Serialize, Deserialize, Clone, FromRow)]
 pub struct Request {
-    id: i32,
+    pub id: i32,
     pub ip_address: Option<String>,
     pub protocol: Option<String>,
     pub fqdn: Option<String>,
@@ -28,8 +28,14 @@ pub struct Request {
     pub city_name: Option<String>,
     pub country_name: Option<String>,
     pub country_code: Option<String>,
+    pub user_agent: Option<String>,
+    pub method: Option<String>,
+    pub referer: Option<String>,
+    pub content_type: Option<String>,
+    pub accept_language: Option<String>,
+    pub x_request_id: Option<String>,
     pub rule_id: Option<i32>,
-    created_at: DateTime<Utc>,
+    pub created_at: DateTime<Utc>,
 }
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
@@ -42,8 +48,14 @@ pub struct NewRequest {
     pub city_name: Option<String>,
     pub country_name: Option<String>,
     pub country_code: Option<String>,
+    pub user_agent: Option<String>,
+    pub method: Option<String>,
+    pub referer: Option<String>,
+    pub content_type: Option<String>,
+    pub accept_language: Option<String>,
+    pub x_request_id: Option<String>,
     pub rule_id: Option<i32>,
-    created_at: DateTime<Utc>,
+    pub created_at: DateTime<Utc>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -57,6 +69,12 @@ pub struct ReadRequestParams {
     pub city_name: Option<String>,
     pub country_name: Option<String>,
     pub country_code: Option<String>,
+    pub user_agent: Option<String>,
+    pub method: Option<String>,
+    pub referer: Option<String>,
+    pub content_type: Option<String>,
+    pub accept_language: Option<String>,
+    pub x_request_id: Option<String>,
     pub page: Option<u32>,
     pub limit: Option<u32>,
     pub sort_by: Option<String>,
@@ -78,32 +96,36 @@ pub struct TimeSeries {
     pub data: Vec<TimeSeriesPoint>,
 }
 
-use crate::constants::DEFAULT_LIMIT;
-use crate::constants::DEFAULT_PAGE;
+use crate::constants::{DEFAULT_LIMIT, DEFAULT_PAGE};
 
 impl NewRequest {
+    /// Construye un `NewRequest` a partir de los encabezados HTTP y la DB `GeoIP`.
+    ///
+    /// Los encabezados `x-forwarded-*` son la fuente principal de datos.
+    /// Para campos de encabezado HTTP estándar, se usa primero el prefijo
+    /// `x-forwarded-*` y como fallback el encabezado original.
     pub fn from_request(headers: &http::HeaderMap, maxmind_db: &Reader<Vec<u8>>) -> Self {
         let protocol = headers
             .get("x-forwarded-proto")
             .map(|s| s.to_str())
-            .and_then(std::result::Result::ok)
+            .and_then(Result::ok)
             .unwrap_or("");
         let host = headers
             .get("x-forwarded-host")
             .map(|s| s.to_str())
-            .and_then(std::result::Result::ok)
+            .and_then(Result::ok)
             .unwrap_or("");
         let uri = headers
             .get("x-forwarded-uri")
             .map(|s| s.to_str())
-            .and_then(std::result::Result::ok)
+            .and_then(Result::ok)
             .unwrap_or("")
             .parse::<Uri>()
             .unwrap_or_default();
         let ip = headers
             .get("x-forwarded-for")
             .map(|s| s.to_str())
-            .and_then(std::result::Result::ok)
+            .and_then(Result::ok)
             .unwrap_or("");
         let ip_data = IPData::complete(maxmind_db, ip);
         let ip_address = if ip.is_empty() {
@@ -136,6 +158,50 @@ impl NewRequest {
         let city_name = ip_data.city_name.filter(|s| !s.is_empty());
         let country_name = ip_data.country_name.filter(|s| !s.is_empty());
         let country_code = ip_data.country_code.filter(|s| !s.is_empty());
+
+        // Extraer encabezados HTTP adicionales con prefijo x-forwarded-* + fallback
+        let user_agent = headers
+            .get("x-forwarded-user-agent")
+            .or_else(|| headers.get("user-agent"))
+            .map(|s| s.to_str())
+            .and_then(Result::ok)
+            .filter(|s| !s.is_empty())
+            .map(std::string::ToString::to_string);
+        let method = headers
+            .get("x-forwarded-method")
+            .map(|s| s.to_str())
+            .and_then(Result::ok)
+            .filter(|s| !s.is_empty())
+            .map(std::string::ToString::to_string);
+        let referer = headers
+            .get("x-forwarded-referer")
+            .or_else(|| headers.get("referer"))
+            .map(|s| s.to_str())
+            .and_then(Result::ok)
+            .filter(|s| !s.is_empty())
+            .map(std::string::ToString::to_string);
+        let content_type = headers
+            .get("x-forwarded-content-type")
+            .or_else(|| headers.get("content-type"))
+            .map(|s| s.to_str())
+            .and_then(Result::ok)
+            .filter(|s| !s.is_empty())
+            .map(std::string::ToString::to_string);
+        let accept_language = headers
+            .get("x-forwarded-accept-language")
+            .or_else(|| headers.get("accept-language"))
+            .map(|s| s.to_str())
+            .and_then(Result::ok)
+            .filter(|s| !s.is_empty())
+            .map(std::string::ToString::to_string);
+        let x_request_id = headers
+            .get("x-forwarded-x-request-id")
+            .or_else(|| headers.get("x-request-id"))
+            .map(|s| s.to_str())
+            .and_then(Result::ok)
+            .filter(|s| !s.is_empty())
+            .map(std::string::ToString::to_string);
+
         Self {
             ip_address,
             protocol,
@@ -145,6 +211,12 @@ impl NewRequest {
             city_name,
             country_name,
             country_code,
+            user_agent,
+            method,
+            referer,
+            content_type,
+            accept_language,
+            x_request_id,
             rule_id: None,
             created_at: Utc::now(),
         }
@@ -163,13 +235,25 @@ impl Request {
             city_name: row.get("city_name"),
             country_name: row.get("country_name"),
             country_code: row.get("country_code"),
+            user_agent: row.get("user_agent"),
+            method: row.get("method"),
+            referer: row.get("referer"),
+            content_type: row.get("content_type"),
+            accept_language: row.get("accept_language"),
+            x_request_id: row.get("x_request_id"),
             rule_id: row.get("rule_id"),
             created_at: row.get("created_at"),
         }
     }
 
+    /// Inserta una nueva petición en la base de datos.
     pub async fn create(pool: &PgPool, request: NewRequest) -> Result<Self, Error> {
-        let sql = "INSERT INTO requests (ip_address, protocol, fqdn, path, query, city_name, country_name, country_code, rule_id, created_at) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10) RETURNING *";
+        let sql = "INSERT INTO requests (
+            ip_address, protocol, fqdn, path, query,
+            city_name, country_name, country_code,
+            user_agent, method, referer, content_type, accept_language, x_request_id,
+            rule_id, created_at
+        ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16) RETURNING *";
         query(sql)
             .bind(request.ip_address)
             .bind(request.protocol)
@@ -179,6 +263,12 @@ impl Request {
             .bind(request.city_name)
             .bind(request.country_name)
             .bind(request.country_code)
+            .bind(request.user_agent)
+            .bind(request.method)
+            .bind(request.referer)
+            .bind(request.content_type)
+            .bind(request.accept_language)
+            .bind(request.x_request_id)
             .bind(request.rule_id)
             .bind(request.created_at)
             .map(Self::from_row)
@@ -186,6 +276,7 @@ impl Request {
             .await
     }
 
+    /// Lee una petición por su ID.
     pub async fn read(pool: &PgPool, id: i32) -> Result<Self, Error> {
         let sql = "SELECT * FROM requests WHERE id = $1";
         query(sql)
@@ -195,6 +286,7 @@ impl Request {
             .await
     }
 
+    /// Devuelve estadísticas de peticiones (total, filtradas).
     pub async fn read_info(pool: &PgPool, info: &str) -> Result<i64, Error> {
         let sql = if info == "total" {
             "SELECT count(*) FROM requests"
@@ -204,23 +296,22 @@ impl Request {
             return Err(Error::RowNotFound);
         };
         query(sql)
-            .map(|cp_row: PgRow| cp_row.get(0))
+            .map(|row: PgRow| row.get::<i64, _>(0))
             .fetch_one(pool)
             .await
     }
 
+    /// Inserta múltiples peticiones en una sola transacción.
     pub async fn create_bulk(pool: &PgPool, requests: Vec<NewRequest>) -> Result<Vec<Self>, Error> {
         if requests.is_empty() {
             return Ok(Vec::new());
         }
-        let num_columns = 10; // Número de columnas a insertar: ip_address, protocol, ..., created_at
+        let num_columns = 16; // ip_address, protocol, fqdn, path, query, city_name, country_name, country_code, user_agent, method, referer, content_type, accept_language, x_request_id, rule_id, created_at
         let mut placeholders = String::new();
-        //let mut all_bindings = Vec::new(); // Vector para almacenar todos los valores a enlazar
         for (i, _request) in requests.iter().enumerate() {
             let start_index = i * num_columns + 1;
-            // Genera ($1, $2, $3, ... $10), ($11, $12, ... $20), etc.
             placeholders.push_str(&format!(
-                "(${}, ${}, ${}, ${}, ${}, ${}, ${}, ${}, ${}, ${})",
+                "(${}, ${}, ${}, ${}, ${}, ${}, ${}, ${}, ${}, ${}, ${}, ${}, ${}, ${}, ${}, ${})",
                 start_index,
                 start_index + 1,
                 start_index + 2,
@@ -230,20 +321,27 @@ impl Request {
                 start_index + 6,
                 start_index + 7,
                 start_index + 8,
-                start_index + 9
+                start_index + 9,
+                start_index + 10,
+                start_index + 11,
+                start_index + 12,
+                start_index + 13,
+                start_index + 14,
+                start_index + 15,
             ));
             if i < requests.len() - 1 {
                 placeholders.push_str(", ");
             }
         }
-        let base_sql = "INSERT INTO requests (ip_address, protocol,
-        fqdn, path, query, city_name, country_name, country_code, rule_id, created_at) VALUES ";
+        let base_sql = "INSERT INTO requests (
+            ip_address, protocol, fqdn, path, query,
+            city_name, country_name, country_code,
+            user_agent, method, referer, content_type, accept_language, x_request_id,
+            rule_id, created_at
+        ) VALUES ";
         let full_sql = format!("{base_sql} {placeholders} RETURNING *");
 
-        // 2. Ejecutar la consulta con Transaction para el binding
         let mut transaction = pool.begin().await?;
-
-        // Necesitamos usar `query_as` o `query` para el binding dinámico.
         let mut query_builder = query_as::<_, Self>(&full_sql);
 
         for request in &requests {
@@ -256,27 +354,39 @@ impl Request {
                 .bind(&request.city_name)
                 .bind(&request.country_name)
                 .bind(&request.country_code)
+                .bind(&request.user_agent)
+                .bind(&request.method)
+                .bind(&request.referer)
+                .bind(&request.content_type)
+                .bind(&request.accept_language)
+                .bind(&request.x_request_id)
                 .bind(request.rule_id)
                 .bind(request.created_at);
         }
 
         let created_requests = query_builder.fetch_all(&mut *transaction).await?;
-
         transaction.commit().await?;
 
         Ok(created_requests)
     }
 
+    /// Cuenta peticiones con filtros LIKE para paginación.
     pub async fn count_paged(pool: &PgPool, params: &ReadRequestParams) -> Result<i64, Error> {
         let filters = vec![
             ("ip_address", &params.ip_address),
             ("protocol", &params.protocol),
             ("fqdn", &params.fqdn),
             ("path", &params.path),
-            ("query", &params.query), // Mapea 'query_for_request' a 'query'
+            ("query", &params.query),
             ("city_name", &params.city_name),
             ("country_name", &params.country_name),
             ("country_code", &params.country_code),
+            ("user_agent", &params.user_agent),
+            ("method", &params.method),
+            ("referer", &params.referer),
+            ("content_type", &params.content_type),
+            ("accept_language", &params.accept_language),
+            ("x_request_id", &params.x_request_id),
         ];
         let active_filters: Vec<(&str, String)> = filters
             .into_iter()
@@ -300,16 +410,23 @@ impl Request {
             .await
     }
 
+    /// Lee peticiones con filtros LIKE, paginación y ordenación.
     pub async fn read_paged(pool: &PgPool, params: &ReadRequestParams) -> Result<Vec<Self>, Error> {
         let filters = vec![
             ("ip_address", &params.ip_address),
             ("protocol", &params.protocol),
             ("fqdn", &params.fqdn),
             ("path", &params.path),
-            ("query", &params.query), // Mapea 'query_for_request' a 'query'
+            ("query", &params.query),
             ("city_name", &params.city_name),
             ("country_name", &params.country_name),
             ("country_code", &params.country_code),
+            ("user_agent", &params.user_agent),
+            ("method", &params.method),
+            ("referer", &params.referer),
+            ("content_type", &params.content_type),
+            ("accept_language", &params.accept_language),
+            ("x_request_id", &params.x_request_id),
         ];
         let active_filters: Vec<(&str, String)> = filters
             .into_iter()
@@ -333,6 +450,12 @@ impl Request {
             "city_name",
             "country_name",
             "country_code",
+            "user_agent",
+            "method",
+            "referer",
+            "content_type",
+            "accept_language",
+            "x_request_id",
         ]
         .contains(&sort_by)
         {
@@ -357,13 +480,14 @@ impl Request {
             .await
     }
 
+    /// Elimina peticiones anteriores a un número de días.
     pub async fn delete_before(pool: &PgPool, days: i32) -> Result<Vec<Self>, Error> {
         let sql = "DELETE FROM requests WHERE created_at < $1 RETURNING *";
-        let now = Utc::now()
-            .checked_sub_signed(chrono::Duration::days(days.into()))
+        let cutoff = Utc::now()
+            .checked_sub_signed(chrono::Duration::days(i64::from(days)))
             .unwrap();
         query(sql)
-            .bind(now)
+            .bind(cutoff)
             .map(Self::from_row)
             .fetch_all(pool)
             .await
@@ -455,13 +579,11 @@ ORDER BY
             .fetch_all(pool)
             .await
     }
-    // request.rs -> impl Request -> evolution
 
     #[allow(clippy::needless_raw_string_hashes)]
     pub async fn evolution(pool: &PgPool, unit: &str, last: i32) -> Result<Vec<TimeSeries>, Error> {
         debug!("Evolution params - unit: {}, last: {}", unit, last);
 
-        // ... (Validación de unit_group y determinación de x_output - esto está correcto) ...
         let unit_group = match unit {
             "hour" => "hour",
             "day" => "day",
