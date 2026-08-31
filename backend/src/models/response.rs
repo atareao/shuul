@@ -20,6 +20,7 @@ pub struct EmptyResponse {
     pub message: String,
 }
 impl EmptyResponse {
+    #[must_use]
     pub fn create(status: StatusCode, message: &str) -> Response<Body> {
         Response::builder()
             .status(status)
@@ -47,6 +48,7 @@ pub struct ApiResponse {
 }
 
 impl ApiResponse {
+    #[must_use]
     pub fn new(status: StatusCode, message: &str, data: Data) -> Self {
         Self {
             status: status.as_u16(),
@@ -96,6 +98,7 @@ pub struct PagedResponse {
 }
 
 impl PagedResponse {
+    #[must_use]
     pub fn new(status: StatusCode, message: &str, data: Data, pagination: Pagination) -> Self {
         Self {
             status: status.as_u16(),

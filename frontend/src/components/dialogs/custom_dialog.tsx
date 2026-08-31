@@ -88,7 +88,11 @@ class InnerDialog<T> extends React.Component<Props<T>, State<T>> {
         } else if (this.props.dialogMode === DialogModes.CREATE) {
             method = 'POST';
             const body = this.props.fields.reduce((acc: any, field: FieldDefinition<T>) => {
-                acc[field.key] = getNestedValue(dataWithId, field.key as string);
+                const value = getNestedValue(dataWithId, field.key as string);
+                // Convert empty strings to null so they serialize as JSON null.
+                // This prevents 422 errors when the backend expects Option<Vec<T>>
+                // or other non-string types (e.g. bantime_multipliers, ignoreip).
+                acc[field.key] = value === "" ? null : value;
                 return acc;
             }, {})
             string_body = JSON.stringify(body);

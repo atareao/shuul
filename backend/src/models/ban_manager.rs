@@ -2,6 +2,10 @@
 //!
 //! Manages active IP bans with escalation and decay.
 //! Bans are enforced at the HTTP level — no firewall backend needed.
+//!
+//! The core [`BanManager`] is purely synchronous and in-memory.
+//! Database persistence methods are provided as async associated functions
+//! to be called by HTTP handlers after the mutex lock/release cycle.
 
 use std::collections::HashMap;
 use std::net::IpAddr;
@@ -36,7 +40,7 @@ impl BanInfo {
         if elapsed > total {
             Duration::from_secs(0)
         } else {
-            total - elapsed
+            total.checked_sub(elapsed).unwrap()
         }
     }
 }
@@ -61,7 +65,8 @@ pub struct BanManager {
 }
 
 impl BanManager {
-    /// Create a new BanManager with default settings.
+    /// Create a new `BanManager` with default settings.
+    #[must_use]
     pub fn new(
         default_ban_duration: i64,
         bantime_increment: bool,
@@ -82,6 +87,7 @@ impl BanManager {
 
     /// Check if an IP is currently banned.
     /// Returns the first active ban info, or None.
+    #[must_use]
     pub fn is_banned(&self, ip: &IpAddr) -> Option<&BanInfo> {
         self.bans
             .get(ip)
@@ -92,6 +98,11 @@ impl BanManager {
     ///
     /// If `ban_duration_override` is `Some`, it is used as the ban duration
     /// instead of the calculated escalation-based duration.
+    ///
+    /// Returns a reference to the new [`BanInfo`].
+    ///
+    /// NOTE: This method only operates on in-memory state. To persist the ban
+    /// to the database, call [`BanManager::persist_ban`] after the mutex is released.
     pub fn ban(
         &mut self,
         ip: IpAddr,
@@ -119,6 +130,9 @@ impl BanManager {
     }
 
     /// Unban an IP for a specific rule. Returns true if anything was removed.
+    ///
+    /// NOTE: This method only operates on in-memory state. To persist the unban
+    /// to the database, call [`BanManager::remove_from_db`] after the mutex is released.
     pub fn unban(&mut self, ip: &IpAddr, rule_id: Option<i32>) -> bool {
         if let Some(ban_list) = self.bans.get_mut(ip) {
             let before = ban_list.len();
@@ -139,7 +153,10 @@ impl BanManager {
         self.bans.remove(ip).is_some()
     }
 
-    /// Remove all expired bans.
+    /// Remove all expired bans in memory.
+    ///
+    /// NOTE: To clean up expired bans in the database, call
+    /// [`BanManager::cleanup_expired_db`] separately.
     pub fn cleanup_expired(&mut self) {
         self.bans.retain(|_, ban_list| {
             ban_list.retain(|b| !b.is_expired());
@@ -152,6 +169,7 @@ impl BanManager {
     }
 
     /// Get all active (non-expired) bans.
+    #[must_use]
     pub fn active_bans(&self) -> Vec<(IpAddr, &BanInfo)> {
         let mut result = Vec::new();
         for (ip, ban_list) in &self.bans {
@@ -165,6 +183,7 @@ impl BanManager {
     }
 
     /// Number of active bans.
+    #[must_use]
     pub fn active_count(&self) -> usize {
         self.active_bans().len()
     }
@@ -176,7 +195,7 @@ impl BanManager {
         }
 
         let multiplier_idx = (escalation_level as usize).min(self.bantime_multipliers.len() - 1);
-        let multiplier = self.bantime_multipliers[multiplier_idx] as i64;
+        let multiplier = i64::from(self.bantime_multipliers[multiplier_idx]);
         let duration = self.default_ban_duration * multiplier;
 
         duration.min(self.bantime_maxtime)
@@ -186,8 +205,7 @@ impl BanManager {
     fn get_escalation_level(&self, ip: &IpAddr) -> u32 {
         self.escalation_counts
             .get(ip)
-            .map(|(level, _)| *level)
-            .unwrap_or(0)
+            .map_or(0, |(level, _)| *level)
     }
 
     /// Increment the escalation counter for an IP.
@@ -198,6 +216,146 @@ impl BanManager {
             .or_insert((0, Instant::now()));
         entry.0 += 1;
         entry.1 = Instant::now();
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Database persistence layer
+// ---------------------------------------------------------------------------
+//
+// These are async associated functions (not self-methods) that operate directly
+// on the database. Call them from HTTP handlers AFTER the mutex lock/release
+// on the in-memory BanManager.
+//
+// The BanManager itself remains purely synchronous — it has no DB awareness.
+
+impl BanManager {
+    /// Load all active (non-expired) bans from the database into a new
+    /// `BanManager` with sensible defaults.
+    ///
+    /// This is useful on application startup to restore ban state from
+    /// the previous session.
+    pub async fn load_from_db(
+        pool: &sqlx::PgPool,
+    ) -> Result<(Self, Vec<(IpAddr, Instant)>), sqlx::Error> {
+        use chrono::{DateTime, Utc};
+        use sqlx::Row;
+
+        let rows = sqlx::query(
+            "SELECT ip_address, rule_id, reason, banned_at, ban_duration_seconds, escalation_level \
+             FROM bans WHERE expired = FALSE",
+        )
+        .fetch_all(pool)
+        .await?;
+
+        let mut manager = Self::new(
+            3600,             // default_ban_duration
+            true,             // bantime_increment
+            vec![1, 2, 4, 8], // bantime_multipliers
+            604800,           // bantime_maxtime (7 days)
+            30,               // ban_count_decay_days
+        );
+
+        let mut loaded: Vec<(IpAddr, Instant)> = Vec::with_capacity(rows.len());
+
+        for row in &rows {
+            let ip_str: String = row.get("ip_address");
+            if let Ok(ip) = ip_str.parse::<IpAddr>() {
+                let banned_at_db: DateTime<Utc> = row.get("banned_at");
+                let ban_duration_seconds: i64 = row.get("ban_duration_seconds");
+                let escalation_level: i32 = row.get("escalation_level");
+                let rule_id: Option<i32> = row.get("rule_id");
+                let reason: String = row.get("reason");
+
+                // Approximate Instant from DB DateTime<Utc>
+                let now = Instant::now();
+                let now_dt = Utc::now();
+                let elapsed_secs = (now_dt - banned_at_db).num_seconds().max(0) as u64;
+                let banned_at = now.checked_sub(Duration::from_secs(elapsed_secs)).unwrap();
+
+                let ban_info = BanInfo {
+                    banned_at,
+                    ban_duration_seconds,
+                    escalation_level: escalation_level as u32,
+                    rule_id,
+                    reason,
+                };
+
+                manager.bans.entry(ip).or_default().push(ban_info);
+                loaded.push((ip, banned_at));
+            }
+        }
+
+        Ok((manager, loaded))
+    }
+
+    /// Persist a ban to the database.
+    ///
+    /// Call this AFTER `BanManager::ban()` to ensure the ban is durable.
+    pub async fn persist_ban(
+        pool: &sqlx::PgPool,
+        ip: IpAddr,
+        rule_id: Option<i32>,
+        reason: &str,
+        ban_duration_seconds: i64,
+        escalation_level: u32,
+    ) -> Result<(), sqlx::Error> {
+        use chrono::Utc;
+
+        sqlx::query(
+            "INSERT INTO bans (ip_address, rule_id, reason, banned_at, ban_duration_seconds, escalation_level, expired, created_at) \
+             VALUES ($1, $2, $3, $4, $5, $6, FALSE, $7)"
+        )
+        .bind(ip.to_string())
+        .bind(rule_id)
+        .bind(reason)
+        .bind(Utc::now())
+        .bind(ban_duration_seconds)
+        .bind(escalation_level as i32)
+        .bind(Utc::now())
+        .execute(pool)
+        .await?;
+
+        Ok(())
+    }
+
+    /// Mark a ban as expired in the database (soft-delete).
+    ///
+    /// Call this AFTER `BanManager::unban()` to keep the DB consistent.
+    pub async fn remove_from_db(
+        pool: &sqlx::PgPool,
+        ip: &IpAddr,
+        rule_id: Option<i32>,
+    ) -> Result<(), sqlx::Error> {
+        if let Some(rid) = rule_id {
+            sqlx::query(
+                "UPDATE bans SET expired = TRUE WHERE ip_address = $1 AND rule_id = $2 AND expired = FALSE"
+            )
+            .bind(ip.to_string())
+            .bind(rid)
+            .execute(pool)
+            .await?;
+        } else {
+            sqlx::query("UPDATE bans SET expired = TRUE WHERE ip_address = $1 AND expired = FALSE")
+                .bind(ip.to_string())
+                .execute(pool)
+                .await?;
+        }
+        Ok(())
+    }
+
+    /// Mark all expired (past their `ban_duration_seconds`) bans as expired in the DB.
+    ///
+    /// Call this periodically (e.g. via a cron-like task) to keep the DB clean.
+    pub async fn cleanup_expired_db(pool: &sqlx::PgPool) -> Result<(), sqlx::Error> {
+        sqlx::query(
+            "UPDATE bans SET expired = TRUE \
+             WHERE expired = FALSE \
+             AND banned_at + (ban_duration_seconds * INTERVAL '1 second') < NOW()",
+        )
+        .execute(pool)
+        .await?;
+        Ok(())
     }
 }
 

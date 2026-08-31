@@ -25,6 +25,7 @@ const ChartsPage = lazy(() => import('@/pages/admin/charts_page'));
 const BansPage = lazy(() => import('@/pages/admin/bans_page'));
 const TemplatesPage = lazy(() => import('@/pages/admin/templates_page'));
 const SettingsPage = lazy(() => import('@/pages/admin/settings_page'));
+const RateLimitProfilesPage = lazy(() => import('@/pages/admin/rate_limit_profiles_page'));
 
 import '@/App.css'
 
@@ -76,6 +77,7 @@ export default class App extends React.Component {
                                                     <Route path="charts" element={<ChartsPage />} />
                                                     <Route path="bans" element={<BansPage />} />
                                                     <Route path="templates" element={<TemplatesPage />} />
+                                                    <Route path="rate-limit-profiles" element={<RateLimitProfilesPage />} />
                                                     <Route path="settings" element={<SettingsPage />} />
                                                 </Route>
                                             </Routes>

@@ -8,6 +8,12 @@ export default interface Record {
     city_name?: string;
     country_name?: string;
     country_code?: string;
+    user_agent?: string;
+    method?: string;
+    referer?: string;
+    content_type?: string;
+    accept_language?: string;
+    x_request_id?: string;
     rule_id?: number;
     created_at?: Date;
 }

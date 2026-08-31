@@ -3,17 +3,21 @@
 //! Módulos que definen los endpoints de la API REST:
 //!
 //! - [`health`] — Health check
-//! - [`user`] — Autenticación (login, logout, registro) y gestión de usuarios
 //! - [`auth`] — SSO / OIDC (Single Sign-On)
 //! - [`rule`] — CRUD de reglas de filtrado
+//! - [`rate_limit_profile`] — CRUD de perfiles de rate limiting
 //! - [`request`] — Consulta de peticiones HTTP capturadas
 //! - [`shuul`] — Endpoint principal de captura y filtrado
+//! - [`settings`] — Configuración global
+//! - [`template`] — Plantillas de reglas y perfiles
 //! - [`util`] — Utilidades (geolocalización, etc.)
 
 mod auth;
 mod ban;
 mod health;
 mod middleware;
+mod rate_limit_profile;
+mod report;
 mod request;
 mod rule;
 mod settings;
@@ -25,6 +29,8 @@ pub use auth::auth_router;
 pub use ban::ban_router;
 pub use health::health_router;
 pub use middleware::require_auth;
+pub use rate_limit_profile::rate_limit_profile_router;
+pub use report::report_router;
 pub use request::request_router;
 pub use rule::rule_router;
 pub use settings::settings_router;

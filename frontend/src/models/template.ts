@@ -1,4 +1,4 @@
-export default interface Template {
+export interface RuleTemplate {
     name: string;
     description: string;
     category: string;
@@ -8,13 +8,18 @@ export default interface Template {
     country_code: string | null;
     allow: boolean;
     store: boolean;
-    rate_limit_enabled: boolean;
-    max_retry: number | null;
-    find_time_seconds: number | null;
-    ban_time_seconds: number | null;
+    recommended_profile: string | null;
+    requires_fqdn: boolean;
+}
+
+export interface RateLimitProfileTemplate {
+    name: string;
+    description: string;
+    max_retry: number;
+    find_time_seconds: number;
+    ban_time_seconds: number;
     bantime_increment: boolean;
     bantime_multipliers: number[];
     bantime_maxtime_seconds: number;
     ban_count_decay_days: number;
-    requires_fqdn: boolean;
 }

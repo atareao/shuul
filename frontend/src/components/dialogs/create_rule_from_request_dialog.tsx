@@ -1,11 +1,9 @@
 import { useState } from "react";
-import { Modal, Typography, Flex, InputNumber, Radio, Tag, Alert, Space } from "antd";
+import { Modal, Typography, Flex, InputNumber, Tag, Alert, Space, Tabs, Input, Switch } from "antd";
 import { BASE_URL } from '@/constants';
 import type Item from "@/models/record";
 
 const { Text } = Typography;
-
-type PresetOption = "fqdn" | "path" | "query" | "fqdn_path" | "custom";
 
 interface Props {
     record: Item | null;
@@ -35,25 +33,31 @@ const defaultChecked: CheckedFields = {
     country_code: false,
 };
 
-const presetFields: Record<PresetOption, CheckedFields> = {
-    fqdn: { ...defaultChecked, fqdn: true },
-    path: { ...defaultChecked, path: true },
-    query: { ...defaultChecked, query: true },
-    fqdn_path: { ...defaultChecked, fqdn: true, path: true },
-    custom: { ...defaultChecked },
-};
-
 export default function CreateRuleFromRequestDialog({ record, onClose, t }: Props) {
-    const [preset, setPreset] = useState<PresetOption>("fqdn");
-    const [custom, setCustom] = useState<CheckedFields>({ ...defaultChecked });
+    const [checkedFields, setCheckedFields] = useState<CheckedFields>({ ...defaultChecked });
     const [weight, setWeight] = useState<number>(100);
     const [loading, setLoading] = useState(false);
     const [error, setError] = useState<string | null>(null);
 
-    const selectedFields = preset === "custom" ? custom : presetFields[preset];
+    const [active, setActive] = useState<boolean>(true);
+    const [allow, setAllow] = useState<boolean>(true);
+    const [store, setStore] = useState<boolean>(true);
 
-    const toggleCustom = (field: keyof CheckedFields) => {
-        setCustom(prev => ({ ...prev, [field]: !prev[field] }));
+    const [rateLimitEnabled, setRateLimitEnabled] = useState<boolean>(false);
+    const [maxRetry, setMaxRetry] = useState<number>(5);
+    const [findTimeSeconds, setFindTimeSeconds] = useState<number>(600);
+    const [banTimeSeconds, setBanTimeSeconds] = useState<number>(3600);
+    const [bantimeIncrement, setBantimeIncrement] = useState<boolean>(false);
+    const [bantimeMultipliers, setBantimeMultipliers] = useState<string>("");
+    const [bantimeMaxtimeSeconds, setBantimeMaxtimeSeconds] = useState<number>(604800);
+    const [banCountDecayDays, setBanCountDecayDays] = useState<number>(30);
+    const [ignoreip, setIgnoreip] = useState<string>("");
+    const [webhook, setWebhook] = useState<string>("");
+
+    const selectedFields = checkedFields;
+
+    const toggleField = (field: keyof CheckedFields) => {
+        setCheckedFields(prev => ({ ...prev, [field]: !prev[field] }));
     };
 
     const handleCreate = async () => {
@@ -63,13 +67,23 @@ export default function CreateRuleFromRequestDialog({ record, onClose, t }: Prop
 
         const body: Record<string, any> = {
             weight,
-            allow: true,
-            store: true,
-            active: true,
-            rate_limit_enabled: false,
-            max_retry: 5,
-            find_time_seconds: 600,
-            ban_time_seconds: 3600,
+            allow,
+            store,
+            active,
+            rate_limit_enabled: rateLimitEnabled,
+            max_retry: maxRetry,
+            find_time_seconds: findTimeSeconds,
+            ban_time_seconds: banTimeSeconds,
+            bantime_increment: bantimeIncrement,
+            bantime_multipliers: bantimeMultipliers
+                ? bantimeMultipliers.split(",").map(s => Number(s.trim())).filter(n => !isNaN(n))
+                : [],
+            bantime_maxtime_seconds: bantimeMaxtimeSeconds,
+            ban_count_decay_days: banCountDecayDays,
+            ignoreip: ignoreip
+                ? ignoreip.split(",").map(s => s.trim()).filter(s => s.length > 0)
+                : [],
+            webhook,
         };
 
         const fieldMap: [keyof CheckedFields, string][] = [
@@ -119,14 +133,6 @@ export default function CreateRuleFromRequestDialog({ record, onClose, t }: Prop
         onClose(false);
     };
 
-    const presetOptions: { value: PresetOption; label: string }[] = [
-        { value: "fqdn", label: "FQDN" },
-        { value: "path", label: "Path" },
-        { value: "query", label: "Query" },
-        { value: "fqdn_path", label: "FQDN + Path" },
-        { value: "custom", label: t("Custom") },
-    ];
-
     const fieldLabels: { key: keyof CheckedFields; label: string }[] = [
         { key: "ip_address", label: "IP Address" },
         { key: "protocol", label: "Protocol" },
@@ -149,99 +155,217 @@ export default function CreateRuleFromRequestDialog({ record, onClose, t }: Prop
             okText={t("Create Rule")}
             cancelText={t("Cancel")}
             confirmLoading={loading}
-            width={520}
+            width={600}
         >
             <Flex vertical gap="middle">
                 {error && (
                     <Alert message={error} type="error" showIcon closable onClose={() => setError(null)} />
                 )}
 
-                {/* Request data reference */}
-                <Flex vertical gap={4}>
-                    <Text strong>{t("Request Data")}</Text>
-                    <Flex wrap gap={4}>
-                        {fieldLabels.map(({ key, label }) =>
-                            record[key] ? (
-                                <Tag key={key} color="blue">
-                                    {label}: {record[key]?.toString().substring(0, 40)}
-                                </Tag>
-                            ) : null
-                        )}
-                    </Flex>
-                </Flex>
+                <Tabs
+                    items={[
+                        {
+                            key: "general",
+                            label: t("General"),
+                            children: (
+                                <Flex vertical gap="middle">
+                                    {/* Request data reference */}
+                                    <Flex vertical gap={4}>
+                                        <Text strong>{t("Request Data")}</Text>
+                                        <Flex wrap gap={4}>
+                                            {fieldLabels.map(({ key, label }) =>
+                                                record[key] ? (
+                                                    <Tag key={key} color="blue">
+                                                        {label}: {record[key]?.toString().substring(0, 40)}
+                                                    </Tag>
+                                                ) : null
+                                            )}
+                                        </Flex>
+                                    </Flex>
 
-                {/* Preset selector */}
-                <Flex vertical gap={4}>
-                    <Text strong>{t("Rule Pattern")}</Text>
-                    <Radio.Group
-                        value={preset}
-                        onChange={(e) => {
-                            setPreset(e.target.value);
-                            if (e.target.value === "custom") {
-                                setCustom({ ...presetFields[preset] });
-                            }
-                        }}
-                    >
-                        <Space direction="vertical">
-                            {presetOptions.map((opt) => (
-                                <Radio key={opt.value} value={opt.value}>
-                                    {opt.label}
-                                </Radio>
-                            ))}
-                        </Space>
-                    </Radio.Group>
-                </Flex>
+                                    {/* Field toggles — always visible */}
+                                    <Flex vertical gap={4}>
+                                        <Text strong>{t("Select Fields")}</Text>
+                                        <Space wrap>
+                                            {fieldLabels.map(({ key, label }) => (
+                                                <Tag
+                                                    key={key}
+                                                    color={checkedFields[key] ? "green" : "default"}
+                                                    style={{ cursor: "pointer" }}
+                                                    onClick={() => toggleField(key)}
+                                                >
+                                                    {label}
+                                                    {record[key] !== undefined && record[key] !== null
+                                                        ? `: ${record[key]?.toString().substring(0, 30)}`
+                                                        : ""}
+                                                </Tag>
+                                            ))}
+                                        </Space>
+                                    </Flex>
 
-                {/* Custom field toggles */}
-                {preset === "custom" && (
-                    <Flex vertical gap={4}>
-                        <Text strong>{t("Select Fields")}</Text>
-                        <Space wrap>
-                            {fieldLabels.map(({ key, label }) => (
-                                <Tag
-                                    key={key}
-                                    color={custom[key] ? "green" : "default"}
-                                    style={{ cursor: "pointer" }}
-                                    onClick={() => toggleCustom(key)}
-                                >
-                                    {label}
-                                    {record[key] !== undefined && record[key] !== null
-                                        ? `: ${record[key]?.toString().substring(0, 30)}`
-                                        : ""}
-                                </Tag>
-                            ))}
-                        </Space>
-                    </Flex>
-                )}
+                                    {/* Preview */}
+                                    <Flex vertical gap={4}>
+                                        <Text strong>{t("Rule will match on")}</Text>
+                                        <Space wrap>
+                                            {fieldLabels
+                                                .filter(({ key }) => selectedFields[key])
+                                                .map(({ key, label }) => (
+                                                    <Tag key={key} color="green">
+                                                        {label}: {record[key]?.toString().substring(0, 40)}
+                                                    </Tag>
+                                                ))}
+                                            {!fieldLabels.some(({ key }) => selectedFields[key]) && (
+                                                <Text type="secondary">{t("No fields selected — rule will match all requests")}</Text>
+                                            )}
+                                        </Space>
+                                    </Flex>
 
-                {/* Preview */}
-                <Flex vertical gap={4}>
-                    <Text strong>{t("Rule will match on")}</Text>
-                    <Space wrap>
-                        {fieldLabels
-                            .filter(({ key }) => selectedFields[key])
-                            .map(({ key, label }) => (
-                                <Tag key={key} color="green">
-                                    {label}: {record[key]?.toString().substring(0, 40)}
-                                </Tag>
-                            ))}
-                        {!fieldLabels.some(({ key }) => selectedFields[key]) && (
-                            <Text type="secondary">{t("No fields selected — rule will match all requests")}</Text>
-                        )}
-                    </Space>
-                </Flex>
+                                    {/* Active */}
+                                    <Flex align="center" gap="small">
+                                        <Text style={{ width: 100 }}>{t("Active")}:</Text>
+                                        <Switch checked={active} onChange={setActive} />
+                                    </Flex>
 
-                {/* Weight */}
-                <Flex align="center" gap="small">
-                    <Text style={{ width: 80 }}>{t("Weight")}:</Text>
-                    <InputNumber
-                        min={1}
-                        max={99999}
-                        value={weight}
-                        onChange={(v) => setWeight(v ?? 100)}
-                        style={{ width: 120 }}
-                    />
-                </Flex>
+                                    {/* Allow */}
+                                    <Flex align="center" gap="small">
+                                        <Text style={{ width: 100 }}>{t("Allow")}:</Text>
+                                        <Switch checked={allow} onChange={setAllow} />
+                                    </Flex>
+
+                                    {/* Store */}
+                                    <Flex align="center" gap="small">
+                                        <Text style={{ width: 100 }}>{t("Store")}:</Text>
+                                        <Switch checked={store} onChange={setStore} />
+                                    </Flex>
+
+                                    {/* Weight */}
+                                    <Flex align="center" gap="small">
+                                        <Text style={{ width: 100 }}>{t("Weight")}:</Text>
+                                        <InputNumber
+                                            min={1}
+                                            max={99999}
+                                            value={weight}
+                                            onChange={(v) => setWeight(v ?? 100)}
+                                            style={{ width: 120 }}
+                                        />
+                                    </Flex>
+                                </Flex>
+                            ),
+                        },
+                        {
+                            key: "rate_limit",
+                            label: t("Rate Limit"),
+                            children: (
+                                <Flex vertical gap="middle">
+                                    {/* rate_limit_enabled */}
+                                    <Flex align="center" gap="small">
+                                        <Text style={{ width: 100 }}>{t("Rate Limit Enabled")}:</Text>
+                                        <Switch checked={rateLimitEnabled} onChange={setRateLimitEnabled} />
+                                    </Flex>
+
+                                    {/* max_retry */}
+                                    <Flex align="center" gap="small">
+                                        <Text style={{ width: 100 }}>{t("Max Retry")}:</Text>
+                                        <InputNumber
+                                            min={1}
+                                            max={99999}
+                                            value={maxRetry}
+                                            onChange={(v) => setMaxRetry(v ?? 5)}
+                                            style={{ width: 120 }}
+                                        />
+                                    </Flex>
+
+                                    {/* find_time_seconds */}
+                                    <Flex align="center" gap="small">
+                                        <Text style={{ width: 100 }}>{t("Find Time")}:</Text>
+                                        <InputNumber
+                                            min={1}
+                                            max={999999}
+                                            value={findTimeSeconds}
+                                            onChange={(v) => setFindTimeSeconds(v ?? 600)}
+                                            style={{ width: 120 }}
+                                        />
+                                    </Flex>
+
+                                    {/* ban_time_seconds */}
+                                    <Flex align="center" gap="small">
+                                        <Text style={{ width: 100 }}>{t("Ban Time")}:</Text>
+                                        <InputNumber
+                                            min={1}
+                                            max={999999}
+                                            value={banTimeSeconds}
+                                            onChange={(v) => setBanTimeSeconds(v ?? 3600)}
+                                            style={{ width: 120 }}
+                                        />
+                                    </Flex>
+
+                                    {/* bantime_increment */}
+                                    <Flex align="center" gap="small">
+                                        <Text style={{ width: 100 }}>{t("Bantime Increment")}:</Text>
+                                        <Switch checked={bantimeIncrement} onChange={setBantimeIncrement} />
+                                    </Flex>
+
+                                    {/* bantime_multipliers */}
+                                    <Flex align="center" gap="small">
+                                        <Text style={{ width: 100 }}>{t("Bantime Multipliers")}:</Text>
+                                        <Input
+                                            value={bantimeMultipliers}
+                                            onChange={(e) => setBantimeMultipliers(e.target.value)}
+                                            placeholder="e.g. 1,2,4"
+                                            style={{ width: 200 }}
+                                        />
+                                    </Flex>
+
+                                    {/* bantime_maxtime_seconds */}
+                                    <Flex align="center" gap="small">
+                                        <Text style={{ width: 100 }}>{t("Bantime Max Time")}:</Text>
+                                        <InputNumber
+                                            min={1}
+                                            max={9999999}
+                                            value={bantimeMaxtimeSeconds}
+                                            onChange={(v) => setBantimeMaxtimeSeconds(v ?? 604800)}
+                                            style={{ width: 120 }}
+                                        />
+                                    </Flex>
+
+                                    {/* ban_count_decay_days */}
+                                    <Flex align="center" gap="small">
+                                        <Text style={{ width: 100 }}>{t("Ban Count Decay Days")}:</Text>
+                                        <InputNumber
+                                            min={1}
+                                            max={9999}
+                                            value={banCountDecayDays}
+                                            onChange={(v) => setBanCountDecayDays(v ?? 30)}
+                                            style={{ width: 120 }}
+                                        />
+                                    </Flex>
+
+                                    {/* ignoreip */}
+                                    <Flex align="center" gap="small">
+                                        <Text style={{ width: 100 }}>{t("Ignore IP")}:</Text>
+                                        <Input
+                                            value={ignoreip}
+                                            onChange={(e) => setIgnoreip(e.target.value)}
+                                            placeholder="e.g. 127.0.0.1,192.168.1.1"
+                                            style={{ width: 250 }}
+                                        />
+                                    </Flex>
+
+                                    {/* webhook */}
+                                    <Flex align="center" gap="small">
+                                        <Text style={{ width: 100 }}>{t("Webhook")}:</Text>
+                                        <Input
+                                            value={webhook}
+                                            onChange={(e) => setWebhook(e.target.value)}
+                                            placeholder="https://..."
+                                            style={{ width: 250 }}
+                                        />
+                                    </Flex>
+                                </Flex>
+                            ),
+                        },
+                    ]}
+                />
             </Flex>
         </Modal>
     );

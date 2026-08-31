@@ -1,7 +1,7 @@
 //! # Datos de geolocalización IP
 //!
 //! [`IPData`] almacena la información de geolocalización obtenida
-//! de la base de datos MaxMind GeoIP2 para una dirección IP dada.
+//! de la base de datos `MaxMind` `GeoIP2` para una dirección IP dada.
 
 use maxminddb::{Reader, geoip2};
 use serde::{Deserialize, Serialize};
@@ -28,20 +28,26 @@ impl IPData {
                             debug!("result: {:?}", city);
                             Self {
                                 ip_address: ip_address.to_string(),
-                                city_name: if !city.city.is_empty() {
-                                    city.city.names.english.map(|s| s.to_string())
-                                } else {
+                                city_name: if city.city.is_empty() {
                                     None
+                                } else {
+                                    city.city
+                                        .names
+                                        .english
+                                        .map(std::string::ToString::to_string)
                                 },
-                                country_name: if !city.country.is_empty() {
-                                    city.country.names.english.map(|s| s.to_string())
-                                } else {
+                                country_name: if city.country.is_empty() {
                                     None
+                                } else {
+                                    city.country
+                                        .names
+                                        .english
+                                        .map(std::string::ToString::to_string)
                                 },
-                                country_code: if !city.country.is_empty() {
-                                    city.country.iso_code.map(|s| s.to_string())
-                                } else {
+                                country_code: if city.country.is_empty() {
                                     None
+                                } else {
+                                    city.country.iso_code.map(std::string::ToString::to_string)
                                 },
                             }
                         },
