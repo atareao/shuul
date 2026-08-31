@@ -1,7 +1,7 @@
-//! # Modelos OIDC (OpenID Connect)
+//! # Modelos OIDC (`OpenID` Connect)
 //!
 //! Define [`OidcMetadata`] para el descubrimiento OIDC y [`JwtValidator`]
-//! para la validación de tokens JWT emitidos por un proveedor OIDC (PocketID).
+//! para la validación de tokens JWT emitidos por un proveedor OIDC (`PocketID`).
 
 use serde::Deserialize;
 
@@ -30,13 +30,14 @@ impl std::fmt::Debug for JwtValidator {
         f.debug_struct("JwtValidator")
             .field("issuer", &self.issuer)
             .field("client_id", &self.client_id)
-            .field("jwks_count", &self.jwks.as_ref().map(|j| j.len()))
+            .field("jwks_count", &self.jwks.as_ref().map(std::vec::Vec::len))
             .finish()
     }
 }
 
 impl JwtValidator {
     /// Create a new JWT validator.
+    #[must_use]
     pub fn new(issuer: &str, client_id: &str) -> Self {
         Self {
             issuer: issuer.to_string(),
@@ -70,7 +71,7 @@ impl JwtValidator {
     /// Verifies:
     /// - Signature against the provider's JWKS (matched by `kid`)
     /// - `iss` claim matches the expected issuer
-    /// - `aud` claim matches the expected client_id
+    /// - `aud` claim matches the expected `client_id`
     /// - `exp` claim is not expired
     ///
     /// Returns the decoded claims on success.

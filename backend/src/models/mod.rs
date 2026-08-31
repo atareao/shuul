@@ -22,9 +22,9 @@ pub use data::Data;
 pub use error::AppError as Error;
 pub use ipdata::IPData;
 pub use oidc::{JwtValidator, OidcMetadata};
+pub use rate_limiter::RateLimiter;
 #[allow(unused_imports)]
 pub use rate_limiter::CircularTimestamps;
-pub use rate_limiter::RateLimiter;
 pub use request::{NewRequest, ReadRequestParams, Request};
 pub use response::{ApiResponse, EmptyResponse, PagedResponse, Pagination};
 pub use rule::{CacheRule, NewRule, ReadRuleParams, Rule, UpdateRule};
@@ -35,7 +35,6 @@ use sqlx::postgres::PgPool;
 use std::collections::HashMap;
 use std::sync::Mutex;
 use std::time::Instant;
-use tracing::debug;
 
 pub struct AppState {
     pub pool: PgPool,
@@ -45,6 +44,8 @@ pub struct AppState {
     pub cache: Mutex<Vec<NewRequest>>,
     pub cache_enabled: bool,
     pub cache_size: usize,
+    #[allow(dead_code)]
+    pub static_dir: String,
     pub ban_manager: Mutex<BanManager>,
     pub rate_limiter: Mutex<HashMap<i32, RateLimiter>>, // rule_id → RateLimiter
     // SSO / OIDC fields
@@ -53,18 +54,4 @@ pub struct AppState {
     pub oidc_states: tokio::sync::Mutex<HashMap<String, (String, Instant)>>,
     pub oidc_client_id: Option<String>,
     pub oidc_redirect_url: Option<String>,
-}
-
-impl AppState {
-    /// Recarga la caché de reglas desde la base de datos.
-    ///
-    /// Solo se cargan reglas activas, ordenadas por peso ascendente (`ORDER BY weight ASC`).
-    /// Es seguro contra poison del `Mutex`.
-    pub async fn reload_rules(&self) -> Result<(), Error> {
-        let rules = CacheRule::read_all_active(&self.pool).await?;
-        let mut guard = self.rules.lock().map_err(|_| Error::CachePoisoned)?;
-        *guard = rules;
-        debug!("Rules cache reloaded: {} rules active", guard.len());
-        Ok(())
-    }
 }

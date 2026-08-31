@@ -28,6 +28,8 @@ pub fn rule_router() -> Router<Arc<AppState>> {
         .route("/info", routing::get(read_info_handler))
         .route("/", routing::patch(update_handler))
         .route("/", routing::delete(delete_handler))
+        .route("/export", routing::get(export_handler))
+        .route("/import", routing::post(import_handler))
 }
 
 /// Creates a new rule in the database and updates the in‑memory cache.
@@ -202,4 +204,125 @@ pub async fn delete_handler(
         "Rules deleted",
         Data::Some(serde_json::to_value(rule)?),
     ))
+}
+
+/// Exporta todas las reglas (activas e inactivas) como JSON array.
+///
+/// No requiere paginación — devuelve todas las reglas en un solo array.
+///
+/// * **Parameters**
+///   - `app_state`: Shared state (DB pool).
+/// * **Returns**
+///   - `Result<impl IntoResponse, AppError>` – JSON array de reglas.
+pub async fn export_handler(
+    State(app_state): State<Arc<AppState>>,
+) -> Result<impl IntoResponse, AppError> {
+    debug!("Exporting all rules");
+    let rules = Rule::read_all(&app_state.pool).await?;
+    debug!("Exporting {} rules", rules.len());
+    Ok(ApiResponse::new(
+        StatusCode::OK,
+        "Rules exported",
+        Data::Some(serde_json::to_value(rules)?),
+    ))
+}
+
+/// Payload para importar reglas.
+#[derive(Debug, Deserialize)]
+pub struct ImportPayload {
+    pub rules: Vec<NewRule>,
+}
+
+/// Importa reglas desde un JSON array.
+///
+/// Cada regla se inserta con UPSERT por `name`:
+/// ```sql
+/// INSERT INTO rules (...) VALUES (...)
+/// ON CONFLICT (name) DO UPDATE SET ...
+/// ```
+///
+/// Después de importar, recarga la caché de reglas.
+///
+/// * **Parameters**
+///   - `app_state`: Shared state (DB pool, cache).
+///   - `payload`: JSON con array de reglas (`{rules: [...]}`).
+/// * **Returns**
+///   - `Result<impl IntoResponse, AppError>` – `{imported: N}`.
+pub async fn import_handler(
+    State(app_state): State<Arc<AppState>>,
+    Json(payload): Json<ImportPayload>,
+) -> Result<impl IntoResponse, AppError> {
+    let count = payload.rules.len();
+    debug!("Importing {} rules", count);
+
+    for rule in &payload.rules {
+        let now = chrono::Utc::now();
+        let sql = r#"INSERT INTO rules (
+            name, description, weight, mode, allow, store,
+            ip_address, protocol, fqdn, path, query,
+            city_name, country_name, country_code,
+            user_agent, method, referer, content_type, accept_language, x_request_id,
+            rate_limit_profile_id, active, created_at, updated_at
+        ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10,
+                  $11, $12, $13, $14, $15, $16, $17, $18, $19, $20,
+                  $21, $22, $23, $24)
+        ON CONFLICT (name) DO UPDATE SET
+            description = EXCLUDED.description,
+            weight = EXCLUDED.weight,
+            mode = EXCLUDED.mode,
+            allow = EXCLUDED.allow,
+            store = EXCLUDED.store,
+            ip_address = EXCLUDED.ip_address,
+            protocol = EXCLUDED.protocol,
+            fqdn = EXCLUDED.fqdn,
+            path = EXCLUDED.path,
+            query = EXCLUDED.query,
+            city_name = EXCLUDED.city_name,
+            country_name = EXCLUDED.country_name,
+            country_code = EXCLUDED.country_code,
+            user_agent = EXCLUDED.user_agent,
+            method = EXCLUDED.method,
+            referer = EXCLUDED.referer,
+            content_type = EXCLUDED.content_type,
+            accept_language = EXCLUDED.accept_language,
+            x_request_id = EXCLUDED.x_request_id,
+            rate_limit_profile_id = EXCLUDED.rate_limit_profile_id,
+            active = EXCLUDED.active,
+            updated_at = EXCLUDED.updated_at"#;
+
+        sqlx::query(sql)
+            .bind(&rule.name)
+            .bind(rule.description.as_deref().unwrap_or(""))
+            .bind(rule.weight.unwrap_or(100))
+            .bind(rule.mode.as_deref().unwrap_or("log_only"))
+            .bind(rule.allow.unwrap_or(true))
+            .bind(rule.store.unwrap_or(true))
+            .bind(&rule.ip_address)
+            .bind(&rule.protocol)
+            .bind(&rule.fqdn)
+            .bind(&rule.path)
+            .bind(&rule.query)
+            .bind(&rule.city_name)
+            .bind(&rule.country_name)
+            .bind(&rule.country_code)
+            .bind(&rule.user_agent)
+            .bind(&rule.method)
+            .bind(&rule.referer)
+            .bind(&rule.content_type)
+            .bind(&rule.accept_language)
+            .bind(&rule.x_request_id)
+            .bind(rule.rate_limit_profile_id)
+            .bind(rule.active.unwrap_or(true))
+            .bind(now)
+            .bind(now)
+            .execute(&app_state.pool)
+            .await?;
+    }
+
+    // Recargar la caché de reglas
+    app_state.reload_rules().await?;
+    debug!("Rules cache reloaded after import");
+
+    let response = serde_json::json!({"imported": count});
+    Ok(Json(response))
 }

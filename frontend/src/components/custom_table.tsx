@@ -187,7 +187,7 @@ export default class CustomTable<T extends { id: number | string }> extends Reac
     }
 
     getColumns = (): TableColumnsType<T> => {
-        let columns: TableColumnsType<T> = this.props.fields.map((field) => {
+        let columns: TableColumnsType<T> = this.props.fields.filter(f => f.visible !== false).map((field) => {
             const fieldKey = field.key.toString();
             const filterValue = this.state.filters.get(fieldKey) || "";
 

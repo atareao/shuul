@@ -26,8 +26,6 @@ tower-http = { version = "0.6.6", features = ["cors", "fs", "trace"] }
 tracing = "0.1.41"
 tracing-subscriber = { version = "0.3.20", features = ["tracing", "env-filter", "local-time"] }
 urlencoding = "2.1.3"
-
-[dev-dependencies]
 uuid = { version = "1.10.0", features = ["v4"] }
 
 # ---------- CLIPPY CONFIG ----------
