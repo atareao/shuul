@@ -29,17 +29,10 @@ const FIELDS: FieldDefinition<Item>[] = [
     { key: 'city_name', label: 'City Name', type: 'string', value: "", width: 150, filterKey: "city_name", visible: true },
     { key: 'country_name', label: 'Contry Name', type: 'string', value: "", width: 150, filterKey: "country_name", visible: true },
     { key: 'country_code', label: 'Contry Code', type: 'string', value: "", width: 150, filterKey: "country_code", visible: true },
-    // Rate limiting fields
-    { key: 'rate_limit_enabled', label: 'Rate Limit', type: 'boolean', value: false, width: 100, visible: true },
-    { key: 'max_retry', label: 'Max Retry', type: 'number', value: 5, width: 100, visible: true },
-    { key: 'find_time_seconds', label: 'Find Time (s)', type: 'number', value: 600, width: 120, visible: true },
-    { key: 'ban_time_seconds', label: 'Ban Time (s)', type: 'number', value: 3600, width: 120, visible: true },
-    { key: 'bantime_increment', label: 'Escalate', type: 'boolean', value: false, width: 100, visible: true },
-    { key: 'bantime_multipliers', label: 'Multipliers', type: 'string', value: "", width: 120, visible: true },
-    { key: 'bantime_maxtime_seconds', label: 'Max Ban (s)', type: 'number', value: 604800, width: 120, visible: true },
-    { key: 'ban_count_decay_days', label: 'Decay (d)', type: 'number', value: 30, width: 100, visible: true },
-    { key: 'ignoreip', label: 'Ignore IPs', type: 'string', value: "", width: 150, visible: true },
-    { key: 'webhook', label: 'Webhook', type: 'string', value: "", width: 200, visible: false },
+    { key: 'name', label: 'Name', type: 'string', value: "", width: 150, editable: true, visible: true },
+    { key: 'description', label: 'Description', type: 'string', value: "", width: 200, visible: true },
+    { key: 'mode', label: 'Mode', type: 'string', value: "", width: 100, visible: true },
+    { key: 'rate_limit_profile_id', label: 'Profile', type: 'number', value: 0, width: 120, visible: true },
 ];
 
 // Mensajes específicos para el CustomDialog de Rules

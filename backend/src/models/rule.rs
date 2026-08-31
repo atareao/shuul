@@ -19,7 +19,10 @@ use sqlx::{
 #[derive(Debug, Serialize, Deserialize, Clone)]
 pub struct Rule {
     pub id: i32,
+    pub name: String,
+    pub description: String,
     pub weight: i32,
+    pub mode: String,
     pub allow: bool,
     pub store: bool,
     pub ip_address: Option<String>,
@@ -30,16 +33,13 @@ pub struct Rule {
     pub city_name: Option<String>,
     pub country_name: Option<String>,
     pub country_code: Option<String>,
-    pub rate_limit_enabled: bool,
-    pub max_retry: i32,
-    pub find_time_seconds: i32,
-    pub ban_time_seconds: i32,
-    pub bantime_increment: bool,
-    pub bantime_multipliers: Vec<i32>,
-    pub bantime_maxtime_seconds: i32,
-    pub ban_count_decay_days: i32,
-    pub ignoreip: Vec<String>,
-    pub webhook: Option<String>,
+    pub user_agent: Option<String>,
+    pub method: Option<String>,
+    pub referer: Option<String>,
+    pub content_type: Option<String>,
+    pub accept_language: Option<String>,
+    pub x_request_id: Option<String>,
+    pub rate_limit_profile_id: Option<i32>,
     pub active: bool,
     created_at: DateTime<Utc>,
     updated_at: DateTime<Utc>,
@@ -141,9 +141,12 @@ impl CacheRule {
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
 pub struct NewRule {
-    pub weight: i32,
-    pub allow: bool,
-    pub store: bool,
+    pub name: String,
+    pub description: Option<String>,
+    pub weight: Option<i32>,
+    pub mode: Option<String>,
+    pub allow: Option<bool>,
+    pub store: Option<bool>,
     pub ip_address: Option<String>,
     pub protocol: Option<String>,
     pub fqdn: Option<String>,
@@ -152,23 +155,23 @@ pub struct NewRule {
     pub city_name: Option<String>,
     pub country_name: Option<String>,
     pub country_code: Option<String>,
-    pub rate_limit_enabled: Option<bool>,
-    pub max_retry: Option<i32>,
-    pub find_time_seconds: Option<i32>,
-    pub ban_time_seconds: Option<i32>,
-    pub bantime_increment: Option<bool>,
-    pub bantime_multipliers: Option<Vec<i32>>,
-    pub bantime_maxtime_seconds: Option<i32>,
-    pub ban_count_decay_days: Option<i32>,
-    pub ignoreip: Option<Vec<String>>,
-    pub webhook: Option<String>,
-    pub active: bool,
+    pub user_agent: Option<String>,
+    pub method: Option<String>,
+    pub referer: Option<String>,
+    pub content_type: Option<String>,
+    pub accept_language: Option<String>,
+    pub x_request_id: Option<String>,
+    pub rate_limit_profile_id: Option<i32>,
+    pub active: Option<bool>,
 }
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
 pub struct UpdateRule {
     pub id: i32,
+    pub name: String,
+    pub description: String,
     pub weight: i32,
+    pub mode: String,
     pub allow: bool,
     pub store: bool,
     pub ip_address: Option<String>,
@@ -179,16 +182,13 @@ pub struct UpdateRule {
     pub city_name: Option<String>,
     pub country_name: Option<String>,
     pub country_code: Option<String>,
-    pub rate_limit_enabled: Option<bool>,
-    pub max_retry: Option<i32>,
-    pub find_time_seconds: Option<i32>,
-    pub ban_time_seconds: Option<i32>,
-    pub bantime_increment: Option<bool>,
-    pub bantime_multipliers: Option<Vec<i32>>,
-    pub bantime_maxtime_seconds: Option<i32>,
-    pub ban_count_decay_days: Option<i32>,
-    pub ignoreip: Option<Vec<String>>,
-    pub webhook: Option<String>,
+    pub user_agent: Option<String>,
+    pub method: Option<String>,
+    pub referer: Option<String>,
+    pub content_type: Option<String>,
+    pub accept_language: Option<String>,
+    pub x_request_id: Option<String>,
+    pub rate_limit_profile_id: Option<i32>,
     pub active: bool,
 }
 #[allow(dead_code)]
@@ -206,16 +206,6 @@ pub struct ReadRuleParams {
     pub city_name: Option<String>,
     pub country_name: Option<String>,
     pub country_code: Option<String>,
-    pub rate_limit_enabled: Option<bool>,
-    pub max_retry: Option<i32>,
-    pub find_time_seconds: Option<i32>,
-    pub ban_time_seconds: Option<i32>,
-    pub bantime_increment: Option<bool>,
-    pub bantime_multipliers: Option<Vec<i32>>,
-    pub bantime_maxtime_seconds: Option<i32>,
-    pub ban_count_decay_days: Option<i32>,
-    pub ignoreip: Option<Vec<String>>,
-    pub webhook: Option<String>,
     pub active: Option<bool>,
     pub page: Option<u32>,
     pub limit: Option<u32>,
@@ -235,7 +225,10 @@ impl Rule {
     fn from_row(row: PgRow) -> Self {
         Self {
             id: row.get("id"),
+            name: row.get("name"),
+            description: row.get("description"),
             weight: row.get("weight"),
+            mode: row.get("mode"),
             allow: row.get("allow"),
             store: row.get("store"),
             ip_address: row.get("ip_address"),
@@ -246,16 +239,13 @@ impl Rule {
             city_name: row.get("city_name"),
             country_name: row.get("country_name"),
             country_code: row.get("country_code"),
-            rate_limit_enabled: row.get("rate_limit_enabled"),
-            max_retry: row.get("max_retry"),
-            find_time_seconds: row.get("find_time_seconds"),
-            ban_time_seconds: row.get("ban_time_seconds"),
-            bantime_increment: row.get("bantime_increment"),
-            bantime_multipliers: row.get("bantime_multipliers"),
-            bantime_maxtime_seconds: row.get("bantime_maxtime_seconds"),
-            ban_count_decay_days: row.get("ban_count_decay_days"),
-            ignoreip: row.get("ignoreip"),
-            webhook: row.get("webhook"),
+            user_agent: row.get("user_agent"),
+            method: row.get("method"),
+            referer: row.get("referer"),
+            content_type: row.get("content_type"),
+            accept_language: row.get("accept_language"),
+            x_request_id: row.get("x_request_id"),
+            rate_limit_profile_id: row.get("rate_limit_profile_id"),
             active: row.get("active"),
             created_at: row.get("created_at"),
             updated_at: row.get("updated_at"),
@@ -263,19 +253,21 @@ impl Rule {
     }
 
     pub async fn create(pool: &PgPool, rule: NewRule) -> Result<Self, Error> {
-        let sql = "INSERT INTO rules (weight, allow, store,
+        let sql = "INSERT INTO rules (name, description, weight, mode, allow, store,
             ip_address, protocol, fqdn, path, query, city_name, country_name,
-            country_code, rate_limit_enabled, max_retry, find_time_seconds,
-            ban_time_seconds, bantime_increment, bantime_multipliers,
-            bantime_maxtime_seconds, ban_count_decay_days, ignoreip, webhook,
-            active, created_at, updated_at) VALUES ($1, $2, $3,
-            $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17,
-            $18, $19, $20, $21, $22, $23, $24) RETURNING *";
+            country_code, user_agent, method, referer, content_type,
+            accept_language, x_request_id, rate_limit_profile_id,
+            active, created_at, updated_at) VALUES ($1, $2, $3, $4, $5, $6,
+            $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18,
+            $19, $20, $21, $22, $23, $24) RETURNING *";
         let now = Utc::now();
         query(sql)
-            .bind(rule.weight)
-            .bind(rule.allow)
-            .bind(rule.store)
+            .bind(&rule.name)
+            .bind(rule.description.unwrap_or_default())
+            .bind(rule.weight.unwrap_or(100))
+            .bind(rule.mode.unwrap_or_else(|| "log_only".to_string()))
+            .bind(rule.allow.unwrap_or(true))
+            .bind(rule.store.unwrap_or(true))
             .bind(rule.ip_address)
             .bind(rule.protocol)
             .bind(rule.fqdn)
@@ -284,17 +276,14 @@ impl Rule {
             .bind(rule.city_name)
             .bind(rule.country_name)
             .bind(rule.country_code)
-            .bind(rule.rate_limit_enabled.unwrap_or(false))
-            .bind(rule.max_retry.unwrap_or(5))
-            .bind(rule.find_time_seconds.unwrap_or(600))
-            .bind(rule.ban_time_seconds.unwrap_or(3600))
-            .bind(rule.bantime_increment.unwrap_or(false))
-            .bind(rule.bantime_multipliers.unwrap_or(vec![1, 2, 4, 8]))
-            .bind(rule.bantime_maxtime_seconds.unwrap_or(604800))
-            .bind(rule.ban_count_decay_days.unwrap_or(30))
-            .bind(rule.ignoreip.unwrap_or_default())
-            .bind(rule.webhook)
-            .bind(rule.active)
+            .bind(rule.user_agent)
+            .bind(rule.method)
+            .bind(rule.referer)
+            .bind(rule.content_type)
+            .bind(rule.accept_language)
+            .bind(rule.x_request_id)
+            .bind(rule.rate_limit_profile_id)
+            .bind(rule.active.unwrap_or(true))
             .bind(now)
             .bind(now)
             .map(Self::from_row)
@@ -318,34 +307,37 @@ impl Rule {
 
     pub async fn update(pool: &PgPool, rule: UpdateRule) -> Result<Self, Error> {
         let sql = "UPDATE rules set
-                weight = $1,
-                allow = $2,
-                store = $3,
-                ip_address = $4,
-                protocol = $5,
-                fqdn = $6,
-                path = $7,
-                query = $8,
-                city_name = $9,
-                country_name = $10,
-                country_code = $11,
-                rate_limit_enabled = $12,
-                max_retry = $13,
-                find_time_seconds = $14,
-                ban_time_seconds = $15,
-                bantime_increment = $16,
-                bantime_multipliers = $17,
-                bantime_maxtime_seconds = $18,
-                ban_count_decay_days = $19,
-                ignoreip = $20,
-                webhook = $21,
+                name = $1,
+                description = $2,
+                weight = $3,
+                mode = $4,
+                allow = $5,
+                store = $6,
+                ip_address = $7,
+                protocol = $8,
+                fqdn = $9,
+                path = $10,
+                query = $11,
+                city_name = $12,
+                country_name = $13,
+                country_code = $14,
+                user_agent = $15,
+                method = $16,
+                referer = $17,
+                content_type = $18,
+                accept_language = $19,
+                x_request_id = $20,
+                rate_limit_profile_id = $21,
                 active = $22,
                 updated_at = $23
             WHERE id = $24
             RETURNING *";
         let now = Utc::now();
         query(sql)
+            .bind(&rule.name)
+            .bind(&rule.description)
             .bind(rule.weight)
+            .bind(&rule.mode)
             .bind(rule.allow)
             .bind(rule.store)
             .bind(rule.ip_address)
@@ -356,16 +348,13 @@ impl Rule {
             .bind(rule.city_name)
             .bind(rule.country_name)
             .bind(rule.country_code)
-            .bind(rule.rate_limit_enabled.unwrap_or(false))
-            .bind(rule.max_retry.unwrap_or(5))
-            .bind(rule.find_time_seconds.unwrap_or(600))
-            .bind(rule.ban_time_seconds.unwrap_or(3600))
-            .bind(rule.bantime_increment.unwrap_or(false))
-            .bind(rule.bantime_multipliers.unwrap_or(vec![1, 2, 4, 8]))
-            .bind(rule.bantime_maxtime_seconds.unwrap_or(604800))
-            .bind(rule.ban_count_decay_days.unwrap_or(30))
-            .bind(rule.ignoreip.unwrap_or_default())
-            .bind(rule.webhook)
+            .bind(rule.user_agent)
+            .bind(rule.method)
+            .bind(rule.referer)
+            .bind(rule.content_type)
+            .bind(rule.accept_language)
+            .bind(rule.x_request_id)
+            .bind(rule.rate_limit_profile_id)
             .bind(rule.active)
             .bind(now)
             .bind(rule.id)
@@ -457,6 +446,14 @@ impl Rule {
         query
             .bind(limit)
             .bind(offset)
+            .map(Self::from_row)
+            .fetch_all(pool)
+            .await
+    }
+
+    pub async fn read_all(pool: &PgPool) -> Result<Vec<Self>, Error> {
+        let sql = "SELECT * FROM rules ORDER BY weight ASC";
+        query(sql)
             .map(Self::from_row)
             .fetch_all(pool)
             .await

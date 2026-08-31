@@ -117,7 +117,10 @@ INSERT INTO settings (key, value) VALUES
 
 -- Seed default rate limit profiles
 INSERT INTO rate_limit_profiles (name, description, max_retry, find_time_seconds, ban_time_seconds, bantime_increment, bantime_multipliers, bantime_maxtime_seconds, ban_count_decay_days, fail_codes) VALUES
-    ('Strict', '3 requests in 10 minutes → 24h ban with escalation', 3, 600, 86400, true, '{1,2,4,8}', 604800, 30, '{401,403,404,429}'),
-    ('Moderate', '5 requests in 10 minutes → 1h ban with escalation', 5, 600, 3600, true, '{1,2,4,8}', 604800, 30, '{401,403,404}'),
-    ('Relaxed', '30 requests in 5 minutes → 30min ban, no escalation', 30, 300, 1800, false, '{1}', 3600, 30, '{401,403}'),
-    ('Scraping', '60 requests in 1 minute → 10min ban with escalation', 60, 60, 600, true, '{1,2,4,8}', 86400, 7, '{401,403,404,429,500}');
+    ('Auth Brute Force', '5 requests in 5 minutes → 15min ban with escalation', 5, 300, 900, true, '{1,2,4,8}', 604800, 30, '{401}'),
+    ('Admin Guard', '3 requests in 5 minutes → 24h ban with escalation', 3, 300, 86400, true, '{1,2,4,8}', 604800, 30, '{401,403}'),
+    ('Path Scanning', '15 requests in 10 minutes → 1h ban', 15, 600, 3600, false, '{1}', 3600, 30, '{401,403,404}'),
+    ('API Abuse', '30 requests in 1 minute → 10min ban', 30, 60, 600, false, '{1}', 600, 30, '{401,403,429,500}'),
+    ('Scraping', '60 requests in 1 minute → 5min ban with escalation', 60, 60, 300, true, '{1,2,4,8}', 86400, 7, '{403,429,500}'),
+    ('Health & Webhooks', '100 requests in 60 seconds → 1min ban', 100, 60, 60, false, '{1}', 60, 30, '{500}'),
+    ('Recidive', '3 reincidences in 48h → 7-day ban (max 30 days)', 3, 172800, 604800, true, '{1,2,4,8}', 2592000, 60, '{403,429}');
