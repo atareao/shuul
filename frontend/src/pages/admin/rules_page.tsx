@@ -17,6 +17,7 @@ const ENDPOINT = "rules";
 
 // Definición de los campos (tipados para Item, que es Rule)
 const FIELDS: FieldDefinition<Item>[] = [
+    { key: 'id', label: 'Id', type: 'number', value: 0, width: 60, visible: true, fixed: 'left' },
     { key: 'active', label: 'Active', type: 'boolean', value: true, width: 45, visible: true },
     { key: 'allow', label: 'Allow', type: 'boolean', value: false, width: 45, visible: true },
     { key: 'store', label: 'Store', type: 'boolean', value: true, width: 45, visible: true },
@@ -84,6 +85,7 @@ export class InnerPage extends React.Component<Props, {}> {
                 dialogMessages={RULE_DIALOG_MESSAGES} 
                 t={this.props.t}
                 hasActions={true}
+                defaultSortField="id"
                 renderHeaderAction={this.renderHeaderAction}
                 renderActionColumn={this.renderActionColumn}
                 dialogRenderer={(params) => (

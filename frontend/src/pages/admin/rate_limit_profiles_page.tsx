@@ -84,6 +84,7 @@ export class InnerPage extends React.Component<Props, {}> {
                 dialogMessages={DIALOG_MESSAGES}
                 t={this.props.t}
                 hasActions={true}
+                defaultSortField="id"
                 renderHeaderAction={this.renderHeaderAction}
                 renderActionColumn={this.renderActionColumn}
                 dialogRenderer={(params) => (

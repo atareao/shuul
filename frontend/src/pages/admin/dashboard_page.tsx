@@ -39,19 +39,20 @@ export class InnerPage extends react.Component<Props, State> {
     }
     componentDidMount = async () => {
 
-        const total_rules = await loadData("rules/info", new Map([["option", "total"]]))
-        const total_active_rules = await loadData("rules/info", new Map([["option", "active"]]))
-        const total_requests = await loadData("requests/info", new Map([["option", "total"]]))
-        const total_filtered_requests = await loadData("requests/info", new Map([["option", "filtered"]]))
-        const total_active_bans = await loadData("bans/info", new Map());
-        console.log("Totals loaded:", total_rules, total_active_rules, total_requests, total_filtered_requests);
+        const [rules_info_res, total_requests_res, total_filtered_requests_res, total_active_bans_res] = await Promise.all([
+            loadData("rules/info/all"),
+            loadData("requests/info", new Map([["option", "total"]])),
+            loadData("requests/info", new Map([["option", "filtered"]])),
+            loadData("bans/info", new Map()),
+        ]);
+        console.log("Totals loaded:", rules_info_res, total_requests_res, total_filtered_requests_res, total_active_bans_res);
         this.setState({
             loading: false,
-            total_rules: total_rules.status === 200 ? total_rules.data as number : 0,
-            total_active_rules: total_active_rules.status === 200 ? total_active_rules.data as number : 0,
-            total_requests: total_requests.status === 200 ? total_requests.data as number : 0,
-            total_filtered_requests: total_filtered_requests.status === 200 ? total_filtered_requests.data as number : 0,
-            total_active_bans: total_active_bans.status === 200 ? total_active_bans.data as number : 0,
+            total_rules: rules_info_res.status === 200 ? (rules_info_res.data as any).total : 0,
+            total_active_rules: rules_info_res.status === 200 ? (rules_info_res.data as any).active : 0,
+            total_requests: total_requests_res.status === 200 ? total_requests_res.data as number : 0,
+            total_filtered_requests: total_filtered_requests_res.status === 200 ? total_filtered_requests_res.data as number : 0,
+            total_active_bans: total_active_bans_res.status === 200 ? total_active_bans_res.data as number : 0,
         });
 
     }
