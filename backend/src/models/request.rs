@@ -35,6 +35,8 @@ pub struct Request {
     pub accept_language: Option<String>,
     pub x_request_id: Option<String>,
     pub rule_id: Option<i32>,
+    #[sqlx(default)]
+    pub rule_name: Option<String>,
     pub created_at: DateTime<Utc>,
 }
 
@@ -242,6 +244,7 @@ impl Request {
             accept_language: row.get("accept_language"),
             x_request_id: row.get("x_request_id"),
             rule_id: row.get("rule_id"),
+            rule_name: row.try_get("rule_name").ok().flatten(),
             created_at: row.get("created_at"),
         }
     }
@@ -278,7 +281,7 @@ impl Request {
 
     /// Lee una petición por su ID.
     pub async fn read(pool: &PgPool, id: i32) -> Result<Self, Error> {
-        let sql = "SELECT * FROM requests WHERE id = $1";
+        let sql = "SELECT requests.*, rules.name as rule_name FROM requests LEFT JOIN rules ON requests.rule_id = rules.id WHERE requests.id = $1";
         query(sql)
             .bind(id)
             .map(Self::from_row)
@@ -432,7 +435,7 @@ impl Request {
             .into_iter()
             .filter_map(|(col, val)| val.as_ref().map(|v| (col, v.clone())))
             .collect();
-        let mut sql = "SELECT * FROM requests WHERE 1=1".to_string();
+        let mut sql = "SELECT requests.*, rules.name as rule_name FROM requests LEFT JOIN rules ON requests.rule_id = rules.id WHERE 1=1".to_string();
         for (i, (col, _)) in active_filters.iter().enumerate() {
             let param_index = i + 1;
             sql.push_str(&format!(" AND {col} LIKE ${param_index}"));
