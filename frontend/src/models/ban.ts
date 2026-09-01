@@ -1,12 +1,9 @@
 export default interface Ban {
-    id: number;
+    id: string;
     ip_address: string;
     rule_id?: number;
-    jail_name: string;
-    banned_at: string;
+    reason: string;
     ban_duration_seconds: number;
     escalation_level: number;
-    reason?: string;
-    expired: boolean;
-    created_at: string;
+    time_remaining_seconds: number;
 }
