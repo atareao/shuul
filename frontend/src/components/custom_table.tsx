@@ -91,7 +91,7 @@ export default class CustomTable<T extends { id: number | string }> extends Reac
             filters: initialFilters,
             dialogMode: DialogModes.NONE,
             selectedItem: undefined,
-            autoRefreshEnabled: false,
+            autoRefreshEnabled: props.autoRefresh === true,
             autoRefreshInterval: props.autoRefreshInterval || 10,
         };
 
@@ -159,7 +159,15 @@ export default class CustomTable<T extends { id: number | string }> extends Reac
     }
 
     private toggleAutoRefresh = () => {
-        this.setState(prev => ({ autoRefreshEnabled: !prev.autoRefreshEnabled }));
+        this.setState(prev => {
+            const next = !prev.autoRefreshEnabled;
+            if (next) {
+                this.startAutoRefresh();
+            } else {
+                this.stopAutoRefresh();
+            }
+            return { autoRefreshEnabled: next };
+        });
     }
 
     private handleIntervalChange = (value: number) => {
@@ -172,6 +180,7 @@ export default class CustomTable<T extends { id: number | string }> extends Reac
 
     private startAutoRefresh = () => {
         this.stopAutoRefresh();
+        if (!this.state.autoRefreshEnabled) return;
         this.autoRefreshTimer = setInterval(() => {
             if (this.state.dialogMode === DialogModes.NONE) {
                 this.fetchData();
@@ -237,11 +246,10 @@ export default class CustomTable<T extends { id: number | string }> extends Reac
         });
         if (this.props.hasActions && this.props.renderActionColumn) {
             columns.push({
-                title: <Text>{this.props.t('Acciones')}</Text>,
+                title: '',
                 key: "operation-actions",
                 align: 'center',
-                width: 10,
-                fixed: 'right',
+                width: 100,
                 render: (item: T) => this.props.renderActionColumn!(item, this.handleEdit, this.handleDelete)
             });
         }
@@ -437,7 +445,7 @@ export default class CustomTable<T extends { id: number | string }> extends Reac
                         pagination={this.state.pagination}
                         loading={this.state.loading}
                         onChange={this.handleTableChange}
-                        scroll={{ x: 'max-content' }}
+                        scroll={{ x: 1000 }}
                     />
                 </Flex>
             </>

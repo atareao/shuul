@@ -9,6 +9,7 @@ import type Item from "@/models/rule"; // Alias para Rule
 import CustomTable from '@/components/custom_table';
 import type { FieldDefinition } from '@/common/types';
 import type { DialogMessages } from '@/components/dialogs/custom_dialog';
+import RuleDialog from '@/components/dialogs/rule_dialog';
 
 // 1. Constantes de configuración (fuera de la clase)
 const TITLE = "Rules";
@@ -16,23 +17,14 @@ const ENDPOINT = "rules";
 
 // Definición de los campos (tipados para Item, que es Rule)
 const FIELDS: FieldDefinition<Item>[] = [
-    { key: 'id', label: 'Id', type: 'number', value: 0, editable: false, fixed: 'left', width: 80 },
-    { key: 'active', label: 'Active', type: 'boolean', value: true, width: 80, visible: true },
-    { key: 'allow', label: 'Allow', type: 'boolean', value: false, width: 80, visible: true },
-    { key: 'store', label: 'Store', type: 'boolean', value: true, width: 80, visible: true },
-    { key: 'weight', label: 'Weight', type: 'number', value: 100, width: 80, visible: true },
-    { key: 'ip_address', label: 'IP Address', type: 'string', value: "", width: 150, filterKey: "ip_address", visible: true },
-    { key: 'protocol', label: 'Protocol', type: 'string', value: "", width: 120, filterKey: "protocol", visible: true },
-    { key: 'fqdn', label: 'FQDN', type: 'string', value: "", width: 200, filterKey: "fqdn", visible: true },
-    { key: 'path', label: 'Path', type: 'string', value: "", width: 140, filterKey: "path", visible: true },
-    { key: 'query', label: 'Query', type: 'string', value: "", width: 180, filterKey: "query", visible: true },
-    { key: 'city_name', label: 'City Name', type: 'string', value: "", width: 150, filterKey: "city_name", visible: true },
-    { key: 'country_name', label: 'Contry Name', type: 'string', value: "", width: 150, filterKey: "country_name", visible: true },
-    { key: 'country_code', label: 'Contry Code', type: 'string', value: "", width: 150, filterKey: "country_code", visible: true },
+    { key: 'active', label: 'Active', type: 'boolean', value: true, width: 45, visible: true },
+    { key: 'allow', label: 'Allow', type: 'boolean', value: false, width: 45, visible: true },
+    { key: 'store', label: 'Store', type: 'boolean', value: true, width: 45, visible: true },
+    { key: 'weight', label: 'Weight', type: 'number', value: 100, width: 60, visible: true },
     { key: 'name', label: 'Name', type: 'string', value: "", width: 150, editable: true, visible: true },
     { key: 'description', label: 'Description', type: 'string', value: "", width: 200, visible: true },
-    { key: 'mode', label: 'Mode', type: 'string', value: "", width: 100, visible: true },
-    { key: 'rate_limit_profile_id', label: 'Profile', type: 'number', value: 0, width: 120, visible: true },
+    { key: 'mode', label: 'Mode', type: 'string', value: "", width: 70, visible: true },
+    { key: 'rate_limit_profile_name', label: 'Profile', type: 'string', value: "", width: 140, visible: true },
 ];
 
 // Mensajes específicos para el CustomDialog de Rules
@@ -94,6 +86,16 @@ export class InnerPage extends React.Component<Props, {}> {
                 hasActions={true}
                 renderHeaderAction={this.renderHeaderAction}
                 renderActionColumn={this.renderActionColumn}
+                dialogRenderer={(params) => (
+                    <RuleDialog
+                        dialogMode={params.dialogMode}
+                        selectedItem={params.selectedItem}
+                        handleCloseDialog={params.handleCloseDialog}
+                        endpoint={params.endpoint}
+                        dialogMessages={params.dialogMessages}
+                        t={this.props.t}
+                    />
+                )}
             />
         );
     }
