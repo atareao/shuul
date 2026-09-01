@@ -15,5 +15,6 @@ export default interface Record {
     accept_language?: string;
     x_request_id?: string;
     rule_id?: number;
+    rule_name?: string;
     created_at?: Date;
 }

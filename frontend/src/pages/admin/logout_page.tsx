@@ -1,21 +1,12 @@
-import React from 'react';
-import { Navigate } from 'react-router';
-
+import { useContext, useEffect } from 'react';
 import AuthContext from '@/components/auth_context';
 
-export default class LogoutPage extends React.Component {
+export default function LogoutPage() {
+    const { logout } = useContext(AuthContext);
 
-    render = () => {
-        return (
-            <AuthContext.Consumer>
-                {({ logout }) => {
-                    logout();
-                    return <Navigate to="/" />
-                }}
-            </AuthContext.Consumer>
-        );
-    }
+    useEffect(() => {
+        logout();
+    }, [logout]);
+
+    return null;
 }
-
-
-

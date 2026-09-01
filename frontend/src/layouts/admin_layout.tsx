@@ -11,6 +11,7 @@ import {
     StopOutlined,
     AppstoreOutlined,
     SettingOutlined,
+    RocketOutlined,
 } from '@ant-design/icons';
 
 import ModeSwitcher from '@/components/mode_switcher';
@@ -41,21 +42,23 @@ function getItem(
 const navigations:{[key: string]: string}  = {
     1: "/admin/dashboard",
     2: "/admin/rules",
-    3: "/admin/requests",
-    4: "/admin/charts",
-    5: "/admin/bans",
-    6: "/admin/templates",
-    7: "/admin/settings",
+    3: "/admin/rate-limit-profiles",
+    4: "/admin/bans",
+    5: "/admin/templates",
+    6: "/admin/requests",
+    7: "/admin/charts",
+    8: "/admin/settings",
 }
 
 const items: MenuItem[] = [
     getItem('Dashboard', '1', <HomeOutlined />),
     getItem('Rules', '2', <OrderedListOutlined />),
-    getItem('Requests', '3', <MenuUnfoldOutlined />),
-    getItem('Charts', '4', <PieChartOutlined />),
-    getItem('Bans', '5', <StopOutlined />),
-    getItem('Templates', '6', <AppstoreOutlined />),
-    getItem('Settings', '7', <SettingOutlined />),
+    getItem('Rate Limit Profiles', '3', <RocketOutlined />),
+    getItem('Bans', '4', <StopOutlined />),
+    getItem('Templates', '5', <AppstoreOutlined />),
+    getItem('Requests', '6', <MenuUnfoldOutlined />),
+    getItem('Charts', '7', <PieChartOutlined />),
+    getItem('Settings', '8', <SettingOutlined />),
 ];
 
 

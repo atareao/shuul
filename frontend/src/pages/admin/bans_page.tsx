@@ -11,11 +11,11 @@ const TITLE = "Active Bans";
 const ENDPOINT = "bans";
 
 const FIELDS: FieldDefinition<Ban>[] = [
-    { key: 'id', label: 'Id', type: 'number', value: 0, editable: false, fixed: 'left', width: 80 },
-    { key: 'ip_address', label: 'IP Address', type: 'string', value: "", width: 150, visible: true },
-    { key: 'reason', label: 'Reason', type: 'string', value: "", width: 200, visible: true },
-    { key: 'ban_duration_seconds', label: 'Duration (s)', type: 'number', value: 0, width: 120, visible: true },
-    { key: 'escalation_level', label: 'Level', type: 'number', value: 0, width: 80, visible: true },
+    { key: 'id', label: 'IP', type: 'string', value: "", width: 140, visible: true },
+    { key: 'reason', label: 'Reason', type: 'string', value: "", width: 250, visible: true },
+    { key: 'ban_duration_seconds', label: 'Duration (s)', type: 'number', value: 0, width: 100, visible: true },
+    { key: 'time_remaining_seconds', label: 'Remaining (s)', type: 'number', value: 0, width: 100, visible: true },
+    { key: 'escalation_level', label: 'Level', type: 'number', value: 0, width: 60, visible: true },
 ];
 
 const BAN_DIALOG_MESSAGES: DialogMessages = {

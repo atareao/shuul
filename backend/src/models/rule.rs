@@ -40,6 +40,7 @@ pub struct Rule {
     pub accept_language: Option<String>,
     pub x_request_id: Option<String>,
     pub rate_limit_profile_id: Option<i32>,
+    pub rate_limit_profile_name: Option<String>,
     pub active: bool,
     created_at: DateTime<Utc>,
     updated_at: DateTime<Utc>,
@@ -246,6 +247,7 @@ impl Rule {
             accept_language: row.get("accept_language"),
             x_request_id: row.get("x_request_id"),
             rate_limit_profile_id: row.get("rate_limit_profile_id"),
+            rate_limit_profile_name: row.try_get("rate_limit_profile_name").ok().flatten(),
             active: row.get("active"),
             created_at: row.get("created_at"),
             updated_at: row.get("updated_at"),
@@ -411,7 +413,7 @@ impl Rule {
             .into_iter()
             .filter_map(|(col, val)| val.as_ref().map(|v| (col, v.clone())))
             .collect();
-        let mut sql = "SELECT * FROM rules WHERE 1=1".to_string();
+        let mut sql = "SELECT rules.*, rate_limit_profiles.name as rate_limit_profile_name FROM rules LEFT JOIN rate_limit_profiles ON rules.rate_limit_profile_id = rate_limit_profiles.id WHERE 1=1".to_string();
         for (i, (col, _)) in active_filters.iter().enumerate() {
             let param_index = i + 1;
             sql.push_str(&format!(" AND {col} LIKE ${param_index}"));
@@ -452,15 +454,12 @@ impl Rule {
     }
 
     pub async fn read_all(pool: &PgPool) -> Result<Vec<Self>, Error> {
-        let sql = "SELECT * FROM rules ORDER BY weight ASC";
-        query(sql)
-            .map(Self::from_row)
-            .fetch_all(pool)
-            .await
+        let sql = "SELECT rules.*, rate_limit_profiles.name as rate_limit_profile_name FROM rules LEFT JOIN rate_limit_profiles ON rules.rate_limit_profile_id = rate_limit_profiles.id ORDER BY weight ASC";
+        query(sql).map(Self::from_row).fetch_all(pool).await
     }
 
     pub async fn read(pool: &PgPool, id: i32) -> Result<Self, Error> {
-        let sql = "SELECT * FROM rules WHERE id = $1";
+        let sql = "SELECT rules.*, rate_limit_profiles.name as rate_limit_profile_name FROM rules LEFT JOIN rate_limit_profiles ON rules.rate_limit_profile_id = rate_limit_profiles.id WHERE rules.id = $1";
         query(sql)
             .bind(id)
             .map(Self::from_row)

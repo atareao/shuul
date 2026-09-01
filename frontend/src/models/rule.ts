@@ -21,6 +21,7 @@ export default interface Rule {
     accept_language?: string;
     x_request_id?: string;
     rate_limit_profile_id?: number;
+    rate_limit_profile_name?: string;
     active?: number;
     created_at?: Date;
     updated_at?: Date;

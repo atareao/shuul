@@ -40,6 +40,7 @@ COPY frontend/package.json frontend/pnpm-lock.yaml frontend/pnpm-workspace.yaml 
 RUN pnpm install --ignore-scripts && pnpm rebuild esbuild
 
 COPY frontend/ ./
+ENV VITE_BASE_URL=""
 RUN CI=true pnpm build
 
 # ═══════════════════════════════════════════════════════════════
