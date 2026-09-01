@@ -7,12 +7,13 @@
 //! 4. Trusted IPs: si `request.ip_address` está en `trusted_ips` → ALLOW (skipped)
 //! 5. Trusted user agents: si `request.user_agent` coincide → ALLOW (skipped)
 //! 6. Check IP baneada → 403 FORBIDDEN
-//! 7. Match contra reglas cacheadas (mode = 'enforce' | '`log_only`')
-//! 8. Si rule match + `rate_limit_profile_id` → rate limit + ban si excede
-//! 9. Si rule match + mode='`log_only`' → log (allow = true)
-//! 10. Si rule match + mode='off' → skip
-//! 11. Persistir si store = true
-//! 12. 200 OK o 403 FORBIDDEN
+//! 7. Match contra reglas cacheadas (mode = 'enforce' | 'log_only')
+//! 8. Si rule match + `rate_limit` → rate limit + ban si excede
+//! 9. Evaluar rate limit de pure rate limiter como efecto lateral
+//! 10. Si rule match + mode='log_only' → log (allow = true)
+//! 11. Si rule match + mode='off' → skip
+//! 12. Persistir si store = true
+//! 13. 200 OK o 403 FORBIDDEN
 //!
 //! # Seguridad de concurrencia
 //!
@@ -20,7 +21,7 @@
 //! garantizar que el future sea `Send` (requerido por axum/tokio).
 
 use crate::models::{
-    AppState, BanManager, EmptyResponse, NewRequest, RateLimitProfile, RateLimiter, Request,
+    AppState, BanManager, CachedRateLimit, EmptyResponse, NewRequest, RateLimiter, Request,
 };
 use axum::{Router, extract::State, http::StatusCode, response::IntoResponse, routing};
 use regex::Regex;
@@ -38,7 +39,7 @@ struct RuleMatch {
     rule_id: i32,
     allow: bool,
     store: bool,
-    rate_limit_profile_id: Option<i32>,
+    rate_limit: Option<CachedRateLimit>,
 }
 
 /// Main entry point for the shuul service.
@@ -131,7 +132,14 @@ pub async fn shuul(
     }
 
     // ── Step 6: Match against cached rules (sync, releases lock before any await) ──
-    let matched: Option<RuleMatch> = {
+    //
+    // Produce DOS valores:
+    //   - matched: la regla normal ganadora (con filtros o sin rate limit), o None
+    //   - rate_limit_candidate: la primera regla pure-rate-limiter encontrada, o None
+    //
+    // Si no hay matched normal pero hay rate_limit_candidate, el candidate se
+    // promociona a matched.
+    let (matched, rate_limit_candidate): (Option<RuleMatch>, Option<RuleMatch>) = {
         let rules = match app_state.rules.lock() {
             Ok(g) => g,
             Err(e) => {
@@ -140,41 +148,65 @@ pub async fn shuul(
             },
         };
 
-        let mut result: Option<RuleMatch> = None;
+        let mut matched: Option<RuleMatch> = None;
+        let mut rate_limit_candidate: Option<RuleMatch> = None;
+
         for cache_rule in rules.iter() {
             if !cache_rule.matches(&request) {
                 continue;
             }
 
+            // Skip rules that are turned off
+            if cache_rule.rule.mode.as_str() == "off" {
+                debug!("Rule mode is 'off', skipping");
+                continue;
+            }
+
+            // Pure rate limiter: no filters + has rate limit → candidate, keep looking
+            if cache_rule.is_pure_rate_limiter() {
+                if rate_limit_candidate.is_none() {
+                    debug!(
+                        "Found pure rate limiter candidate: rule_id={}",
+                        cache_rule.rule.id
+                    );
+                    rate_limit_candidate = Some(RuleMatch {
+                        rule_id: cache_rule.rule.id,
+                        allow: cache_rule.rule.allow,
+                        store: cache_rule.rule.store,
+                        rate_limit: cache_rule.rate_limit.clone(),
+                    });
+                }
+                continue;
+            }
+
+            // Normal rule (has filters or no rate limit)
             match cache_rule.rule.mode.as_str() {
-                "off" => {
-                    // Rule is off — skip entirely, continue to next rule
-                    debug!("Rule mode is 'off', skipping");
-                    continue;
-                },
                 "log_only" => {
                     debug!("Rule mode is 'log_only', allowing without enforcement");
-                    result = Some(RuleMatch {
+                    matched = Some(RuleMatch {
                         rule_id: cache_rule.rule.id,
                         allow: true,
                         store: cache_rule.rule.store,
-                        rate_limit_profile_id: None, // no enforcement in log_only
+                        rate_limit: None, // no enforcement in log_only
                     });
                     break;
                 },
                 _ => {
                     // 'enforce' or any other mode — normal enforcement
-                    result = Some(RuleMatch {
+                    matched = Some(RuleMatch {
                         rule_id: cache_rule.rule.id,
                         allow: cache_rule.rule.allow,
                         store: cache_rule.rule.store,
-                        rate_limit_profile_id: cache_rule.rule.rate_limit_profile_id,
+                        rate_limit: cache_rule.rate_limit.clone(),
                     });
                     break;
                 },
             }
         }
-        result
+
+        // If no normal rule matched, promote the rate limit candidate
+        let matched = matched.or_else(|| rate_limit_candidate.take());
+        (matched, rate_limit_candidate)
     };
     // rules lock is released here
 
@@ -194,24 +226,12 @@ pub async fn shuul(
         save = rm.store;
         request_save = true;
 
-        // ── Step 8: Rate limiter + ban (if profile configured) ──
-        if let Some(profile_id) = rm.rate_limit_profile_id {
+        // ── Step 8: Rate limiter + ban (if cached rate limit configured) ──
+        if let Some(ref rl_config) = rm.rate_limit {
             debug!(
-                "Rule {} has rate_limit_profile_id={}",
-                rm.rule_id, profile_id
+                "Rule {} has rate limit (max={} in {}s)",
+                rm.rule_id, rl_config.max_retry, rl_config.find_time_seconds
             );
-
-            // Load the profile from DB (async, no locks held)
-            let profile = match RateLimitProfile::read(&app_state.pool, profile_id).await {
-                Ok(p) => p,
-                Err(e) => {
-                    warn!("Failed to load RateLimitProfile {profile_id}: {e}");
-                    return EmptyResponse::create(
-                        StatusCode::INTERNAL_SERVER_ERROR,
-                        "Internal error",
-                    );
-                },
-            };
 
             if let Some(ip) = ip_addr {
                 // Rate limiter check (sync)
@@ -227,7 +247,7 @@ pub async fn shuul(
                         },
                     };
                     let rl = rate_limiters.entry(rm.rule_id).or_insert_with(|| {
-                        RateLimiter::new(profile.max_retry as u32, profile.find_time_seconds)
+                        RateLimiter::new(rl_config.max_retry as u32, rl_config.find_time_seconds)
                     });
                     rl.record(ip)
                 };
@@ -235,8 +255,8 @@ pub async fn shuul(
 
                 if should_ban {
                     debug!(
-                        "IP {} exceeded rate limit for rule {}, banning with profile '{}'",
-                        ip, rm.rule_id, profile.name
+                        "IP {} exceeded rate limit for rule {}, banning with profile config",
+                        ip, rm.rule_id,
                     );
 
                     // Ban in memory (sync, releases lock before await)
@@ -251,15 +271,15 @@ pub async fn shuul(
                                 );
                             },
                         };
-                        let ban_duration = if profile.bantime_increment {
+                        let ban_duration = if rl_config.bantime_increment {
                             None // BanManager handles escalation internally
                         } else {
-                            Some(i64::from(profile.ban_time_seconds))
+                            Some(i64::from(rl_config.ban_time_seconds))
                         };
 
                         let reason = format!(
-                            "Rate limit: {} requests in {}s (profile: {})",
-                            profile.max_retry, profile.find_time_seconds, profile.name
+                            "Rate limit: {} requests in {}s",
+                            rl_config.max_retry, rl_config.find_time_seconds
                         );
 
                         // Clone the BanInfo to avoid keeping the lock
@@ -292,7 +312,103 @@ pub async fn shuul(
         debug!("No matching rule found for request: {:?}", &request);
     }
 
-    // ── Step 9: Log summary at info level ──
+    // ── Step 9: Evaluate rate limit of pure rate limiter candidate (side effect) ──
+    //
+    // Si existe un rate_limit_candidate distinto del matched (otra regla ganó),
+    // se evalúa su rate limit igualmente como efecto lateral. Si excede, se
+    // banea la IP sin cambiar la decisión de allow/deny del matched.
+    if let Some(rl_candidate) = rate_limit_candidate {
+        if Some(rl_candidate.rule_id) != request.rule_id {
+            debug!(
+                "Evaluating pure rate limiter side effect: rule_id={}",
+                rl_candidate.rule_id
+            );
+
+            if let Some(ref rl_config) = rl_candidate.rate_limit {
+                if let Some(ip) = ip_addr {
+                    // Rate limiter check (sync)
+                    let should_ban = {
+                        let mut rate_limiters = match app_state.rate_limiter.lock() {
+                            Ok(g) => g,
+                            Err(e) => {
+                                error!("Rate limiter mutex poisoned: {e}");
+                                return EmptyResponse::create(
+                                    StatusCode::INTERNAL_SERVER_ERROR,
+                                    "Internal error",
+                                );
+                            },
+                        };
+                        let rl = rate_limiters
+                            .entry(rl_candidate.rule_id)
+                            .or_insert_with(|| {
+                                RateLimiter::new(
+                                    rl_config.max_retry as u32,
+                                    rl_config.find_time_seconds,
+                                )
+                            });
+                        rl.record(ip)
+                    };
+                    // rate_limiter lock released
+
+                    if should_ban {
+                        debug!(
+                            "IP {} exceeded rate limit for side-effect rule {}, banning",
+                            ip, rl_candidate.rule_id,
+                        );
+
+                        // Ban in memory (sync, releases lock before await)
+                        let ban_info = {
+                            let mut ban_manager = match app_state.ban_manager.lock() {
+                                Ok(g) => g,
+                                Err(e) => {
+                                    error!("Ban manager mutex poisoned: {e}");
+                                    return EmptyResponse::create(
+                                        StatusCode::INTERNAL_SERVER_ERROR,
+                                        "Internal error",
+                                    );
+                                },
+                            };
+                            let ban_duration = if rl_config.bantime_increment {
+                                None
+                            } else {
+                                Some(i64::from(rl_config.ban_time_seconds))
+                            };
+
+                            let reason = format!(
+                                "Rate limit (side-effect): {} requests in {}s",
+                                rl_config.max_retry, rl_config.find_time_seconds
+                            );
+
+                            let info = ban_manager
+                                .ban(ip, Some(rl_candidate.rule_id), reason.clone(), ban_duration)
+                                .clone();
+                            (reason, info)
+                        };
+                        // ban_manager lock released
+
+                        // Persist to database (async, no locks held)
+                        if let Err(e) = BanManager::persist_ban(
+                            &app_state.pool,
+                            ip,
+                            Some(rl_candidate.rule_id),
+                            &ban_info.0,
+                            ban_info.1.ban_duration_seconds,
+                            ban_info.1.escalation_level,
+                        )
+                        .await
+                        {
+                            warn!("Failed to persist ban to DB: {e}");
+                        }
+
+                        // Side-effect bans do NOT change the allow/deny decision
+                        // from the main matched rule
+                    }
+                }
+            }
+        }
+    }
+
+    // ── Step 10: Log summary at info level ──
     let method = request.method.clone().unwrap_or_default();
     let fqdn = request.fqdn.clone().unwrap_or_default();
     let path = request.path.clone().unwrap_or_default();
@@ -307,7 +423,7 @@ pub async fn shuul(
         debug!("→ {method} {fqdn}{path} → BLOCK (rule: {rule_label})");
     }
 
-    // ── Step 10: Persist the request if needed (async) ──
+    // ── Step 11: Persist the request if needed (async) ──
     if request_save && save {
         debug!("Saving request as per rule configuration");
         save_on_cache_or_db(&app_state, request).await;
