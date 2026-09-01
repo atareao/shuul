@@ -3,7 +3,7 @@
 //! CRUD para bans activos: listar, banear manualmente, desbanear.
 
 use crate::models::error::AppError;
-use crate::models::{ApiResponse, AppState, Data};
+use crate::models::{ApiResponse, AppState, BanManager, Data, PagedResponse, Pagination};
 use axum::{
     Json, Router,
     extract::{Query, State},
@@ -14,6 +14,7 @@ use axum::{
 use serde::{Deserialize, Serialize};
 use std::net::IpAddr;
 use std::sync::Arc;
+use tracing::warn;
 pub fn ban_router() -> Router<Arc<AppState>> {
     Router::new()
         .route("/", routing::get(list_handler))
@@ -24,6 +25,7 @@ pub fn ban_router() -> Router<Arc<AppState>> {
 
 #[derive(Debug, Serialize)]
 pub struct BanResponse {
+    pub id: String,
     pub ip_address: String,
     pub rule_id: Option<i32>,
     pub reason: String,
@@ -42,7 +44,8 @@ pub struct BanRequest {
 
 #[derive(Debug, Deserialize)]
 pub struct UnbanParams {
-    pub ip_address: String,
+    pub id: Option<String>,
+    pub ip_address: Option<String>,
     pub rule_id: Option<i32>,
 }
 
@@ -59,6 +62,7 @@ pub async fn list_handler(
             .active_bans()
             .into_iter()
             .map(|(ip, ban)| BanResponse {
+                id: ip.to_string(),
                 ip_address: ip.to_string(),
                 rule_id: ban.rule_id,
                 reason: ban.reason.clone(),
@@ -68,10 +72,20 @@ pub async fn list_handler(
             })
             .collect::<Vec<_>>()
     };
-    Ok(ApiResponse::new(
+    let count = bans.len() as i64;
+    let pagination = Pagination {
+        page: 1,
+        limit: count.max(1) as u32,
+        pages: 1,
+        records: count,
+        prev: None,
+        next: None,
+    };
+    Ok(PagedResponse::new(
         StatusCode::OK,
         "Active bans",
         Data::Some(serde_json::to_value(bans)?),
+        pagination,
     ))
 }
 
@@ -101,6 +115,7 @@ pub async fn ban_handler(
         StatusCode::CREATED,
         "IP banned",
         Data::Some(serde_json::to_value(BanResponse {
+            id: ip.to_string(),
             ip_address: ip.to_string(),
             rule_id: params.rule_id,
             reason: ban_info.reason.clone(),
@@ -116,8 +131,10 @@ pub async fn unban_handler(
     State(app_state): State<Arc<AppState>>,
     Query(params): Query<UnbanParams>,
 ) -> Result<impl IntoResponse, AppError> {
-    let ip: IpAddr = params
-        .ip_address
+    let ip_str = params.id.or(params.ip_address).ok_or_else(|| {
+        AppError::InvalidInput("ip_address or id parameter is required".to_string())
+    })?;
+    let ip: IpAddr = ip_str
         .parse()
         .map_err(|_| AppError::InvalidInput("Invalid IP address".to_string()))?;
 
@@ -130,6 +147,10 @@ pub async fn unban_handler(
     };
 
     if removed {
+        // Persist the unban to the database
+        if let Err(e) = BanManager::remove_from_db(&app_state.pool, &ip, params.rule_id).await {
+            warn!("Failed to persist unban to DB: {e}");
+        }
         Ok(ApiResponse::new(StatusCode::OK, "IP unbanned", Data::None))
     } else {
         Ok(ApiResponse::new(

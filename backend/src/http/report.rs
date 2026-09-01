@@ -60,7 +60,7 @@ async fn report_handler(
     };
 
     // ── Step 2: Match against cached rules (sync, releases lock before any await) ──
-    let matched_rule_id: Option<i32> = {
+    let matched: Option<(i32, i32)> = {
         let rules = match app_state.rules.lock() {
             Ok(g) => g,
             Err(e) => {
@@ -69,7 +69,7 @@ async fn report_handler(
             },
         };
 
-        let mut result: Option<i32> = None;
+        let mut result: Option<(i32, i32)> = None;
         for cache_rule in rules.iter() {
             if !cache_rule.matches(&request) {
                 continue;
@@ -78,7 +78,7 @@ async fn report_handler(
                 continue;
             }
             if let Some(profile_id) = cache_rule.rule.rate_limit_profile_id {
-                result = Some(profile_id);
+                result = Some((cache_rule.rule.id, profile_id));
             }
             break;
         }
@@ -87,10 +87,15 @@ async fn report_handler(
     // rules lock is released here
 
     // ── Step 3: Apply rate limiting if matched and fail_code ──
-    if let Some(profile_id) = matched_rule_id {
+    if let Some((rule_id, profile_id)) = matched {
         debug!(
-            "Report matched rule with rate_limit_profile_id={}",
-            profile_id
+            "Report: {} {} {} (status={}) matched rule #{}, profile #{}",
+            payload.method.as_deref().unwrap_or("?"),
+            payload.path.as_deref().unwrap_or("?"),
+            payload.ip_address,
+            payload.status_code,
+            rule_id,
+            profile_id,
         );
 
         // Load the profile from DB (async, no locks held)
@@ -123,7 +128,7 @@ async fn report_handler(
                             );
                         },
                     };
-                    let rl = rate_limiters.entry(profile_id).or_insert_with(|| {
+                    let rl = rate_limiters.entry(rule_id).or_insert_with(|| {
                         RateLimiter::new(profile.max_retry as u32, profile.find_time_seconds)
                     });
                     rl.record(ip)
@@ -132,8 +137,10 @@ async fn report_handler(
 
                 if should_ban {
                     debug!(
-                        "IP {} exceeded rate limit for profile '{}' via report",
-                        ip, profile.name
+                        "Report: BANNED {} via {} (profile: {})",
+                        ip,
+                        payload.path.as_deref().unwrap_or("?"),
+                        profile.name
                     );
 
                     // Ban in memory (sync, releases lock before await)
@@ -187,6 +194,12 @@ async fn report_handler(
                 status_i32, profile.fail_codes
             );
         }
+    } else {
+        debug!(
+            "Report: no matching rule for {} {}",
+            payload.ip_address,
+            payload.path.as_deref().unwrap_or("?")
+        );
     }
 
     // Always return 200 OK (fire-and-forget semantics)
