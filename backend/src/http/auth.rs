@@ -116,7 +116,9 @@ pub async fn callback_handler(
     {
         let mut states = app_state.oidc_states.lock().await;
         if states.remove(state).is_none() {
-            return Err(AppError::InvalidInput("Invalid or expired state".to_string()));
+            return Err(AppError::InvalidInput(
+                "Invalid or expired state".to_string(),
+            ));
         }
     }
 
@@ -149,7 +151,8 @@ pub async fn callback_handler(
     .await?;
 
     // Fetch user info
-    let userinfo = fetch_userinfo(&metadata.userinfo_endpoint, &token_response.access_token).await?;
+    let userinfo =
+        fetch_userinfo(&metadata.userinfo_endpoint, &token_response.access_token).await?;
 
     // Extract user info claims
     let email = userinfo
@@ -223,7 +226,11 @@ pub async fn sso_status(
         "issuer_url": issuer_url,
     });
 
-    Ok(ApiResponse::new(StatusCode::OK, "SSO status", Data::Some(value)))
+    Ok(ApiResponse::new(
+        StatusCode::OK,
+        "SSO status",
+        Data::Some(value),
+    ))
 }
 
 /// Response from the OIDC token endpoint.

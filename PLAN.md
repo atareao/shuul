@@ -1,78 +1,129 @@
-# Cleanup: Eliminar JwtValidator y código OIDC no usado
+# Plan de Mejora de UX — Vistas de Reglas y Peticiones
 
-> **Para agentic workers:** Implementar task por task, verificando `cargo check` después de cada una.
+## Objetivo
 
-**Goal:** Eliminar `JwtValidator`, `jwt_validator` del `AppState`, y la background task de OIDC lazy init, ya que el middleware ahora valida JWTs con HS256 + `app_state.secret`.
+Mejorar la experiencia de usuario en las vistas de administración de reglas y peticiones, simplificando los campos visibles y añadiendo un diálogo de detalle para las peticiones.
 
-**Architecture:** El middleware ya no usa `JwtValidator`. El `oidc_metadata` sigue siendo necesario para SSO redirect/callback en `auth.rs`, pero `jwt_validator` y su inicialización son código muerto.
+## Arquitectura
 
-**Tech Stack:** Rust, Axum, jsonwebtoken
+Cambios en backend (modelo `Request` con JOIN a `rules`) y frontend (modelo `Record`, simplificación de tablas, nuevo diálogo de detalle). No se modifican rutas ni lógica de negocio existente.
 
----
+## Tareas
 
-### Task 1: Eliminar `JwtValidator` de `models/oidc.rs`
+### Tarea 1: Backend — Añadir `rule_name` al modelo Request
 
-**Files:**
-- Modify: `backend/src/models/oidc.rs`
+**Archivos:**
+- Modificar: `backend/src/models/request.rs`
 
-- [ ] **Step 1: Eliminar `JwtValidator` struct y su impl**
+- [ ] **Paso 1:** Añadir campo `rule_name: Option<String>` al struct `Request`
+      ```rust
+      pub struct Request {
+          // ... campos existentes ...
+          pub rule_name: Option<String>,
+      }
+      ```
 
-Eliminar todo el bloque `pub struct JwtValidator` (líneas 22-26) y su `impl JwtValidator` (líneas 38-104), incluyendo `new()`, `fetch_jwks()` y `validate()`.
+- [ ] **Paso 2:** Modificar `from_row()` para extraer `rule_name` del resultado
+      ```rust
+      rule_name: row.get("rule_name").ok(),
+      ```
 
-- [ ] **Step 2: Verificar compilación**
+- [ ] **Paso 3:** Modificar `read_paged()` para usar LEFT JOIN con `rules`
+      ```sql
+      SELECT requests.*, rules.name as rule_name
+      FROM requests
+      LEFT JOIN rules ON requests.rule_id = rules.id
+      ```
+      Mantener el resto de la cláusula (WHERE, ORDER BY, LIMIT/OFFSET) igual.
 
-Run: `cargo check`
-Expected: PASS (puede quedar warning por `oidc_metadata` no usado en middleware, pero no error)
+- [ ] **Paso 4:** Modificar `read()` (lectura individual) para incluir el mismo LEFT JOIN.
+      ```sql
+      SELECT requests.*, rules.name as rule_name
+      FROM requests
+      LEFT JOIN rules ON requests.rule_id = rules.id
+      WHERE requests.id = $1
+      ```
 
----
+- [ ] **Paso 5:** Dejar `count_paged()` sin cambios (solo cuenta registros, no necesita JOIN).
 
-### Task 2: Eliminar `jwt_validator` de `AppState`
+- [ ] **Paso 6:** Dejar `create_bulk()` y `create()` sin cambios (solo insertan, no leen `rule_name`).
 
-**Files:**
-- Modify: `backend/src/models/mod.rs`
+### Tarea 2: Frontend — Actualizar modelo Record
 
-- [ ] **Step 1: Eliminar `jwt_validator` del struct `AppState`**
+**Archivos:**
+- Modificar: `frontend/src/models/record.ts`
 
-Eliminar la línea:
-```rust
-pub jwt_validator: tokio::sync::RwLock<Option<JwtValidator>>,
-```
+- [ ] **Paso 1:** Añadir campo opcional `rule_name` a la interfaz `Record`
+      ```typescript
+      export interface Record {
+          // ... campos existentes ...
+          rule_name?: string;
+      }
+      ```
 
-- [ ] **Step 2: Verificar compilación**
+### Tarea 3: Frontend — Simplificar campos visibles en RulesPage
 
-Run: `cargo check`
-Expected: PASS
+**Archivos:**
+- Modificar: `frontend/src/pages/admin/rules_page.tsx`
 
----
+- [ ] **Paso 1:** Localizar la definición de columnas de la tabla de reglas.
 
-### Task 3: Eliminar background task de OIDC lazy init en `main.rs`
+- [ ] **Paso 2:** Mantener visibles solo estos campos:
+      - `active`
+      - `allow`
+      - `store`
+      - `weight`
+      - `name`
+      - `description`
+      - `mode`
+      - `profile` (rate_limit_profile_id)
 
-**Files:**
-- Modify: `backend/src/main.rs`
+- [ ] **Paso 3:** Ocultar (poner `visible: false` o eliminar la columna) estos campos:
+      - `id`
+      - `ip_address`
+      - `protocol`
+      - `fqdn`
+      - `path`
+      - `query`
+      - `city_name`
+      - `country_name`
+      - `country_code`
 
-- [ ] **Step 1: Eliminar la background task que fetchea JWKS**
+- [ ] **Paso 4:** Verificar que `custom_table.tsx` ya aplica `ellipsis: { showTitle: true }` en todas las columnas — no es necesario añadirlo.
 
-Eliminar el bloque `tokio::spawn(async move { ... })` que reintenta cada 30s (alrededor de línea 190-220).
+### Tarea 4: Frontend — Simplificar RequestsPage + diálogo de detalle
 
-- [ ] **Step 2: Eliminar `jwt_validator: RwLock::new(None)` de la construcción de `AppState`**
+**Archivos:**
+- Modificar: `frontend/src/pages/admin/requests_page.tsx`
+- Crear: `frontend/src/components/dialogs/request_detail_dialog.tsx`
 
-- [ ] **Step 3: Verificar compilación**
+- [ ] **Paso 1:** En `requests_page.tsx`, mantener visibles solo estos campos:
+      - `created_at`
+      - `rule_name` (en lugar de `rule_id`)
+      - `ip_address`
+      - `fqdn`
+      - `path`
+      - `user_agent` (con label "Agent")
+      - `country_name` (con label "Country")
 
-Run: `cargo check`
-Expected: PASS
+- [ ] **Paso 2:** Ocultar estos campos:
+      - `protocol`
+      - `query`
+      - `method`
+      - `referer`
+      - `content_type`
+      - `accept_language`
+      - `x_request_id`
+      - `city_name`
+      - `country_code`
+      - `rule_id`
 
----
+- [ ] **Paso 3:** Reemplazar la columna de acciones actual (botón "Rule") por un botón "Details" que abra `RequestDetailDialog`.
 
-### Task 4: Simplificar `oidc_metadata` si procede
+- [ ] **Paso 4:** Crear `RequestDetailDialog` en `frontend/src/components/dialogs/request_detail_dialog.tsx`:
+      - Modal de solo lectura con dos tabs:
+        - **General**: `created_at`, `ip_address`, `fqdn`, `path`, `user_agent`, `country_name`, `rule_name`
+        - **Details**: `protocol`, `query`, `method`, `referer`, `content_type`, `accept_language`, `x_request_id`, `city_name`, `country_code`
+      - Botón "Create Rule from Request" al pie del diálogo que abre el `CreateRuleFromRequestDialog` existente.
 
-**Files:**
-- Modify: `backend/src/models/mod.rs`
-
-- [ ] **Step 1: Evaluar si `oidc_metadata` puede volver a `Option` en vez de `RwLock<Option>`**
-
-El middleware ya no lo lee, solo `auth.rs` lo usa bajo `.read().await`. Si sigue siendo `RwLock` no hay problema funcional, pero se puede simplificar.
-
-- [ ] **Step 2: Verificar compilación**
-
-Run: `cargo check`
-Expected: PASS
+- [ ] **Paso 5:** Importar y renderizar `RequestDetailDialog` en `requests_page.tsx`, pasando el registro seleccionado como prop.

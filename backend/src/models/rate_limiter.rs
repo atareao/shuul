@@ -179,7 +179,7 @@ mod tests {
 
         assert!(!rl.record(ip)); // 1st
         assert!(!rl.record(ip)); // 2nd
-        assert!(rl.record(ip));  // 3rd → threshold reached
+        assert!(rl.record(ip)); // 3rd → threshold reached
     }
 
     #[test]

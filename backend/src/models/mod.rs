@@ -28,9 +28,9 @@ pub use oidc::{JwtValidator, OidcMetadata};
 pub use rate_limit_profile::{
     NewRateLimitProfile, RateLimitProfile, ReadRateLimitProfileParams, UpdateRateLimitProfile,
 };
-pub use rate_limiter::RateLimiter;
 #[allow(unused_imports)]
 pub use rate_limiter::CircularTimestamps;
+pub use rate_limiter::RateLimiter;
 pub use report::ReportPayload;
 pub use request::{NewRequest, ReadRequestParams, Request};
 pub use response::{ApiResponse, EmptyResponse, PagedResponse, Pagination};

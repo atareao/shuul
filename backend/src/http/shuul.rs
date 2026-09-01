@@ -292,7 +292,22 @@ pub async fn shuul(
         debug!("No matching rule found for request: {:?}", &request);
     }
 
-    // ── Step 9: Persist the request if needed (async) ──
+    // ── Step 9: Log summary at info level ──
+    let method = request.method.clone().unwrap_or_default();
+    let fqdn = request.fqdn.clone().unwrap_or_default();
+    let path = request.path.clone().unwrap_or_default();
+    let rule_label = request
+        .rule_id
+        .map(|id| format!("#{id}"))
+        .unwrap_or_else(|| "none".to_string());
+
+    if allow {
+        debug!("→ {method} {fqdn}{path} → ALLOW (rule: {rule_label}, store: {save})");
+    } else {
+        debug!("→ {method} {fqdn}{path} → BLOCK (rule: {rule_label})");
+    }
+
+    // ── Step 10: Persist the request if needed (async) ──
     if request_save && save {
         debug!("Saving request as per rule configuration");
         save_on_cache_or_db(&app_state, request).await;

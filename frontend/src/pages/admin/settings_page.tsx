@@ -1,10 +1,16 @@
 import React from 'react';
-import { Card, Form, InputNumber, Button, Typography, message, Flex } from 'antd';
+import { Card, Form, InputNumber, Input, Select, Button, Typography, message, Flex, Tabs, Tag } from 'antd';
+import type { TabsProps } from 'antd';
+import { PlusOutlined, MinusCircleOutlined } from '@ant-design/icons';
 import { BASE_URL } from '@/constants';
 
-const { Title } = Typography;
+const { Title, Text } = Typography;
 
 interface Settings {
+    safe_paths: string[];
+    trusted_ips: string[];
+    trusted_user_agents: string[];
+    default_rule_mode: string;
     log_retention_days: number;
 }
 
@@ -13,6 +19,14 @@ interface State {
     loading: boolean;
     saving: boolean;
 }
+
+const DEFAULT_SETTINGS: Settings = {
+    safe_paths: [],
+    trusted_ips: [],
+    trusted_user_agents: [],
+    default_rule_mode: "enforce",
+    log_retention_days: 30,
+};
 
 export default class SettingsPage extends React.Component<{}, State> {
     constructor(props: {}) {
@@ -48,7 +62,7 @@ export default class SettingsPage extends React.Component<{}, State> {
         }
     }
 
-    handleSave = async (values: { log_retention_days: number }) => {
+    handleSave = async (values: Record<string, any>) => {
         this.setState({ saving: true });
         const token = localStorage.getItem("token");
         try {
@@ -74,37 +88,227 @@ export default class SettingsPage extends React.Component<{}, State> {
         }
     }
 
+    private updateListField = (key: 'safe_paths' | 'trusted_ips' | 'trusted_user_agents', index: number, value: string) => {
+        const settings = { ...this.state.settings } as Settings;
+        settings[key][index] = value;
+        this.setState({ settings });
+    }
+
+    private addListField = (key: 'safe_paths' | 'trusted_ips' | 'trusted_user_agents') => {
+        const settings = { ...this.state.settings } as Settings;
+        settings[key] = [...settings[key], ""];
+        this.setState({ settings });
+    }
+
+    private removeListField = (key: 'safe_paths' | 'trusted_ips' | 'trusted_user_agents', index: number) => {
+        const settings = { ...this.state.settings } as Settings;
+        settings[key] = settings[key].filter((_, i) => i !== index);
+        this.setState({ settings });
+    }
+
+    private renderListEditor = (
+        key: 'safe_paths' | 'trusted_ips' | 'trusted_user_agents',
+        placeholder: string,
+        helpText: string,
+    ) => {
+        const items = this.state.settings?.[key] ?? [];
+        return (
+            <Flex vertical gap="small">
+                <Text type="secondary">{helpText}</Text>
+                {items.map((item, index) => (
+                    <Flex key={index} align="center" gap="small">
+                        <Input
+                            style={{ flex: 1 }}
+                            value={item}
+                            placeholder={placeholder}
+                            onChange={(e) => this.updateListField(key, index, e.target.value)}
+                        />
+                        <Button
+                            type="text"
+                            danger
+                            icon={<MinusCircleOutlined />}
+                            onClick={() => this.removeListField(key, index)}
+                        />
+                    </Flex>
+                ))}
+                <Button
+                    type="dashed"
+                    onClick={() => this.addListField(key)}
+                    icon={<PlusOutlined />}
+                    style={{ width: 'fit-content' }}
+                >
+                    Add
+                </Button>
+            </Flex>
+        );
+    }
+
+    private handleGeneralSave = (values: { default_rule_mode: string; log_retention_days: number }) => {
+        this.handleSave(values);
+    }
+
+    private handleListSave = (key: 'safe_paths' | 'trusted_ips' | 'trusted_user_agents') => {
+        const values: Record<string, any> = {};
+        values[key] = this.state.settings?.[key]?.filter(s => s.trim() !== "") ?? [];
+        this.handleSave(values);
+    }
+
     render() {
         if (this.state.loading) {
             return <Flex justify="center" align="center" style={{ minHeight: 200 }}><Title level={4}>Loading...</Title></Flex>;
         }
 
-        return (
-            <Flex vertical gap="middle" style={{ maxWidth: 600, margin: '0 auto' }}>
-                <Title level={3}>Settings</Title>
-                <Card title="Data Retention">
-                    <Form
-                        layout="vertical"
-                        onFinish={this.handleSave}
-                        initialValues={this.state.settings || { log_retention_days: 30 }}
-                    >
-                        <Form.Item
-                            label="Log retention (days)"
-                            name="log_retention_days"
-                            rules={[
-                                { required: true, message: 'Please set retention days' },
-                                { type: 'number', min: 1, max: 365, message: 'Must be between 1 and 365' },
-                            ]}
+        const settings = this.state.settings || DEFAULT_SETTINGS;
+
+        const tabItems: TabsProps['items'] = [
+            {
+                key: 'general',
+                label: 'General',
+                children: (
+                    <Card>
+                        <Form
+                            layout="vertical"
+                            onFinish={this.handleGeneralSave}
+                            initialValues={{
+                                default_rule_mode: settings.default_rule_mode,
+                                log_retention_days: settings.log_retention_days,
+                            }}
                         >
-                            <InputNumber min={1} max={365} style={{ width: '100%' }} />
-                        </Form.Item>
-                        <Form.Item>
-                            <Button type="primary" htmlType="submit" loading={this.state.saving}>
-                                Save Settings
+                            <Form.Item
+                                label="Default Rule Mode"
+                                name="default_rule_mode"
+                                help="Default mode for new rules created from templates"
+                            >
+                                <Select
+                                    options={[
+                                        { value: 'enforce', label: 'Enforce' },
+                                        { value: 'log_only', label: 'Log Only' },
+                                        { value: 'off', label: 'Off' },
+                                    ]}
+                                    style={{ width: 200 }}
+                                />
+                            </Form.Item>
+                            <Form.Item
+                                label="Log Retention (days)"
+                                name="log_retention_days"
+                                rules={[
+                                    { required: true, message: 'Please set retention days' },
+                                    { type: 'number', min: 1, max: 365, message: 'Must be between 1 and 365' },
+                                ]}
+                            >
+                                <InputNumber min={1} max={365} style={{ width: 200 }} />
+                            </Form.Item>
+                            <Form.Item>
+                                <Button type="primary" htmlType="submit" loading={this.state.saving}>
+                                    Save General Settings
+                                </Button>
+                            </Form.Item>
+                        </Form>
+                    </Card>
+                ),
+            },
+            {
+                key: 'safe-paths',
+                label: 'Safe Paths',
+                children: (
+                    <Card
+                        title="Safe Paths"
+                        extra={
+                            <Button
+                                type="primary"
+                                loading={this.state.saving}
+                                onClick={() => this.handleListSave('safe_paths')}
+                            >
+                                Save Safe Paths
                             </Button>
-                        </Form.Item>
-                    </Form>
-                </Card>
+                        }
+                    >
+                        {this.renderListEditor(
+                            'safe_paths',
+                            'e.g. ^/api/health$',
+                            'Requests matching these regex patterns will be allowed without any filtering. One pattern per line.',
+                        )}
+                        {settings.safe_paths.length > 0 && (
+                            <Flex wrap gap="small" style={{ marginTop: 16 }}>
+                                <Text strong style={{ width: '100%' }}>Current patterns:</Text>
+                                {settings.safe_paths.map((p, i) => (
+                                    <Tag key={i} color="blue">{p}</Tag>
+                                ))}
+                            </Flex>
+                        )}
+                    </Card>
+                ),
+            },
+            {
+                key: 'trusted-ips',
+                label: 'Trusted IPs',
+                children: (
+                    <Card
+                        title="Trusted IPs"
+                        extra={
+                            <Button
+                                type="primary"
+                                loading={this.state.saving}
+                                onClick={() => this.handleListSave('trusted_ips')}
+                            >
+                                Save Trusted IPs
+                            </Button>
+                        }
+                    >
+                        {this.renderListEditor(
+                            'trusted_ips',
+                            'e.g. 10.0.0.0/8',
+                            'IPs or CIDR ranges that will bypass all filtering. One per line.',
+                        )}
+                        {settings.trusted_ips.length > 0 && (
+                            <Flex wrap gap="small" style={{ marginTop: 16 }}>
+                                <Text strong style={{ width: '100%' }}>Current ranges:</Text>
+                                {settings.trusted_ips.map((ip, i) => (
+                                    <Tag key={i} color="green">{ip}</Tag>
+                                ))}
+                            </Flex>
+                        )}
+                    </Card>
+                ),
+            },
+            {
+                key: 'trusted-uas',
+                label: 'Trusted User Agents',
+                children: (
+                    <Card
+                        title="Trusted User Agents"
+                        extra={
+                            <Button
+                                type="primary"
+                                loading={this.state.saving}
+                                onClick={() => this.handleListSave('trusted_user_agents')}
+                            >
+                                Save Trusted UAs
+                            </Button>
+                        }
+                    >
+                        {this.renderListEditor(
+                            'trusted_user_agents',
+                            'e.g. ^kube-probe',
+                            'User-Agent regex patterns that will bypass all filtering. One per line.',
+                        )}
+                        {settings.trusted_user_agents.length > 0 && (
+                            <Flex wrap gap="small" style={{ marginTop: 16 }}>
+                                <Text strong style={{ width: '100%' }}>Current patterns:</Text>
+                                {settings.trusted_user_agents.map((ua, i) => (
+                                    <Tag key={i} color="purple">{ua}</Tag>
+                                ))}
+                            </Flex>
+                        )}
+                    </Card>
+                ),
+            },
+        ];
+
+        return (
+            <Flex vertical gap="middle" style={{ maxWidth: 800, margin: '0 auto' }}>
+                <Title level={3}>Settings</Title>
+                <Tabs defaultActiveKey="general" items={tabItems} size="large" />
             </Flex>
         );
     }
