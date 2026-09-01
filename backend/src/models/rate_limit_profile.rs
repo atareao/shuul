@@ -164,8 +164,21 @@ impl RateLimitProfile {
         }
         let limit_index = active_filters.len() + 1;
         let offset_index = limit_index + 1;
-        if let Some(sort_by) = params.sort_by.as_ref()
-            && ["name", "max_retry", "ban_time_seconds", "created_at"].contains(&sort_by.as_str())
+        let sort_by = params.sort_by.as_deref().unwrap_or("id");
+        if [
+            "id",
+            "name",
+            "description",
+            "max_retry",
+            "ban_time_seconds",
+            "bantime_increment",
+            "ban_count_decay_days",
+            "find_time_seconds",
+            "bantime_maxtime_seconds",
+            "created_at",
+            "updated_at",
+        ]
+        .contains(&sort_by)
         {
             if params.asc.unwrap_or(true) {
                 sql.push_str(&format!(" ORDER BY {sort_by} ASC"));
@@ -180,7 +193,8 @@ impl RateLimitProfile {
             query = query.bind(value);
         }
         let limit = params.limit.unwrap_or(DEFAULT_LIMIT) as i32;
-        let offset = ((params.page.unwrap_or(DEFAULT_PAGE) - 1) as i32) * limit;
+        let page = params.page.unwrap_or(DEFAULT_PAGE).max(1);
+        let offset = ((page - 1) as i32) * limit;
         query
             .bind(limit)
             .bind(offset)

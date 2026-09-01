@@ -55,26 +55,29 @@ export class InnerPage extends react.Component<Props, State> {
 
         if (all) {
             this.setState({ loading: true });
-            const top_countries = await loadData("requests/top_countries");
-            const top_rules = await loadData("requests/top_rules");
-
-            // 2. USAR unit y last EN LA LLAMADA
-            const evolution_data = await loadData(`requests/evolution?unit=${unit}&last=${last}`);
-
-            console.log("Evolution Call:", `requests/evolution?unit=${unit}&last=${last}`); // <<== IMPRIMIR LA LLAMADA COMPLETA
-            console.log("Evolution Data:", evolution_data);
+            const [top_countries_res, top_rules_res, evolution_data_res] = await Promise.all([
+                loadData("requests/top_countries"),
+                loadData("requests/top_rules"),
+                loadData("requests/evolution", new Map([
+                    ["unit", unit],
+                    ["last", last.toString()],
+                ])),
+            ]);
 
             this.setState({
                 loading: false,
-                top_countries: top_countries.status === 200 ? top_countries.data as Array<[string, number, number]> : [],
-                top_rules: top_countries.status === 200 ? top_rules.data as Array<[string, number, number]> : [],
-                evolution_data: evolution_data.status === 200 ? evolution_data.data as Array<TimeSeries> : [],
+                top_countries: top_countries_res.status === 200 ? top_countries_res.data as Array<[string, number, number]> : [],
+                top_rules: top_rules_res.status === 200 ? top_rules_res.data as Array<[string, number, number]> : [],
+                evolution_data: evolution_data_res.status === 200 ? evolution_data_res.data as Array<TimeSeries> : [],
             });
         } else {
             this.setState({ loading: true });
 
             // 3. USAR unit y last EN LA LLAMADA
-            const evolution_data = await loadData(`requests/evolution?unit=${unit}&last=${last}`);
+            const evolution_data = await loadData("requests/evolution", new Map([
+                ["unit", unit],
+                ["last", last.toString()],
+            ]));
 
             console.log("Evolution Call:", `requests/evolution?unit=${unit}&last=${last}`); // <<== IMPRIMIR LA LLAMADA COMPLETA
             console.log("Evolution Data:", evolution_data);

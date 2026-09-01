@@ -75,6 +75,7 @@ impl JwtValidator {
     /// - `exp` claim is not expired
     ///
     /// Returns the decoded claims on success.
+    #[allow(dead_code)]
     pub fn validate_id_token(
         &self,
         id_token: &str,

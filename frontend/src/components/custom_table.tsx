@@ -1,12 +1,13 @@
 import React from "react";
 import { Table, Input, Flex, Typography, Switch, Select } from 'antd';
 import type { GetProp, TableProps, TableColumnsType } from 'antd';
-import type { SorterResult } from 'antd/es/table/interface';
+import type { FilterValue, SorterResult, TableCurrentDataSource } from 'antd/es/table/interface';
 import { CheckOutlined, CloseOutlined } from '@ant-design/icons';
 const { Text } = Typography;
 type TablePaginationConfig = Exclude<GetProp<TableProps, 'pagination'>, boolean>;
 
 import { loadData, mapsEqual, debounce } from '@/common/utils';
+import type { DebouncedFn } from '@/common/utils';
 import type { DialogMode, FieldDefinition } from '@/common/types';
 import { DialogModes } from '@/common/types';
 import CustomDialog from '@/components/dialogs/custom_dialog';
@@ -54,6 +55,7 @@ interface State<T> {
     dialogMode: DialogMode;
     autoRefreshEnabled: boolean;
     autoRefreshInterval: number;
+    totalPages: number;
 }
 
 const getNestedValue = (obj: any, path: string): any => {
@@ -73,7 +75,7 @@ const getNestedValue = (obj: any, path: string): any => {
 
 export default class CustomTable<T extends { id: number | string }> extends React.Component<Props<T>, State<T>> {
     columns: TableColumnsType<T>;
-    private debouncedSetFilter: (key: string, value: string) => void;
+    private debouncedSetFilter: DebouncedFn<(key: string, value: string) => void>;
     private autoRefreshTimer: ReturnType<typeof setInterval> | null = null;
 
     constructor(props: Props<T>) {
@@ -85,7 +87,7 @@ export default class CustomTable<T extends { id: number | string }> extends Reac
         this.state = {
             items: [],
             loading: false,
-            pagination: { current: 1, pageSize: 9, total: 0 },
+            pagination: { current: 1, pageSize: 10, total: 0 },
             sortField: props.defaultSortField || 'created_at',
             sortOrder: props.defaultSortDesc ? 'descend' : undefined,
             filters: initialFilters,
@@ -93,6 +95,7 @@ export default class CustomTable<T extends { id: number | string }> extends Reac
             selectedItem: undefined,
             autoRefreshEnabled: props.autoRefresh === true,
             autoRefreshInterval: props.autoRefreshInterval || 10,
+            totalPages: 0,
         };
 
         this.columns = this.getColumns();
@@ -257,74 +260,77 @@ export default class CustomTable<T extends { id: number | string }> extends Reac
     }
 
     handleTableChange: TableProps<T>['onChange'] = async (
-        pagination: any,
-        _filters: any,
-        sorter: any,
-        _extra: any,
+        pagination: TablePaginationConfig,
+        _filters: Record<string, FilterValue | null>,
+        sorter: SorterResult<T> | SorterResult<T>[],
+        _extra: TableCurrentDataSource<T>,
     ) => {
-        const rawSortField = (sorter as SorterResult<T>).field as SorterResult<any>['field'];
+        // sorter may be an array, use first element if so
+        const effectiveSorter = Array.isArray(sorter) ? sorter[0] : sorter;
+        const rawSortField = effectiveSorter.field as SorterResult<any>['field'];
         const fieldDefinition = this.props.fields.find(f => f.key === rawSortField);
         const newSortField = fieldDefinition?.sortKey || rawSortField;
-        const newSortOrder = (sorter as SorterResult<T>).order;
+        const newSortOrder = effectiveSorter.order;
 
-        this.setState((prevState) => {
-            const isPageSizeChanged = pagination.pageSize !== prevState.pagination?.pageSize;
-            const isPageChanged = prevState.pagination?.current !== pagination.current;
-
-            return {
-                ...prevState,
-                pagination: { ...prevState.pagination, ...pagination },
-                sortOrder: newSortOrder,
-                sortField: newSortField,
-                items: (isPageSizeChanged || isPageChanged) ? [] : [...prevState.items],
-                loading: (isPageSizeChanged || isPageChanged || prevState.sortOrder !== newSortOrder || prevState.sortField !== newSortField) ? true : prevState.loading,
-            }
-        });
+        this.setState((prevState) => ({
+            pagination: { ...prevState.pagination, ...pagination },
+            sortOrder: newSortOrder,
+            sortField: newSortField,
+            loading: true,
+        }));
+        this.fetchData(pagination.current, pagination.pageSize, newSortField as string | undefined, newSortOrder);
     }
 
-    fetchData = async () => {
+    fetchData = async (page?: number, pageSize?: number, sortField?: string, sortOrder?: string | null) => {
         if (this.state.dialogMode !== DialogModes.NONE) {
             return;
         }
         this.setState({ loading: true });
-        let sortBy = this.state.sortField?.toString().trim() || 'created_at';
-        const params: Map<string, string> = new Map([
-            ["page", this.state.pagination?.current?.toString() || "1"],
-            ["limit", this.state.pagination?.pageSize?.toString() || "10"],
-            ["sort_by", sortBy],
-        ]);
-        this.props.params?.forEach((value, key) => {
-            params.set(key, value);
-        });
-        const sortOrder = this.state.sortOrder;
-        if (sortOrder === 'ascend') {
-            params.set("asc", 'true');
-        } else if (sortOrder === 'descend') {
-            params.set("asc", 'false');
-        }
-        this.state.filters.forEach((value, fieldKey) => {
-            if (value && value.length > 0) {
-                const fieldDefinition = this.props.fields.find(f => f.key === fieldKey);
-                const apiFilterKey = fieldDefinition?.filterKey || fieldKey;
-                params.set(apiFilterKey, value);
+        try {
+            const currentPage = page ?? this.state.pagination?.current ?? 1;
+            const currentLimit = pageSize ?? this.state.pagination?.pageSize ?? 10;
+            const currentSortField = (sortField ?? this.state.sortField?.toString())?.trim() || 'created_at';
+            const params: Map<string, string> = new Map([
+                ["page", currentPage.toString()],
+                ["limit", currentLimit.toString()],
+                ["sort_by", currentSortField],
+            ]);
+            this.props.params?.forEach((value, key) => {
+                params.set(key, value);
+            });
+            const currentSortOrder = sortOrder ?? this.state.sortOrder;
+            if (currentSortOrder === 'ascend') {
+                params.set("asc", 'true');
+            } else if (currentSortOrder === 'descend') {
+                params.set("asc", 'false');
             }
-        });
-        const responseJson = await loadData<T[]>(this.props.endpoint, params);
-        console.log(responseJson.data);
-        if (responseJson.status === 200 && responseJson.data) {
-            this.setState(prevState => ({
-                ...prevState,
-                items: responseJson.data!,
-                loading: false,
-                pagination: {
-                    ...prevState.pagination,
-                    current: responseJson.pagination?.page || 1,
-                    pageSize: responseJson.pagination?.limit || 10,
-                    total: responseJson.pagination?.records || 0,
+            this.state.filters.forEach((value, fieldKey) => {
+                if (value && value.length > 0) {
+                    const fieldDefinition = this.props.fields.find(f => f.key === fieldKey);
+                    const apiFilterKey = fieldDefinition?.filterKey || fieldKey;
+                    params.set(apiFilterKey, value);
                 }
-            }));
-        } else {
-            this.setState(prevState => ({ ...prevState, loading: false }));
+            });
+            const responseJson = await loadData<T[]>(this.props.endpoint, params);
+            if (responseJson.status === 200) {
+                this.setState(prevState => ({
+                    ...prevState,
+                    items: responseJson.data || [],
+                    loading: false,
+                    totalPages: responseJson.pagination?.pages || 0,
+                    pagination: {
+                        ...prevState.pagination,
+                        current: responseJson.pagination?.page || 1,
+                        pageSize: responseJson.pagination?.limit || 10,
+                        total: responseJson.pagination?.records || 0,
+                    }
+                }));
+            } else {
+                this.setState(prevState => ({ ...prevState, items: [], loading: false }));
+            }
+        } catch (error) {
+            console.error('Error fetching data:', error);
+            this.setState(prevState => ({ ...prevState, items: [], loading: false }));
         }
     }
 
@@ -337,32 +343,31 @@ export default class CustomTable<T extends { id: number | string }> extends Reac
 
     componentWillUnmount = () => {
         this.stopAutoRefresh();
+        this.debouncedSetFilter.cancel();
     }
 
     componentDidUpdate = async (prevProps: Props<T>, prevState: State<T>) => {
+        // Reconstruir columnas si los fields cambiaron
         if (prevProps.fields !== this.props.fields) {
             this.columns = this.getColumns();
         }
 
-        const filtersHaveChanged = !mapsEqual(prevState.filters, this.state.filters);
+        // Si el diálogo se cerró, recargar datos
         const dialogHasClosed = prevState.dialogMode !== DialogModes.NONE && this.state.dialogMode === DialogModes.NONE;
-
         if (dialogHasClosed) {
             await this.fetchData();
             return;
-        } else if (this.state.dialogMode !== DialogModes.NONE) {
+        }
+
+        // Si hay un diálogo abierto, no hacer nada más
+        if (this.state.dialogMode !== DialogModes.NONE) {
             return;
         }
 
-        if (prevState.pagination?.current !== this.state.pagination?.current ||
-            this.state.pagination?.pageSize !== prevState.pagination?.pageSize ||
-            this.state.sortField !== prevState.sortField ||
-            this.state.sortOrder !== prevState.sortOrder ||
-            filtersHaveChanged
-        ) {
-            if (filtersHaveChanged) {
-                this.columns = this.getColumns();
-            }
+        // Detectar cambios en filtros (paginación y sort los maneja handleTableChange)
+        const filtersHaveChanged = !mapsEqual(prevState.filters, this.state.filters);
+        if (filtersHaveChanged) {
+            this.columns = this.getColumns();
             await this.fetchData();
         }
     }
@@ -370,6 +375,15 @@ export default class CustomTable<T extends { id: number | string }> extends Reac
     render = () => {
         const titleText = this.props.t(this.props.title);
         const { hasActions, renderHeaderAction } = this.props;
+
+        // Computed pagination config with size changer and total display
+        const paginationConfig: TablePaginationConfig = {
+            ...this.state.pagination,
+            showSizeChanger: true,
+            pageSizeOptions: ['10', '50', '100'],
+            showTotal: (total: number, _range: [number, number]) =>
+                `Total: ${total} records (${this.state.totalPages} pages)`,
+        };
 
         let dialogUI: React.ReactNode | null = null;
 
@@ -440,9 +454,9 @@ export default class CustomTable<T extends { id: number | string }> extends Reac
                         style={{ width: '100%' }}
                         columns={this.columns}
                         rowKey={record => record.id.toString()}
-                        dataSource={this.state.items}
+                        dataSource={this.state.items || []}
                         sortDirections={['ascend', 'descend']}
-                        pagination={this.state.pagination}
+                        pagination={paginationConfig}
                         loading={this.state.loading}
                         onChange={this.handleTableChange}
                         scroll={{ x: 1000 }}

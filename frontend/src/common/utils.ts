@@ -99,12 +99,21 @@ export const toCapital = (s: string): string => {
 }
 
 
-export const debounce = (func: (...args: any[]) => void, delay: number) => {
+export interface DebouncedFn<T extends (...args: any[]) => void> {
+    (...args: Parameters<T>): void;
+    cancel: () => void;
+}
+
+export const debounce = <T extends (...args: any[]) => void>(func: T, delay: number): DebouncedFn<T> => {
     let timeoutId: ReturnType<typeof setTimeout>;
-    return function(this: any, ...args: any[]) {
+    const debounced = function(this: any, ...args: any[]) {
         clearTimeout(timeoutId);
         timeoutId = setTimeout(() => func.apply(this, args), delay);
+    } as DebouncedFn<T>;
+    debounced.cancel = () => {
+        clearTimeout(timeoutId);
     };
+    return debounced;
 };
 
 /**
