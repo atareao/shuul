@@ -15,7 +15,7 @@
 mod constants;
 mod http;
 mod models;
-mod templates;
+
 
 use axum::{
     Router,
