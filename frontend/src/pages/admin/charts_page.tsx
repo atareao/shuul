@@ -56,9 +56,9 @@ export class InnerPage extends react.Component<Props, State> {
         if (all) {
             this.setState({ loading: true });
             const [top_countries_res, top_rules_res, evolution_data_res] = await Promise.all([
-                loadData("requests/top_countries"),
-                loadData("requests/top_rules"),
-                loadData("requests/evolution", new Map([
+                loadData("stats/top_countries"),
+                loadData("stats/top_rules"),
+                loadData("stats/evolution", new Map([
                     ["unit", unit],
                     ["last", last.toString()],
                 ])),
@@ -74,12 +74,12 @@ export class InnerPage extends react.Component<Props, State> {
             this.setState({ loading: true });
 
             // 3. USAR unit y last EN LA LLAMADA
-            const evolution_data = await loadData("requests/evolution", new Map([
+            const evolution_data = await loadData("stats/evolution", new Map([
                 ["unit", unit],
                 ["last", last.toString()],
             ]));
 
-            console.log("Evolution Call:", `requests/evolution?unit=${unit}&last=${last}`); // <<== IMPRIMIR LA LLAMADA COMPLETA
+            console.log("Evolution Call:", `stats/evolution?unit=${unit}&last=${last}`); // <<== IMPRIMIR LA LLAMADA COMPLETA
             console.log("Evolution Data:", evolution_data);
 
             this.setState({
