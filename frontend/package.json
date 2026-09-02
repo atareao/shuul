@@ -10,9 +10,8 @@
     "preview": "vite preview"
   },
   "dependencies": {
+    "@ant-design/charts": "^2.6.7",
     "@ant-design/icons": "^6.3.2",
-    "@nivo/line": "^0.99.0",
-    "@nivo/pie": "^0.99.0",
     "antd": "^6.6.1",
     "class-variance-authority": "^0.7.1",
     "i18next": "^25.10.10",
