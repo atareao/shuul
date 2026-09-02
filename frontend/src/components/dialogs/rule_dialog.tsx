@@ -1,6 +1,7 @@
 import { useState, useEffect, useCallback } from "react";
 import { Modal, Typography, Flex, Input, InputNumber, Switch, Alert, Tabs, Select } from "antd";
 import type { TabsProps } from "antd";
+import { GlobalOutlined, CloudServerOutlined, FileSearchOutlined } from '@ant-design/icons';
 import { BASE_URL } from '@/constants';
 import type { DialogMode } from '@/common/types';
 import { DialogModes } from '@/common/types';
@@ -29,6 +30,7 @@ const DEFAULT_VALUES: Record<string, any> = {
     name: "",
     description: "",
     mode: "enforce",
+    pipeline: "waf",
     ip_address: "",
     protocol: "",
     fqdn: "",
@@ -59,6 +61,7 @@ function initializeFromItem(item?: Item): Record<string, any> {
         name: item.name ?? "",
         description: item.description ?? "",
         mode: item.mode ?? "enforce",
+        pipeline: item.pipeline ?? "waf",
         ip_address: item.ip_address ?? "",
         protocol: item.protocol ?? "",
         fqdn: item.fqdn ?? "",
@@ -87,6 +90,7 @@ function formatForApi(values: Record<string, any>): Record<string, any> {
         name: values.name || null,
         description: values.description || null,
         mode: values.mode || "enforce",
+        pipeline: values.pipeline || "waf",
         ip_address: values.ip_address || null,
         protocol: values.protocol || null,
         fqdn: values.fqdn || null,
@@ -302,100 +306,114 @@ export default function RuleDialog({
 
     const genTab = (
         <Flex vertical gap="middle" style={{ paddingTop: 16 }}>
-            <Flex align="center" gap="middle" wrap>
+            <Flex align="center" gap="small">
+                <Text style={{ width: 120, flexShrink: 0 }}>{t("Active")}</Text>
+                <Switch
+                    checked={Boolean(formValues.active)}
+                    onChange={(checked) => updateField("active", checked)}
+                    disabled={disabled}
+                />
+            </Flex>
+            {formValues.pipeline !== "jail" && (
                 <Flex align="center" gap="small">
-                    <Text style={{ fontSize: 13 }}>{t("Active")}</Text>
-                    <Switch
-                        checked={Boolean(formValues.active)}
-                        onChange={(checked) => updateField("active", checked)}
-                        disabled={disabled}
-                        size="small"
-                    />
-                </Flex>
-                <Flex align="center" gap="small">
-                    <Text style={{ fontSize: 13 }}>{t("Allow")}</Text>
+                    <Text style={{ width: 120, flexShrink: 0 }}>{t("Allow")}</Text>
                     <Switch
                         checked={Boolean(formValues.allow)}
                         onChange={(checked) => updateField("allow", checked)}
                         disabled={disabled}
-                        size="small"
                     />
                 </Flex>
-                <Flex align="center" gap="small">
-                    <Text style={{ fontSize: 13 }}>{t("Store")}</Text>
-                    <Switch
-                        checked={Boolean(formValues.store)}
-                        onChange={(checked) => updateField("store", checked)}
-                        disabled={disabled}
-                        size="small"
-                    />
-                </Flex>
-            </Flex>
+            )}
             <Flex align="center" gap="small">
-                <Text style={{ fontSize: 13 }}>{t("Weight")}</Text>
+                <Text style={{ width: 120, flexShrink: 0 }}>{t("Store")}</Text>
+                <Switch
+                    checked={Boolean(formValues.store)}
+                    onChange={(checked) => updateField("store", checked)}
+                    disabled={disabled}
+                />
+            </Flex>
+            {renderSelectRow("Pipeline", "pipeline", [
+                { value: "waf", label: "WAF" },
+                { value: "jail", label: "Jail" },
+            ])}
+            <Flex align="center" gap="small">
+                <Text style={{ width: 120, flexShrink: 0 }}>{t("Weight")}</Text>
                 <InputNumber
-                    style={{ width: 100 }}
+                    style={{ width: "100%" }}
                     value={formValues.weight as number}
                     min={1}
                     max={99999}
                     onChange={(value) => updateField("weight", value ?? 100)}
                     disabled={disabled}
-                    size="small"
                 />
             </Flex>
             {renderInputRow("Name", "name")}
             {renderInputRow("Description", "description")}
-            {renderSelectRow("Mode", "mode", [
+            {formValues.pipeline !== "jail" && renderSelectRow("Mode", "mode", [
                 { value: "enforce", label: "Enforce" },
                 { value: "log_only", label: "Log Only" },
                 { value: "off", label: "Off" },
             ])}
-            {renderSelectRow("Rate Limit Profile", "rate_limit_profile_id", [
-                { value: undefined, label: "None" },
-                ...profiles.map(p => ({ value: p.id, label: p.name })),
-            ])}
-            {selectedProfile && (
-                <Flex vertical gap={4} style={{
-                    background: "var(--color-bg-layout)",
-                    borderRadius: 6,
-                    padding: "8px 12px",
-                    fontSize: 12,
-                    border: "1px solid var(--color-border)",
-                }}>
-                    <Text strong style={{ fontSize: 13, marginBottom: 4 }}>
-                        {selectedProfile.name}
-                    </Text>
-                    <Text type="secondary" style={{ fontSize: 11 }}>
-                        {selectedProfile.description}
-                    </Text>
-                    <Flex wrap gap="small" style={{ marginTop: 4 }}>
-                        <Text><Text strong>Max Retry:</Text> {selectedProfile.max_retry}</Text>
-                        <Text><Text strong>Find Time:</Text> {selectedProfile.find_time_seconds}s</Text>
-                        <Text><Text strong>Ban Time:</Text> {selectedProfile.ban_time_seconds}s</Text>
-                        <Text><Text strong>Escalate:</Text> {selectedProfile.bantime_increment ? "Yes" : "No"}</Text>
-                        <Text><Text strong>Max Ban:</Text> {selectedProfile.bantime_maxtime_seconds}s</Text>
-                        <Text><Text strong>Decay:</Text> {selectedProfile.ban_count_decay_days}d</Text>
-                        <Text><Text strong>Fail Codes:</Text> {selectedProfile.fail_codes?.join(", ")}</Text>
-                    </Flex>
-                </Flex>
+            {formValues.pipeline !== "waf" && (
+                <>
+                    {renderSelectRow("Rate Limit Profile", "rate_limit_profile_id", [
+                        { value: undefined, label: "None" },
+                        ...profiles.map(p => ({ value: p.id, label: p.name })),
+                    ])}
+                    {selectedProfile && (
+                        <Flex vertical gap={4} style={{
+                            background: "var(--color-bg-layout)",
+                            borderRadius: 6,
+                            padding: "8px 12px",
+                            fontSize: 12,
+                            border: "1px solid var(--color-border)",
+                        }}>
+                            <Text strong style={{ fontSize: 13, marginBottom: 4 }}>
+                                {selectedProfile.name}
+                            </Text>
+                            <Text type="secondary" style={{ fontSize: 11 }}>
+                                {selectedProfile.description}
+                            </Text>
+                            <Flex wrap gap="small" style={{ marginTop: 4 }}>
+                                <Text><Text strong>Max Retry:</Text> {selectedProfile.max_retry}</Text>
+                                <Text><Text strong>Find Time:</Text> {selectedProfile.find_time_seconds}s</Text>
+                                <Text><Text strong>Ban Time:</Text> {selectedProfile.ban_time_seconds}s</Text>
+                                <Text><Text strong>Escalate:</Text> {selectedProfile.bantime_increment ? "Yes" : "No"}</Text>
+                                <Text><Text strong>Max Ban:</Text> {selectedProfile.bantime_maxtime_seconds}s</Text>
+                                <Text><Text strong>Decay:</Text> {selectedProfile.ban_count_decay_days}d</Text>
+                                <Text><Text strong>Fail Codes:</Text> {selectedProfile.fail_codes?.join(", ")}</Text>
+                            </Flex>
+                        </Flex>
+                    )}
+                </>
             )}
         </Flex>
     );
 
-    const matchTab = (
+    const networkTab = (
         <Flex vertical gap="middle" style={{ paddingTop: 16 }}>
             {renderInputRow("IP Address", "ip_address")}
             {renderInputRow("Protocol", "protocol")}
             {renderInputRow("FQDN", "fqdn")}
-            {renderInputRow("Path", "path")}
-            {renderInputRow("Query", "query")}
+            {renderInputRow("Method", "method")}
+            {renderInputRow("User Agent", "user_agent")}
+            {renderInputRow("Content Type", "content_type")}
+        </Flex>
+    );
+
+    const locationTab = (
+        <Flex vertical gap="middle" style={{ paddingTop: 16 }}>
             {renderInputRow("City Name", "city_name")}
             {renderInputRow("Country Name", "country_name")}
             {renderInputRow("Country Code", "country_code")}
-            {renderInputRow("User Agent", "user_agent")}
-            {renderInputRow("Method", "method")}
+        </Flex>
+    );
+
+    const requestTab = (
+        <Flex vertical gap="middle" style={{ paddingTop: 16 }}>
+            {renderInputRow("Path", "path")}
+            {renderInputRow("Query", "query")}
             {renderInputRow("Referer", "referer")}
-            {renderInputRow("Content Type", "content_type")}
             {renderInputRow("Accept Language", "accept_language")}
             {renderInputRow("X-Request-ID", "x_request_id")}
         </Flex>
@@ -408,9 +426,19 @@ export default function RuleDialog({
             children: genTab,
         },
         {
-            key: "match",
-            label: t("Match"),
-            children: matchTab,
+            key: "network",
+            label: <span><CloudServerOutlined /> {t("Network")}</span>,
+            children: networkTab,
+        },
+        {
+            key: "location",
+            label: <span><GlobalOutlined /> {t("Location")}</span>,
+            children: locationTab,
+        },
+        {
+            key: "request",
+            label: <span><FileSearchOutlined /> {t("Request")}</span>,
+            children: requestTab,
         },
     ];
 
