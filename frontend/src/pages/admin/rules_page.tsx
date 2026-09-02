@@ -1,7 +1,7 @@
 import React from "react";
 import { useNavigate } from 'react-router';
 import { useTranslation } from "react-i18next";
-import { Button, Space } from 'antd';
+import { Button, Space, Select, Flex } from 'antd';
 import { EditFilled, DeleteFilled, PlusOutlined } from '@ant-design/icons';
 import type Item from "@/models/rule"; // Alias para Rule
 
@@ -26,6 +26,18 @@ const FIELDS: FieldDefinition<Item>[] = [
     { key: 'description', label: 'Description', type: 'string', value: "", width: 200, visible: true },
     { key: 'mode', label: 'Mode', type: 'string', value: "", width: 70, visible: true },
     { key: 'rate_limit_profile_name', label: 'Profile', type: 'string', value: "", width: 140, visible: true },
+    {
+        key: 'pipeline',
+        label: 'Pipeline',
+        type: 'tag',
+        value: "waf",
+        width: 80,
+        visible: true,
+        options: [
+            { value: 'waf', label: 'WAF', color: 'blue' },
+            { value: 'jail', label: 'Jail', color: 'green' },
+        ],
+    },
 ];
 
 // Mensajes específicos para el CustomDialog de Rules
@@ -44,7 +56,11 @@ interface Props {
 }
 
 // La clase ya no necesita State, ya que CustomTable maneja el estado de la tabla.
-export class InnerPage extends React.Component<Props, {}> { 
+export class InnerPage extends React.Component<Props, { pipelineFilter: string }> {
+    constructor(props: Props) {
+        super(props);
+        this.state = { pipelineFilter: "all" };
+    } 
 
     // 3. Método para renderizar el botón "Añadir"
     private renderHeaderAction = (onCreate: () => void) => {
@@ -88,6 +104,25 @@ export class InnerPage extends React.Component<Props, {}> {
                 defaultSortField="id"
                 renderHeaderAction={this.renderHeaderAction}
                 renderActionColumn={this.renderActionColumn}
+                extraHeaderContent={
+                    <Flex align="center" gap="small" style={{ paddingLeft: 8 }}>
+                        <Select
+                            value={this.state.pipelineFilter}
+                            onChange={(value) => this.setState({ pipelineFilter: value })}
+                            style={{ width: 140 }}
+                            size="small"
+                            options={[
+                                { value: "all", label: "All Pipelines" },
+                                { value: "waf", label: "WAF" },
+                                { value: "jail", label: "Jail" },
+                            ]}
+                        />
+                    </Flex>
+                }
+                clientFilter={(items) => {
+                    if (this.state.pipelineFilter === "all") return items;
+                    return items.filter(item => item.pipeline === this.state.pipelineFilter);
+                }}
                 dialogRenderer={(params) => (
                     <RuleDialog
                         dialogMode={params.dialogMode}
