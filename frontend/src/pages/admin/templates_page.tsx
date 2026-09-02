@@ -488,28 +488,110 @@ export default class TemplatesPage extends React.Component<{}, State> {
                     onCancel={this.closeModal}
                     okText="Create Rule"
                     cancelText="Cancel"
-                    width={520}
+                    width={600}
                 >
                     <Flex vertical gap="middle">
                         <Text type="secondary">{selected?.description}</Text>
-                        <Flex wrap gap="small">
-                            {selected?.pipeline === "jail" ? (
-                                <Tag icon={<LockOutlined />} color="orange">Jail</Tag>
-                            ) : (
-                                <Tag icon={selected?.allow ? <CheckCircleOutlined /> : <CloseCircleOutlined />}
-                                    color={selected?.allow ? "success" : "error"}>
-                                    {selected?.allow ? "Allow" : "Deny"}
+
+                        {/* ── Preview: what will be created ── */}
+                        <div style={{
+                            background: "var(--color-bg-layout)",
+                            borderRadius: 8,
+                            border: "1px solid var(--color-border)",
+                            padding: 16,
+                        }}>
+                            <Text strong style={{ fontSize: 15, marginBottom: 12, display: 'block' }}>
+                                ⚡ Rule to be created
+                            </Text>
+
+                            {/* Pipeline + Action row */}
+                            <Flex wrap gap="small" style={{ marginBottom: 12 }}>
+                                {selected?.pipeline === "jail" ? (
+                                    <Tag icon={<LockOutlined />} color="orange" style={{ fontSize: 13, padding: '2px 8px' }}>
+                                        Pipeline: Jail
+                                    </Tag>
+                                ) : (
+                                    <Tag color="blue" style={{ fontSize: 13, padding: '2px 8px' }}>
+                                        Pipeline: WAF
+                                    </Tag>
+                                )}
+                                {selected?.pipeline !== "jail" && (
+                                    <Tag icon={selected?.allow ? <CheckCircleOutlined /> : <CloseCircleOutlined />}
+                                        color={selected?.allow ? "success" : "error"}
+                                        style={{ fontSize: 13, padding: '2px 8px' }}>
+                                        Action: {selected?.allow ? "Allow" : "Deny"}
+                                    </Tag>
+                                )}
+                                <Tag color="geekblue" style={{ fontSize: 13, padding: '2px 8px' }}>
+                                    Store: {selected?.store ? "Yes" : "No"}
                                 </Tag>
+                                <Tag style={{ fontSize: 13, padding: '2px 8px' }}>
+                                    Weight: 100
+                                </Tag>
+                                {selected?.pipeline !== "jail" && (
+                                    <Tag color="purple" style={{ fontSize: 13, padding: '2px 8px' }}>
+                                        Mode: Enforce
+                                    </Tag>
+                                )}
+                                {selected?.pipeline === "jail" && (
+                                    <Tag color="purple" style={{ fontSize: 13, padding: '2px 8px' }}>
+                                        Mode: Log Only
+                                    </Tag>
+                                )}
+                            </Flex>
+
+                            {/* Filters section */}
+                            <Text strong style={{ fontSize: 13, marginBottom: 8, display: 'block' }}>
+                                🔍 Filters
+                            </Text>
+                            <Flex wrap gap="small" style={{ marginBottom: 12 }}>
+                                {selected?.path ? (
+                                    <Tag color="blue" style={{ fontSize: 12 }}>Path: {selected.path}</Tag>
+                                ) : (
+                                    <Tag style={{ fontSize: 12 }}>Path: —</Tag>
+                                )}
+                                {selected?.query ? (
+                                    <Tag color="purple" style={{ fontSize: 12 }}>Query: {selected.query}</Tag>
+                                ) : (
+                                    <Tag style={{ fontSize: 12 }}>Query: —</Tag>
+                                )}
+                                {selected?.country_code ? (
+                                    <Tag color="cyan" style={{ fontSize: 12 }}>Country: {selected.country_code}</Tag>
+                                ) : (
+                                    <Tag style={{ fontSize: 12 }}>Country: —</Tag>
+                                )}
+                            </Flex>
+
+                            {/* Scope section */}
+                            <Text strong style={{ fontSize: 13, marginBottom: 8, display: 'block' }}>
+                                🎯 Scope
+                            </Text>
+                            <Flex wrap gap="small">
+                                <Tag style={{ fontSize: 12 }}>
+                                    FQDN: {this.state.fqdn.trim() || "(all)"}
+                                </Tag>
+                                <Tag style={{ fontSize: 12 }}>
+                                    IP: {this.state.ipAddress.trim() || "(all)"}
+                                </Tag>
+                            </Flex>
+
+                            {/* Rate limit profile for jail */}
+                            {selected?.pipeline === "jail" && selected?.rate_limit_profile_name && (
+                                <>
+                                    <div style={{ borderTop: "1px solid var(--color-border)", margin: '12px 0' }} />
+                                    <Text strong style={{ fontSize: 13, marginBottom: 8, display: 'block' }}>
+                                        ⏱ Rate Limit Profile
+                                    </Text>
+                                    <Tag icon={<LockOutlined />} color="orange" style={{ fontSize: 12 }}>
+                                        {selected.rate_limit_profile_name}
+                                    </Tag>
+                                </>
                             )}
-                            {selected?.path && <Tag color="blue">Path: {selected.path}</Tag>}
-                            {selected?.query && <Tag color="purple">Query: {selected.query}</Tag>}
-                            {selected?.country_code && <Tag color="cyan">Geo: {selected.country_code}</Tag>}
-                        </Flex>
-                        {selected?.rate_limit_profile_name && (
-                            <Tag color="orange">Linked profile: {selected.rate_limit_profile_name}</Tag>
-                        )}
+                        </div>
+
+                        {/* ── Inputs ── */}
                         <Flex vertical gap="small">
-                            <Text strong>Scope</Text>
+                            <Text strong>Configure scope</Text>
                             {selected?.requires_fqdn ? (
                                 <>
                                     <Text type="warning" style={{ color: '#fa8c16', fontSize: 12 }}>
@@ -556,23 +638,60 @@ export default class TemplatesPage extends React.Component<{}, State> {
                     onCancel={this.closeProfileModal}
                     okText="Create Profile"
                     cancelText="Cancel"
-                    width={520}
+                    width={560}
                 >
                     <Flex vertical gap="middle">
                         <Text type="secondary">{selectedProfile?.description}</Text>
-                        <Flex wrap gap="small">
-                            <Tag>Max retry: {selectedProfile?.max_retry}</Tag>
-                            <Tag>Find time: {selectedProfile?.find_time_seconds}s</Tag>
-                            <Tag>Ban time: {selectedProfile?.ban_time_seconds}s</Tag>
-                            {selectedProfile?.bantime_increment && (
-                                <Tag color="orange">Escalation enabled</Tag>
-                            )}
-                            <Tag>Max ban: {(selectedProfile?.bantime_maxtime_seconds ?? 0) >= 86400
-                                ? `${Math.floor((selectedProfile?.bantime_maxtime_seconds ?? 0) / 86400)}d`
-                                : `${selectedProfile?.bantime_maxtime_seconds ?? 0}s`}</Tag>
-                            <Tag>Decay: {selectedProfile?.ban_count_decay_days}d</Tag>
-                            <Tag color="red">Fail codes: {selectedProfile?.fail_codes.join(", ")}</Tag>
-                        </Flex>
+
+                        {/* ── Preview: what will be created ── */}
+                        <div style={{
+                            background: "var(--color-bg-layout)",
+                            borderRadius: 8,
+                            border: "1px solid var(--color-border)",
+                            padding: 16,
+                        }}>
+                            <Text strong style={{ fontSize: 15, marginBottom: 12, display: 'block' }}>
+                                ⚡ Rate limit profile to be created
+                            </Text>
+
+                            <Flex vertical gap="small">
+                                <Flex align="center" gap="small">
+                                    <Text strong style={{ width: 100 }}>Max retry:</Text>
+                                    <Tag>{selectedProfile?.max_retry} requests</Tag>
+                                </Flex>
+                                <Flex align="center" gap="small">
+                                    <Text strong style={{ width: 100 }}>Find time:</Text>
+                                    <Tag>{selectedProfile?.find_time_seconds}s</Tag>
+                                </Flex>
+                                <Flex align="center" gap="small">
+                                    <Text strong style={{ width: 100 }}>Ban time:</Text>
+                                    <Tag>{selectedProfile?.ban_time_seconds}s</Tag>
+                                </Flex>
+                                <Flex align="center" gap="small">
+                                    <Text strong style={{ width: 100 }}>Escalation:</Text>
+                                    {selectedProfile?.bantime_increment ? (
+                                        <Tag color="orange">Enabled ({selectedProfile?.bantime_multipliers.join("×, ")}×)</Tag>
+                                    ) : (
+                                        <Tag>Disabled</Tag>
+                                    )}
+                                </Flex>
+                                <Flex align="center" gap="small">
+                                    <Text strong style={{ width: 100 }}>Max ban:</Text>
+                                    <Tag>{(selectedProfile?.bantime_maxtime_seconds ?? 0) >= 86400
+                                        ? `${Math.floor((selectedProfile?.bantime_maxtime_seconds ?? 0) / 86400)}d`
+                                        : `${selectedProfile?.bantime_maxtime_seconds ?? 0}s`}</Tag>
+                                </Flex>
+                                <Flex align="center" gap="small">
+                                    <Text strong style={{ width: 100 }}>Decay:</Text>
+                                    <Tag>{selectedProfile?.ban_count_decay_days}d</Tag>
+                                </Flex>
+                                <Flex align="center" gap="small">
+                                    <Text strong style={{ width: 100 }}>Fail codes:</Text>
+                                    <Tag color="red">{selectedProfile?.fail_codes.join(", ")}</Tag>
+                                </Flex>
+                            </Flex>
+                        </div>
+
                         <Text style={{ fontSize: 12 }}>
                             This will create a new rate limit profile with the settings above.
                             You can then assign it to rules from the Rules page.
