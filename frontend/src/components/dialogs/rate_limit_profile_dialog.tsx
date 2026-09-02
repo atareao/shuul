@@ -245,8 +245,6 @@ export default function RateLimitProfileDialog({
 
     const generalTab = (
         <Flex vertical gap="middle" style={{ paddingTop: 16 }}>
-            {renderInputRow("Name", "name")}
-            {renderInputRow("Description", "description")}
             {renderInputNumberRow("Max Retry", "max_retry", 1, 99999)}
             {renderInputNumberRow("Find Time (s)", "find_time_seconds", 1, 999999)}
             {renderInputRow("Fail Codes", "fail_codes", "e.g. 401,403,404")}
@@ -328,7 +326,11 @@ export default function RateLimitProfileDialog({
                         style={{ marginBottom: 16 }}
                     />
                 )}
-                <Tabs defaultActiveKey="general" items={tabItems} size="middle" />
+                <Flex vertical gap="middle">
+                    {renderInputRow("Name", "name")}
+                    {renderInputRow("Description", "description")}
+                    <Tabs defaultActiveKey="general" items={tabItems} size="middle" />
+                </Flex>
             </Modal>
         );
     }
