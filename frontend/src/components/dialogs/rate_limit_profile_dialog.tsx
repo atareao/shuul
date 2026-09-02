@@ -1,5 +1,7 @@
 import { useState, useEffect, useCallback } from "react";
-import { Modal, Typography, Flex, Input, InputNumber, Switch, Alert } from "antd";
+import { Modal, Typography, Flex, Input, InputNumber, Switch, Alert, Tabs } from "antd";
+import type { TabsProps } from "antd";
+import { ThunderboltOutlined } from '@ant-design/icons';
 import { BASE_URL } from '@/constants';
 import type { DialogMode } from '@/common/types';
 import { DialogModes } from '@/common/types';
@@ -203,7 +205,7 @@ export default function RateLimitProfileDialog({
 
     const renderSwitchRow = (label: string, key: string) => (
         <Flex align="center" gap="small">
-            <Text style={{ width: 160, flexShrink: 0 }}>{t(label)}</Text>
+            <Text style={{ width: 140, flexShrink: 0 }}>{t(label)}</Text>
             <Switch
                 checked={Boolean(formValues[key])}
                 onChange={(checked) => updateField(key, checked)}
@@ -214,7 +216,7 @@ export default function RateLimitProfileDialog({
 
     const renderInputRow = (label: string, key: string, placeholder?: string) => (
         <Flex align="center" gap="small">
-            <Text style={{ width: 160, flexShrink: 0 }}>{t(label)}</Text>
+            <Text style={{ width: 140, flexShrink: 0 }}>{t(label)}</Text>
             <Input
                 style={{ width: "100%" }}
                 value={formValues[key] ?? ""}
@@ -227,7 +229,7 @@ export default function RateLimitProfileDialog({
 
     const renderInputNumberRow = (label: string, key: string, min?: number, max?: number) => (
         <Flex align="center" gap="small">
-            <Text style={{ width: 160, flexShrink: 0 }}>{t(label)}</Text>
+            <Text style={{ width: 140, flexShrink: 0 }}>{t(label)}</Text>
             <InputNumber
                 style={{ width: 200 }}
                 value={formValues[key] as number}
@@ -238,6 +240,41 @@ export default function RateLimitProfileDialog({
             />
         </Flex>
     );
+
+    // --- Tab contents ---
+
+    const generalTab = (
+        <Flex vertical gap="middle" style={{ paddingTop: 16 }}>
+            {renderInputRow("Name", "name")}
+            {renderInputRow("Description", "description")}
+            {renderInputNumberRow("Max Retry", "max_retry", 1, 99999)}
+            {renderInputNumberRow("Find Time (s)", "find_time_seconds", 1, 999999)}
+            {renderInputRow("Fail Codes", "fail_codes", "e.g. 401,403,404")}
+        </Flex>
+    );
+
+    const penaltyTab = (
+        <Flex vertical gap="middle" style={{ paddingTop: 16 }}>
+            {renderInputNumberRow("Ban Time (s)", "ban_time_seconds", 1, 999999)}
+            {renderInputNumberRow("Max Ban (s)", "bantime_maxtime_seconds", 1, 9999999)}
+            {renderInputNumberRow("Decay (d)", "ban_count_decay_days", 1, 9999)}
+            {renderSwitchRow("Escalate", "bantime_increment")}
+            {renderInputRow("Multipliers", "bantime_multipliers", "e.g. 1,2,4,8")}
+        </Flex>
+    );
+
+    const tabItems: TabsProps["items"] = [
+        {
+            key: "general",
+            label: t("General"),
+            children: generalTab,
+        },
+        {
+            key: "penalty",
+            label: <span><ThunderboltOutlined /> {t("Penalty")}</span>,
+            children: penaltyTab,
+        },
+    ];
 
     // --- Render ---
 
@@ -291,18 +328,7 @@ export default function RateLimitProfileDialog({
                         style={{ marginBottom: 16 }}
                     />
                 )}
-                <Flex vertical gap="middle">
-                    {renderInputRow("Name", "name")}
-                    {renderInputRow("Description", "description")}
-                    {renderInputNumberRow("Max Retry", "max_retry", 1, 99999)}
-                    {renderInputNumberRow("Find Time (s)", "find_time_seconds", 1, 999999)}
-                    {renderInputNumberRow("Ban Time (s)", "ban_time_seconds", 1, 999999)}
-                    {renderSwitchRow("Escalate", "bantime_increment")}
-                    {renderInputRow("Multipliers", "bantime_multipliers", "e.g. 1,2,4")}
-                    {renderInputNumberRow("Max Ban (s)", "bantime_maxtime_seconds", 1, 9999999)}
-                    {renderInputNumberRow("Decay (d)", "ban_count_decay_days", 1, 9999)}
-                    {renderInputRow("Fail Codes", "fail_codes", "e.g. 401,403,404")}
-                </Flex>
+                <Tabs defaultActiveKey="general" items={tabItems} size="middle" />
             </Modal>
         );
     }
