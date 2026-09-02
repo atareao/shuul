@@ -6,6 +6,7 @@ export default interface Rule {
     weight?: number;
     allow?: boolean;
     store?: boolean;
+    pipeline?: string;
     ip_address?: string;
     protocol?: string;
     fqdn?: string;
