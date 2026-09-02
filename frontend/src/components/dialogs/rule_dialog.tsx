@@ -313,19 +313,17 @@ export default function RuleDialog({
                     onChange={(checked) => updateField("active", checked)}
                     disabled={disabled}
                 />
-            </Flex>
-            {formValues.pipeline !== "jail" && (
-                <Flex align="center" gap="small">
-                    <Text style={{ width: 120, flexShrink: 0 }}>{t("Allow")}</Text>
-                    <Switch
-                        checked={Boolean(formValues.allow)}
-                        onChange={(checked) => updateField("allow", checked)}
-                        disabled={disabled}
-                    />
-                </Flex>
-            )}
-            <Flex align="center" gap="small">
-                <Text style={{ width: 120, flexShrink: 0 }}>{t("Store")}</Text>
+                {formValues.pipeline !== "jail" && (
+                    <>
+                        <Text style={{ width: 60, flexShrink: 0, marginLeft: 16 }}>{t("Allow")}</Text>
+                        <Switch
+                            checked={Boolean(formValues.allow)}
+                            onChange={(checked) => updateField("allow", checked)}
+                            disabled={disabled}
+                        />
+                    </>
+                )}
+                <Text style={{ width: 60, flexShrink: 0, marginLeft: 16 }}>{t("Store")}</Text>
                 <Switch
                     checked={Boolean(formValues.store)}
                     onChange={(checked) => updateField("store", checked)}

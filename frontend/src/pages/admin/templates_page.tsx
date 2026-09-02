@@ -1,5 +1,5 @@
 import React from "react";
-import { Card, Collapse, Tag, Button, Typography, Flex, message, Input, Modal, Tabs, Spin, Empty } from 'antd';
+import { Card, Collapse, Tag, Button, Typography, Flex, message, Input, InputNumber, Modal, Tabs, Spin, Empty, Switch } from 'antd';
 import type { TabsProps } from 'antd';
 import { CheckCircleOutlined, CloseCircleOutlined, ThunderboltOutlined, SearchOutlined, LockOutlined, GlobalOutlined, ApiOutlined, WarningOutlined, RobotOutlined, CloudServerOutlined, MailOutlined, AppstoreOutlined, SafetyOutlined, CodeOutlined } from '@ant-design/icons';
 import type { RuleTemplate, RateLimitProfileTemplate, TemplatesResponse } from "@/models/template";
@@ -136,19 +136,19 @@ export default class TemplatesPage extends React.Component<{}, State> {
         this.setState({ applying: template.name, modalVisible: false });
         try {
             const body: Record<string, any> = {
-                name: template.name,
-                description: template.description,
+                name: this.state.ruleName,
+                description: this.state.ruleDescription,
                 mode: template.pipeline === "jail" ? "log_only" : "enforce",
-                weight: 100,
+                weight: this.state.ruleWeight,
                 allow: template.allow,
-                store: template.store,
+                store: this.state.ruleStore,
                 pipeline: template.pipeline,
                 path: template.path,
                 query: template.query,
                 country_code: template.country_code,
                 fqdn: this.state.fqdn || null,
                 ip_address: this.state.ipAddress || null,
-                active: true,
+                active: this.state.ruleActive,
             };
 
             // If jail template has a rate_limit_profile_id, include it
@@ -166,7 +166,7 @@ export default class TemplatesPage extends React.Component<{}, State> {
                 body: JSON.stringify(body),
             });
             if (response.ok) {
-                message.success(`Rule "${template.name}" created successfully`);
+                message.success(`Rule "${this.state.ruleName}" created successfully`);
             } else {
                 const err = await response.json();
                 message.error(`Failed to create rule: ${err.message || response.statusText}`);
@@ -491,7 +491,6 @@ export default class TemplatesPage extends React.Component<{}, State> {
                     width={600}
                 >
                     <Flex vertical gap="middle">
-                        <Text type="secondary">{selected?.description}</Text>
 
                         {/* ── Preview: what will be created ── */}
                         <div style={{
@@ -523,10 +522,13 @@ export default class TemplatesPage extends React.Component<{}, State> {
                                     </Tag>
                                 )}
                                 <Tag color="geekblue" style={{ fontSize: 13, padding: '2px 8px' }}>
-                                    Store: {selected?.store ? "Yes" : "No"}
+                                    Store: {this.state.ruleStore ? "Yes" : "No"}
                                 </Tag>
                                 <Tag style={{ fontSize: 13, padding: '2px 8px' }}>
-                                    Weight: 100
+                                    Weight: {this.state.ruleWeight}
+                                </Tag>
+                                <Tag color={this.state.ruleActive ? "green" : "default"} style={{ fontSize: 13, padding: '2px 8px' }}>
+                                    Active: {this.state.ruleActive ? "Yes" : "No"}
                                 </Tag>
                                 {selected?.pipeline !== "jail" && (
                                     <Tag color="purple" style={{ fontSize: 13, padding: '2px 8px' }}>
@@ -589,7 +591,48 @@ export default class TemplatesPage extends React.Component<{}, State> {
                             )}
                         </div>
 
-                        {/* ── Inputs ── */}
+                        {/* ── Editable fields ── */}
+                        <Flex vertical gap="small">
+                            <Text strong>Rule settings</Text>
+                            <Input
+                                placeholder="Rule name"
+                                value={this.state.ruleName}
+                                onChange={e => this.setState({ ruleName: e.target.value })}
+                                addonBefore="Name"
+                                allowClear
+                            />
+                            <Input
+                                placeholder="Rule description"
+                                value={this.state.ruleDescription}
+                                onChange={e => this.setState({ ruleDescription: e.target.value })}
+                                addonBefore="Description"
+                                allowClear
+                            />
+                            <Flex align="center" gap="small">
+                                <Text style={{ width: 100, flexShrink: 0 }}>Weight</Text>
+                                <InputNumber
+                                    style={{ width: "100%" }}
+                                    value={this.state.ruleWeight}
+                                    min={1}
+                                    max={99999}
+                                    onChange={value => this.setState({ ruleWeight: value ?? 100 })}
+                                />
+                            </Flex>
+                            <Flex align="center" gap="small">
+                                <Text style={{ width: 100, flexShrink: 0 }}>Active</Text>
+                                <Switch
+                                    checked={this.state.ruleActive}
+                                    onChange={checked => this.setState({ ruleActive: checked })}
+                                />
+                                <Text style={{ width: 60, flexShrink: 0, marginLeft: 16 }}>Store</Text>
+                                <Switch
+                                    checked={this.state.ruleStore}
+                                    onChange={checked => this.setState({ ruleStore: checked })}
+                                />
+                            </Flex>
+                        </Flex>
+
+                        {/* ── Scope inputs ── */}
                         <Flex vertical gap="small">
                             <Text strong>Configure scope</Text>
                             {selected?.requires_fqdn ? (
