@@ -10,9 +10,7 @@ pub fn template_router() -> Router<Arc<AppState>> {
 }
 
 /// GET /api/v1/templates — List all rule templates and rate limit profiles.
-pub async fn list_templates(
-    State(_app_state): State<Arc<AppState>>,
-) -> impl IntoResponse {
+pub async fn list_templates(State(_app_state): State<Arc<AppState>>) -> impl IntoResponse {
     let rules = all_rule_templates();
     let profiles = all_rate_limit_profile_templates();
 
