@@ -395,9 +395,7 @@ export default function RuleDialog({
             {renderInputRow("IP Address", "ip_address")}
             {renderInputRow("Protocol", "protocol")}
             {renderInputRow("FQDN", "fqdn")}
-            {renderInputRow("Method", "method")}
-            {renderInputRow("User Agent", "user_agent")}
-            {renderInputRow("Content Type", "content_type")}
+            {renderInputRow("Referer", "referer")}
         </Flex>
     );
 
@@ -413,7 +411,9 @@ export default function RuleDialog({
         <Flex vertical gap="middle" style={{ paddingTop: 16 }}>
             {renderInputRow("Path", "path")}
             {renderInputRow("Query", "query")}
-            {renderInputRow("Referer", "referer")}
+            {renderInputRow("Method", "method")}
+            {renderInputRow("User Agent", "user_agent")}
+            {renderInputRow("Content Type", "content_type")}
             {renderInputRow("Accept Language", "accept_language")}
             {renderInputRow("X-Request-ID", "x_request_id")}
         </Flex>
