@@ -16,7 +16,7 @@
 //! 4. Devuelve 200 OK siempre (fire-and-forget)
 
 use crate::models::{
-    AppState, BanManager, EmptyResponse, NewRequest, RateLimitProfile, RateLimiter, ReportPayload,
+    AppState, BanManager, NewRequest, RateLimitProfile, RateLimiter, ReportPayload,
 };
 use axum::{Json, Router, extract::State, http::StatusCode, response::IntoResponse, routing};
 use std::net::IpAddr;
@@ -60,7 +60,7 @@ async fn report_handler(
     };
 
     // ── Step 2: Match against ALL cached rules (fail2ban-style: múltiples jails) ──
-    let matches: Vec<(i32, i32)> = {
+    let matches: Vec<(i32, i32, String)> = {
         let rules = match app_state.rules.lock() {
             Ok(g) => g,
             Err(e) => {
@@ -69,7 +69,7 @@ async fn report_handler(
             },
         };
 
-        let mut results: Vec<(i32, i32)> = Vec::new();
+        let mut results: Vec<(i32, i32, String)> = Vec::new();
         for cache_rule in rules.iter() {
             if !cache_rule.matches(&request) {
                 continue;
@@ -82,7 +82,7 @@ async fn report_handler(
                 continue;
             }
             if let Some(profile_id) = cache_rule.rule.rate_limit_profile_id {
-                results.push((cache_rule.rule.id, profile_id));
+                results.push((cache_rule.rule.id, profile_id, cache_rule.rule.name.clone()));
             }
         }
         results
@@ -101,7 +101,7 @@ async fn report_handler(
     // ── Step 3: Apply rate limiting for each matched rule (fail2ban-style) ──
     let ip: Option<IpAddr> = payload.ip_address.parse().ok();
 
-    for (rule_id, profile_id) in &matches {
+    for (rule_id, profile_id, rule_name) in &matches {
         debug!(
             "Report: {} {} {} (status={}) matched rule #{}, profile #{}",
             payload.method.as_deref().unwrap_or("?"),
@@ -134,6 +134,25 @@ async fn report_handler(
         debug!(
             "Status code {} is in fail_codes {:?} for profile '{}'",
             status_i32, profile.fail_codes, profile.name
+        );
+
+        // ── Record stats and audit log for this match + fail_code ──
+        app_state.stats.record_blocked(Some(*rule_id), None);
+        tracing::info!(
+            target: "shuul_audit",
+            "{}",
+            serde_json::json!({
+                "event": "blocked",
+                "ts": chrono::Utc::now().to_rfc3339(),
+                "pipeline": "jail",
+                "rule_id": rule_id,
+                "rule_name": rule_name,
+                "ip": payload.ip_address,
+                "country": "",
+                "path": payload.path,
+                "method": payload.method,
+                "ua": "",
+            })
         );
 
         if let Some(ip) = ip {
@@ -210,5 +229,6 @@ async fn report_handler(
     }
 
     // Always return 200 OK (fire-and-forget semantics)
+    use crate::models::EmptyResponse;
     EmptyResponse::create(StatusCode::OK, "Ok")
 }

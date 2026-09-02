@@ -10,7 +10,8 @@
 //! 3. Verifica/crea la base de datos
 //! 4. Ejecuta migraciones SQLx
 //! 5. Carga las reglas activas en memoria
-//! 6. Arranca el servidor Axum en `0.0.0.0:3000`
+//! 6. Carga las estadísticas desde la BD
+//! 7. Arranca el servidor Axum en `0.0.0.0:3000`
 
 mod constants;
 mod http;
@@ -26,15 +27,15 @@ use axum::{
 };
 use dotenv::dotenv;
 use http::{
-    auth_router, ban_router, health_router, rate_limit_profile_router, report_router,
-    request_router, require_auth, rule_router, settings_router, shuul_router, template_router,
-    util_router,
+    auth_router, ban_router, health_router, rate_limit_profile_router, report_router, require_auth,
+    rule_router, settings_router, shuul_router, stats_router, template_router, util_router,
 };
 use maxminddb::Reader;
 use models::CacheRule;
-use models::{AppState, BanManager, Error, JwtValidator, OidcMetadata, RateLimiter, Settings};
+use models::{
+    AppState, BanManager, Error, JwtValidator, OidcMetadata, RateLimiter, Settings, StatsCollector,
+};
 use sqlx::{
-    Row,
     migrate::{MigrateDatabase, Migrator},
     postgres::PgPoolOptions,
 };
@@ -46,7 +47,7 @@ use tower_http::{
     cors::{Any, CorsLayer},
     trace::TraceLayer,
 };
-use tracing::{debug, error, info, warn};
+use tracing::{debug, info, warn};
 use tracing_subscriber::{EnvFilter, layer::SubscriberExt, util::SubscriberInitExt};
 
 const STATIC_DIR: &str = "static";
@@ -74,16 +75,6 @@ async fn main() -> Result<(), Error> {
     info!("Maxmin DB Path: {}", maxmind_db_path);
     let secret = var("SECRET").expect("SECRET environment variable is mandatory");
     debug!("Secret: {}", secret);
-    let cache_enabled = var("CACHE_ENABLED")
-        .unwrap_or("false".to_string())
-        .parse::<bool>()
-        .unwrap_or(false);
-    debug!("cache_enabled: {}", cache_enabled);
-    let cache_size = var("CACHE_SIZE")
-        .unwrap_or("10".to_string())
-        .parse::<usize>()
-        .unwrap_or(10);
-    debug!("cache_size: {}", cache_size);
 
     // Asegurarse de que la base de datos exista; propagar errores vía `?`
     if !sqlx::Postgres::database_exists(&db_url).await? {
@@ -142,7 +133,6 @@ async fn main() -> Result<(), Error> {
         .allow_headers([AUTHORIZATION, ACCEPT, CONTENT_TYPE]);
 
     let rules = Mutex::new(CacheRule::read_all_active(&pool).await.unwrap_or_default());
-    let cache = Mutex::new(Vec::new());
     let ban_manager = Mutex::new(
         BanManager::load_from_db(&pool)
             .await
@@ -163,6 +153,7 @@ async fn main() -> Result<(), Error> {
     );
     let rate_limiter: Mutex<HashMap<i32, RateLimiter>> = Mutex::new(HashMap::new());
     let settings = Mutex::new(Settings::load(&pool).await.unwrap_or_default());
+    let stats = StatsCollector::load(&pool).await;
 
     // ── OIDC / SSO Configuration (REQUIRED) ──
     let oidc_issuer_url =
@@ -185,9 +176,7 @@ async fn main() -> Result<(), Error> {
             .map_err(|e| Error::Other(format!("Failed to open MaxMind DB: {e}")))?,
         static_dir: STATIC_DIR.to_string(),
         rules,
-        cache,
-        cache_enabled,
-        cache_size,
+        stats,
         ban_manager,
         rate_limiter,
         settings,
@@ -260,34 +249,13 @@ async fn main() -> Result<(), Error> {
         }
     });
 
-    // Background task: daily cleanup of old requests
-    let cleanup_state2 = Arc::clone(&app_state);
+    // Background task: persist stats every 30 minutes
+    let stats_state = Arc::clone(&app_state);
     tokio::spawn(async move {
-        let mut interval = tokio::time::interval(tokio::time::Duration::from_secs(86400));
+        let mut interval = tokio::time::interval(tokio::time::Duration::from_secs(1800));
         loop {
             interval.tick().await;
-            // Read retention days from settings table
-            let days = sqlx::query("SELECT value FROM settings WHERE key = 'log_retention_days'")
-                .fetch_optional(&cleanup_state2.pool)
-                .await
-                .ok()
-                .flatten()
-                .and_then(|r| r.get::<Option<String>, _>("value"))
-                .and_then(|v| v.parse::<i32>().ok())
-                .unwrap_or(30);
-
-            match models::Request::delete_before(&cleanup_state2.pool, days).await {
-                Ok(deleted) => {
-                    if !deleted.is_empty() {
-                        debug!(
-                            "Daily cleanup: deleted {} old requests (retention: {} days)",
-                            deleted.len(),
-                            days
-                        );
-                    }
-                },
-                Err(e) => error!("Daily cleanup failed: {}", e),
-            }
+            stats_state.stats.persist(&stats_state.pool).await;
         }
     });
 
@@ -300,7 +268,7 @@ async fn main() -> Result<(), Error> {
         .with_state(app_state.clone());
 
     let protected_routes = Router::new()
-        .nest("/requests", request_router())
+        .nest("/stats", stats_router())
         .nest("/rules", rule_router())
         .nest("/bans", ban_router())
         .nest("/templates", template_router())

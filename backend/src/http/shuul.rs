@@ -10,7 +10,7 @@
 //! 7. Match contra reglas cacheadas (mode = 'enforce' | 'log_only')
 //! 8. Si rule match + mode='log_only' → log (allow = true)
 //! 9. Si rule match + mode='off' → skip
-//! 10. Persistir si store = true
+//! 10. Stats + audit log
 //! 11. 200 OK o 403 FORBIDDEN
 //!
 //! # Seguridad de concurrencia
@@ -18,10 +18,9 @@
 //! Todos los `MutexGuard` se liberan antes de cualquier `.await` para
 //! garantizar que el future sea `Send` (requerido por axum/tokio).
 
-use crate::models::{AppState, EmptyResponse, NewRequest, Request};
+use crate::models::{AppState, EmptyResponse};
 use axum::{Router, extract::State, http::StatusCode, response::IntoResponse, routing};
 use regex::Regex;
-use std::mem;
 use std::sync::Arc;
 use tracing::{debug, error, warn};
 
@@ -32,8 +31,8 @@ pub fn shuul_router() -> Router<Arc<AppState>> {
 /// Information extracted from a matched rule, used after releasing the rules lock.
 struct RuleMatch {
     rule_id: i32,
+    rule_name: String,
     allow: bool,
-    store: bool,
 }
 
 /// Main entry point for the shuul service.
@@ -41,7 +40,7 @@ pub async fn shuul(
     State(app_state): State<Arc<AppState>>,
     headers: axum::http::HeaderMap,
 ) -> impl IntoResponse {
-    let mut request = NewRequest::from_request(&headers, &app_state.maxmind_db);
+    let mut request = crate::models::NewRequest::from_request(&headers, &app_state.maxmind_db);
     debug!("Captured request: {:?}", request);
 
     // ── Step 1: Load settings (sync, no await after this) ──
@@ -63,6 +62,7 @@ pub async fn shuul(
                         "Request path '{}' matches safe_path '{}' → ALLOW (skip all checks)",
                         path, safe_path
                     );
+                    app_state.stats.record_allowed();
                     return EmptyResponse::create(StatusCode::OK, "Ok");
                 }
             } else {
@@ -81,6 +81,7 @@ pub async fn shuul(
                     "IP {} is in trusted CIDR {} → ALLOW (skip all checks)",
                     ip, trusted_net
                 );
+                app_state.stats.record_allowed();
                 return EmptyResponse::create(StatusCode::OK, "Ok");
             }
         }
@@ -95,6 +96,7 @@ pub async fn shuul(
                         "User-Agent matches trusted pattern '{}' → ALLOW (skip all checks)",
                         trusted_ua
                     );
+                    app_state.stats.record_allowed();
                     return EmptyResponse::create(StatusCode::OK, "Ok");
                 }
             } else {
@@ -104,7 +106,8 @@ pub async fn shuul(
     }
 
     // ── Step 5: Check if IP is actively banned (sync, releases lock immediately) ──
-    let ip_addr: Option<std::net::IpAddr> = request.ip_address.as_ref().and_then(|s| s.parse().ok());
+    let ip_addr: Option<std::net::IpAddr> =
+        request.ip_address.as_ref().and_then(|s| s.parse().ok());
     if let Some(ip) = ip_addr {
         let banned = {
             let ban_manager = match app_state.ban_manager.lock() {
@@ -121,6 +124,9 @@ pub async fn shuul(
         };
         if let Some(reason) = banned {
             debug!("IP {} is banned (reason: {})", ip, reason);
+            app_state
+                .stats
+                .record_blocked(None, request.country_code.as_deref());
             return EmptyResponse::create(StatusCode::FORBIDDEN, &format!("Banned: {reason}"));
         }
     }
@@ -159,8 +165,8 @@ pub async fn shuul(
                     debug!("Rule mode is 'log_only', allowing without enforcement");
                     matched = Some(RuleMatch {
                         rule_id: cache_rule.rule.id,
+                        rule_name: cache_rule.rule.name.clone(),
                         allow: true,
-                        store: cache_rule.rule.store,
                     });
                     break;
                 },
@@ -168,8 +174,8 @@ pub async fn shuul(
                     // 'enforce' or any other mode — normal enforcement
                     matched = Some(RuleMatch {
                         rule_id: cache_rule.rule.id,
+                        rule_name: cache_rule.rule.name.clone(),
                         allow: cache_rule.rule.allow,
-                        store: cache_rule.rule.store,
                     });
                     break;
                 },
@@ -181,83 +187,64 @@ pub async fn shuul(
     // rules lock is released here
 
     // ── Step 7: Apply matched rule (async operations allowed now) ──
-    let mut allow = true;
-    let mut save = true;
-    let mut request_save = false;
-
-    if let Some(rm) = matched {
+    let allow = if let Some(ref rm) = matched {
         request.rule_id = Some(rm.rule_id);
-        debug!(
-            "Selected rule: id={}, allow={}, store={}",
-            rm.rule_id, rm.allow, rm.store
-        );
-
-        allow = rm.allow;
-        save = rm.store;
-        request_save = true;
+        debug!("Selected rule: id={}, allow={}", rm.rule_id, rm.allow);
+        rm.allow
     } else {
         debug!("No matching rule found for request: {:?}", &request);
-    }
+        true
+    };
 
-    // ── Step 8: Log summary at info level ──
+    // ── Step 8: Stats + audit log ──
     let method = request.method.clone().unwrap_or_default();
-    let fqdn = request.fqdn.clone().unwrap_or_default();
     let path = request.path.clone().unwrap_or_default();
-    let rule_label = request
-        .rule_id
-        .map(|id| format!("#{id}"))
-        .unwrap_or_else(|| "none".to_string());
+    let user_agent = request.user_agent.clone().unwrap_or_default();
+    let country_code = request.country_code.clone().unwrap_or_default();
+    let ip = request.ip_address.clone().unwrap_or_default();
 
-    if allow {
-        debug!("→ {method} {fqdn}{path} → ALLOW (rule: {rule_label}, store: {save})");
+    if let Some(rm) = &matched {
+        if allow {
+            // Allowed (log_only mode or allow = true)
+            app_state.stats.record_allowed();
+            debug!(
+                "→ {method} {path} → ALLOW (rule: #{} {})",
+                rm.rule_id, rm.rule_name
+            );
+        } else {
+            // Blocked
+            app_state
+                .stats
+                .record_blocked(Some(rm.rule_id), Some(&country_code));
+            tracing::info!(
+                target: "shuul_audit",
+                "{}",
+                serde_json::json!({
+                    "event": "blocked",
+                    "ts": chrono::Utc::now().to_rfc3339(),
+                    "pipeline": "waf",
+                    "rule_id": rm.rule_id,
+                    "rule_name": rm.rule_name,
+                    "ip": ip,
+                    "country": country_code,
+                    "path": path,
+                    "method": method,
+                    "ua": user_agent,
+                })
+            );
+            debug!(
+                "→ {method} {path} → BLOCK (rule: #{} {})",
+                rm.rule_id, rm.rule_name
+            );
+        }
     } else {
-        debug!("→ {method} {fqdn}{path} → BLOCK (rule: {rule_label})");
-    }
-
-    // ── Step 9: Persist the request if needed (async) ──
-    if request_save && save {
-        debug!("Saving request as per rule configuration");
-        save_on_cache_or_db(&app_state, request).await;
-    } else {
-        debug!("Not saving request as per rule configuration");
+        app_state.stats.record_allowed();
+        debug!("→ {method} {path} → ALLOW (no match)");
     }
 
     if allow {
         EmptyResponse::create(StatusCode::OK, "Ok")
     } else {
         EmptyResponse::create(StatusCode::FORBIDDEN, "Ko")
-    }
-}
-
-/// Saves a request either to the in-memory cache or directly to the database.
-async fn save_on_cache_or_db(app_state: &AppState, request: NewRequest) {
-    if app_state.cache_enabled {
-        debug!("Cache is enabled, saving request to cache");
-        let mut requests_to_save: Option<Vec<NewRequest>> = None;
-        {
-            if let Ok(mut cache_guard) = app_state.cache.lock() {
-                cache_guard.push(request);
-                debug!("Request saved to cache. Cache size: {}", cache_guard.len());
-                if cache_guard.len() >= app_state.cache_size {
-                    requests_to_save = Some(mem::take(&mut *cache_guard));
-                    debug!("Cache size reached limit, preparing to bulk save to database");
-                }
-            }
-        }
-        if let Some(requests) = requests_to_save {
-            debug!(
-                "Caching limit reached, saving {} requests to database",
-                requests.len()
-            );
-            match Request::create_bulk(&app_state.pool, requests).await {
-                Ok(data) => debug!("Saved {} requests from cache to database", data.len()),
-                Err(e) => error!("Error saving requests from cache to database: {:?}", e),
-            }
-        }
-    } else {
-        match Request::create(&app_state.pool, request).await {
-            Ok(req) => debug!("Saved request to database: {:?}", req),
-            Err(e) => error!("Error saving request to database: {:?}", e),
-        }
     }
 }

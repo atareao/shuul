@@ -25,7 +25,6 @@ interface RuleDialogProps {
 const DEFAULT_VALUES: Record<string, any> = {
     active: true,
     allow: true,
-    store: true,
     weight: 100,
     name: "",
     description: "",
@@ -56,7 +55,6 @@ function initializeFromItem(item?: Item): Record<string, any> {
     return {
         active: item.active !== undefined ? Boolean(item.active) : true,
         allow: item.allow !== undefined ? Boolean(item.allow) : true,
-        store: item.store !== undefined ? Boolean(item.store) : true,
         weight: item.weight ?? 100,
         name: item.name ?? "",
         description: item.description ?? "",
@@ -85,7 +83,6 @@ function formatForApi(values: Record<string, any>): Record<string, any> {
     const body: Record<string, any> = {
         active: values.active,
         allow: values.allow,
-        store: values.store,
         weight: values.weight,
         name: values.name || null,
         description: values.description || null,
@@ -323,28 +320,24 @@ export default function RuleDialog({
                         />
                     </>
                 )}
-                <Text style={{ width: 60, flexShrink: 0, marginLeft: 16 }}>{t("Store")}</Text>
-                <Switch
-                    checked={Boolean(formValues.store)}
-                    onChange={(checked) => updateField("store", checked)}
-                    disabled={disabled}
-                />
-            </Flex>
+                </Flex>
             {renderSelectRow("Pipeline", "pipeline", [
                 { value: "waf", label: "WAF" },
                 { value: "jail", label: "Jail" },
             ])}
-            <Flex align="center" gap="small">
-                <Text style={{ width: 120, flexShrink: 0 }}>{t("Weight")}</Text>
-                <InputNumber
-                    style={{ width: "100%" }}
-                    value={formValues.weight as number}
-                    min={1}
-                    max={99999}
-                    onChange={(value) => updateField("weight", value ?? 100)}
-                    disabled={disabled}
-                />
-            </Flex>
+            {formValues.pipeline !== "jail" && (
+                <Flex align="center" gap="small">
+                    <Text style={{ width: 120, flexShrink: 0 }}>{t("Weight")}</Text>
+                    <InputNumber
+                        style={{ width: "100%" }}
+                        value={formValues.weight as number}
+                        min={1}
+                        max={99999}
+                        onChange={(value) => updateField("weight", value ?? 100)}
+                        disabled={disabled}
+                    />
+                </Flex>
+            )}
             {renderInputRow("Name", "name")}
             {renderInputRow("Description", "description")}
             {formValues.pipeline !== "jail" && renderSelectRow("Mode", "mode", [

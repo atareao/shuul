@@ -66,7 +66,6 @@ interface State {
     ruleDescription: string;
     ruleWeight: number;
     ruleActive: boolean;
-    ruleStore: boolean;
     // Profile template apply modal
     profileModalVisible: boolean;
     selectedProfile: RateLimitProfileTemplate | null;
@@ -91,7 +90,6 @@ export default class TemplatesPage extends React.Component<{}, State> {
             ruleDescription: "",
             ruleWeight: 100,
             ruleActive: true,
-            ruleStore: true,
             profileModalVisible: false,
             selectedProfile: null,
         };
@@ -122,6 +120,9 @@ export default class TemplatesPage extends React.Component<{}, State> {
             selectedTemplate: template,
             fqdn: "",
             ipAddress: "",
+            ruleName: template.name,
+            ruleDescription: template.description,
+            ruleWeight: template.weight ?? 100,
         });
     }
 
@@ -151,13 +152,22 @@ export default class TemplatesPage extends React.Component<{}, State> {
                 mode: template.pipeline === "jail" ? "log_only" : "enforce",
                 weight: this.state.ruleWeight,
                 allow: template.allow,
-                store: this.state.ruleStore,
                 pipeline: template.pipeline,
+                // All filter fields from template:
                 path: template.path,
                 query: template.query,
                 country_code: template.country_code,
+                ip_address: this.state.ipAddress || template.ip_address || null,
+                protocol: template.protocol,
+                city_name: template.city_name,
+                country_name: template.country_name,
+                user_agent: template.user_agent,
+                method: template.method,
+                referer: template.referer,
+                content_type: template.content_type,
+                accept_language: template.accept_language,
+                x_request_id: template.x_request_id,
                 fqdn: this.state.fqdn || null,
-                ip_address: this.state.ipAddress || null,
                 active: this.state.ruleActive,
             };
 
@@ -254,18 +264,48 @@ export default class TemplatesPage extends React.Component<{}, State> {
             t.description.toLowerCase().includes(searchLower) ||
             t.category.toLowerCase().includes(searchLower)
         );
+        // Separate must_have templates into their own group
+        const mustHave: RuleTemplate[] = [];
         for (const template of filtered) {
-            const cat = template.category;
-            if (!groups.has(cat)) {
-                groups.set(cat, []);
+            if (template.must_have) {
+                mustHave.push(template);
+            } else {
+                const cat = template.category;
+                if (!groups.has(cat)) {
+                    groups.set(cat, []);
+                }
+                groups.get(cat)!.push(template);
             }
-            groups.get(cat)!.push(template);
+        }
+        if (mustHave.length > 0) {
+            groups.set("__must_have__", mustHave);
         }
         return groups;
     }
 
     private renderTemplateCard = (t: RuleTemplate) => {
         const isJail = t.pipeline === "jail";
+
+        // Collect all filter tags for the "+N more" logic
+        const filterTags: { key: string; label: string; color: string }[] = [];
+        if (t.path) filterTags.push({ key: 'path', label: `Path: ${t.path}`, color: 'blue' });
+        if (t.query) filterTags.push({ key: 'query', label: `Query: ${t.query}`, color: 'purple' });
+        if (t.country_code) filterTags.push({ key: 'country_code', label: `Geo: ${t.country_code}`, color: 'cyan' });
+        if (t.user_agent) filterTags.push({ key: 'user_agent', label: `UA: ${t.user_agent}`, color: 'volcano' });
+        if (t.method) filterTags.push({ key: 'method', label: `Method: ${t.method}`, color: 'magenta' });
+        if (t.referer) filterTags.push({ key: 'referer', label: `Referer: ${t.referer}`, color: 'purple' });
+        if (t.content_type) filterTags.push({ key: 'content_type', label: `Content-Type: ${t.content_type}`, color: 'cyan' });
+        if (t.city_name) filterTags.push({ key: 'city_name', label: `City: ${t.city_name}`, color: 'geekblue' });
+        if (t.country_name) filterTags.push({ key: 'country_name', label: `Country: ${t.country_name}`, color: 'green' });
+        if (t.ip_address) filterTags.push({ key: 'ip_address', label: `IP: ${t.ip_address}`, color: 'lime' });
+        if (t.protocol) filterTags.push({ key: 'protocol', label: `Protocol: ${t.protocol}`, color: 'gold' });
+        if (t.accept_language) filterTags.push({ key: 'accept_language', label: `Accept-Lang: ${t.accept_language}`, color: 'orange' });
+        if (t.x_request_id) filterTags.push({ key: 'x_request_id', label: `X-Request-ID: ${t.x_request_id}`, color: 'default' });
+
+        const maxVisible = 4;
+        const visibleTags = filterTags.slice(0, maxVisible);
+        const extraCount = filterTags.length - maxVisible;
+
         return (
             <Card
                 key={t.name}
@@ -285,7 +325,10 @@ export default class TemplatesPage extends React.Component<{}, State> {
             >
                 <Flex vertical gap="small">
                     <Flex justify="space-between" align="center">
-                        <Text strong style={{ fontSize: 14 }}>{t.name}</Text>
+                        <Flex gap="small" align="center">
+                            <Text strong style={{ fontSize: 14 }}>{t.name}</Text>
+                            {t.must_have && <Tag color="red" style={{ fontSize: 11, fontWeight: 'bold' }}>🔴 MUST HAVE</Tag>}
+                        </Flex>
                         <Tag color={SEVERITY_COLORS[t.severity] || "default"}>
                             {t.severity}
                         </Tag>
@@ -300,11 +343,16 @@ export default class TemplatesPage extends React.Component<{}, State> {
                                 {t.allow ? "Allow" : "Deny"}
                             </Tag>
                         )}
-                        {t.path && <Tag color="blue">Path: {t.path}</Tag>}
-                        {t.query && <Tag color="purple">Query: {t.query}</Tag>}
-                        {t.country_code && <Tag color="cyan">Geo: {t.country_code}</Tag>}
-                        {t.store && <Tag color="geekblue">Store</Tag>}
-                    </Flex>
+                        {visibleTags.map(ft => (
+                            <Tag key={ft.key} color={ft.color}>{ft.label}</Tag>
+                        ))}
+                        {extraCount > 0 && (
+                            <Tag color="default" style={{ cursor: 'pointer' }}
+                                title={filterTags.slice(maxVisible).map(ft => ft.label).join('\n')}>
+                                +{extraCount} more
+                            </Tag>
+                        )}
+                        </Flex>
                     {isJail && t.rate_limit_profile_name && (
                         <Tag color="orange" style={{ fontSize: 11 }}>
                             Profile: {t.rate_limit_profile_name}
@@ -328,7 +376,37 @@ export default class TemplatesPage extends React.Component<{}, State> {
             );
         }
 
-        const collapseItems = Array.from(groups.entries())
+        // Build collapse items: must_have first, then rest alphabetically
+        const collapseItems: any[] = [];
+
+        // Must-have group (always first)
+        const mustHaveGroup = groups.get("__must_have__");
+        if (mustHaveGroup) {
+            collapseItems.push({
+                key: "__must_have__",
+                label: (
+                    <Flex justify="space-between" style={{ width: '100%', paddingRight: 16 }}>
+                        <Flex gap="small" align="center">
+                            <SafetyOutlined style={{ color: '#ff4d4f' }} />
+                            <Text strong style={{ fontSize: 15, color: '#ff4d4f' }}>
+                                🔴 Must Have
+                            </Text>
+                        </Flex>
+                        <Tag color="red">{mustHaveGroup.length} template{mustHaveGroup.length !== 1 ? 's' : ''}</Tag>
+                    </Flex>
+                ),
+                children: (
+                    <Flex wrap gap="small" style={{ width: '100%' }}>
+                        {mustHaveGroup.map(t => this.renderTemplateCard(t))}
+                    </Flex>
+                ),
+                style: { background: '#fff1f0', borderRadius: 6 },
+            });
+        }
+
+        // Alphabetical groups
+        const alphaItems = Array.from(groups.entries())
+            .filter(([key]) => key !== "__must_have__")
             .sort(([a], [b]) => a.localeCompare(b))
             .map(([category, templates]) => ({
                 key: category,
@@ -350,10 +428,15 @@ export default class TemplatesPage extends React.Component<{}, State> {
                 ),
             }));
 
+        collapseItems.push(...alphaItems);
+
+        // Default active keys: must_have (always) + first 2 alphabetical
+        const defaultActiveKeys = ["__must_have__", ...alphaItems.slice(0, 2).map(c => c.key)];
+
         return (
             <Collapse
                 items={collapseItems}
-                defaultActiveKey={collapseItems.slice(0, 2).map(c => c.key)}
+                defaultActiveKey={defaultActiveKeys}
                 size="small"
                 style={{ background: 'transparent' }}
             />
@@ -531,9 +614,6 @@ export default class TemplatesPage extends React.Component<{}, State> {
                                         Action: {selected?.allow ? "Allow" : "Deny"}
                                     </Tag>
                                 )}
-                                <Tag color="geekblue" style={{ fontSize: 13, padding: '2px 8px' }}>
-                                    Store: {this.state.ruleStore ? "Yes" : "No"}
-                                </Tag>
                                 <Tag style={{ fontSize: 13, padding: '2px 8px' }}>
                                     Weight: {this.state.ruleWeight}
                                 </Tag>
@@ -572,6 +652,16 @@ export default class TemplatesPage extends React.Component<{}, State> {
                                 ) : (
                                     <Tag style={{ fontSize: 12 }}>Country: —</Tag>
                                 )}
+                                {selected?.user_agent && <Tag color="volcano" style={{ fontSize: 12 }}>UA: {selected.user_agent}</Tag>}
+                                {selected?.method && <Tag color="magenta" style={{ fontSize: 12 }}>Method: {selected.method}</Tag>}
+                                {selected?.referer && <Tag color="purple" style={{ fontSize: 12 }}>Referer: {selected.referer}</Tag>}
+                                {selected?.content_type && <Tag color="cyan" style={{ fontSize: 12 }}>Content-Type: {selected.content_type}</Tag>}
+                                {selected?.city_name && <Tag color="geekblue" style={{ fontSize: 12 }}>City: {selected.city_name}</Tag>}
+                                {selected?.country_name && <Tag color="green" style={{ fontSize: 12 }}>Country: {selected.country_name}</Tag>}
+                                {selected?.ip_address && <Tag color="lime" style={{ fontSize: 12 }}>IP: {selected.ip_address}</Tag>}
+                                {selected?.protocol && <Tag color="gold" style={{ fontSize: 12 }}>Protocol: {selected.protocol}</Tag>}
+                                {selected?.accept_language && <Tag color="orange" style={{ fontSize: 12 }}>Accept-Lang: {selected.accept_language}</Tag>}
+                                {selected?.x_request_id && <Tag style={{ fontSize: 12 }}>X-Request-ID: {selected.x_request_id}</Tag>}
                             </Flex>
 
                             {/* Scope section */}
@@ -634,12 +724,7 @@ export default class TemplatesPage extends React.Component<{}, State> {
                                     checked={this.state.ruleActive}
                                     onChange={checked => this.setState({ ruleActive: checked })}
                                 />
-                                <Text style={{ width: 60, flexShrink: 0, marginLeft: 16 }}>Store</Text>
-                                <Switch
-                                    checked={this.state.ruleStore}
-                                    onChange={checked => this.setState({ ruleStore: checked })}
-                                />
-                            </Flex>
+                                </Flex>
                         </Flex>
 
                         {/* ── Scope inputs ── */}

@@ -7,7 +7,7 @@
 //! [`CacheRule`] envuelve una [`Rule`] con un [`Regex`] precompilado
 //! para la coincidencia rápida de URIs en memoria.
 
-use crate::models::request::NewRequest;
+use crate::models::NewRequest;
 use chrono::{DateTime, Utc};
 use regex::Regex;
 use serde::{Deserialize, Serialize};
@@ -25,7 +25,6 @@ pub struct Rule {
     pub mode: String,
     pub pipeline: String,
     pub allow: bool,
-    pub store: bool,
     pub ip_address: Option<String>,
     pub protocol: Option<String>,
     pub fqdn: Option<String>,
@@ -188,7 +187,10 @@ impl CacheRule {
             && check_match(self.method.as_ref(), request.method.as_ref())
             && check_match(self.referer.as_ref(), request.referer.as_ref())
             && check_match(self.content_type.as_ref(), request.content_type.as_ref())
-            && check_match(self.accept_language.as_ref(), request.accept_language.as_ref())
+            && check_match(
+                self.accept_language.as_ref(),
+                request.accept_language.as_ref(),
+            )
             && check_match(self.x_request_id.as_ref(), request.x_request_id.as_ref())
     }
 }
@@ -201,7 +203,6 @@ pub struct NewRule {
     pub mode: Option<String>,
     pub pipeline: Option<String>,
     pub allow: Option<bool>,
-    pub store: Option<bool>,
     pub ip_address: Option<String>,
     pub protocol: Option<String>,
     pub fqdn: Option<String>,
@@ -229,7 +230,6 @@ pub struct UpdateRule {
     pub mode: String,
     pub pipeline: String,
     pub allow: bool,
-    pub store: bool,
     pub ip_address: Option<String>,
     pub protocol: Option<String>,
     pub fqdn: Option<String>,
@@ -257,7 +257,6 @@ pub struct ReadRuleParams {
     pub pipeline: Option<String>,
     pub weight: Option<i32>,
     pub allow: Option<bool>,
-    pub store: Option<bool>,
     pub ip_address: Option<String>,
     pub protocol: Option<String>,
     pub fqdn: Option<String>,
@@ -292,7 +291,6 @@ impl Rule {
             mode: row.get("mode"),
             pipeline: row.get("pipeline"),
             allow: row.get("allow"),
-            store: row.get("store"),
             ip_address: row.get("ip_address"),
             protocol: row.get("protocol"),
             fqdn: row.get("fqdn"),
@@ -316,13 +314,13 @@ impl Rule {
     }
 
     pub async fn create(pool: &PgPool, rule: NewRule) -> Result<Self, Error> {
-        let sql = "INSERT INTO rules (name, description, weight, mode, pipeline, allow, store,
+        let sql = "INSERT INTO rules (name, description, weight, mode, pipeline, allow,
             ip_address, protocol, fqdn, path, query, city_name, country_name,
             country_code, user_agent, method, referer, content_type,
             accept_language, x_request_id, rate_limit_profile_id,
-            active, created_at, updated_at) VALUES ($1, $2, $3, $4, $5, $6, $7,
-            $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18,
-            $19, $20, $21, $22, $23, $24, $25) RETURNING *";
+            active, created_at, updated_at) VALUES ($1, $2, $3, $4, $5, $6,
+            $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18,
+            $19, $20, $21, $22, $23, $24) RETURNING *";
         let now = Utc::now();
         query(sql)
             .bind(&rule.name)
@@ -331,7 +329,6 @@ impl Rule {
             .bind(rule.mode.unwrap_or_else(|| "log_only".to_string()))
             .bind(rule.pipeline.unwrap_or_else(|| "waf".to_string()))
             .bind(rule.allow.unwrap_or(true))
-            .bind(rule.store.unwrap_or(true))
             .bind(rule.ip_address)
             .bind(rule.protocol)
             .bind(rule.fqdn)
@@ -390,25 +387,24 @@ impl Rule {
                 mode = $4,
                 pipeline = $5,
                 allow = $6,
-                store = $7,
-                ip_address = $8,
-                protocol = $9,
-                fqdn = $10,
-                path = $11,
-                query = $12,
-                city_name = $13,
-                country_name = $14,
-                country_code = $15,
-                user_agent = $16,
-                method = $17,
-                referer = $18,
-                content_type = $19,
-                accept_language = $20,
-                x_request_id = $21,
-                rate_limit_profile_id = $22,
-                active = $23,
-                updated_at = $24
-            WHERE id = $25
+                ip_address = $7,
+                protocol = $8,
+                fqdn = $9,
+                path = $10,
+                query = $11,
+                city_name = $12,
+                country_name = $13,
+                country_code = $14,
+                user_agent = $15,
+                method = $16,
+                referer = $17,
+                content_type = $18,
+                accept_language = $19,
+                x_request_id = $20,
+                rate_limit_profile_id = $21,
+                active = $22,
+                updated_at = $23
+            WHERE id = $24
             RETURNING *";
         let now = Utc::now();
         query(sql)
@@ -418,7 +414,6 @@ impl Rule {
             .bind(&rule.mode)
             .bind(&rule.pipeline)
             .bind(rule.allow)
-            .bind(rule.store)
             .bind(rule.ip_address)
             .bind(rule.protocol)
             .bind(rule.fqdn)
@@ -471,10 +466,6 @@ impl Rule {
             param_index += 1;
             sql.push_str(&format!(" AND allow = ${param_index}"));
         }
-        if params.store.is_some() {
-            param_index += 1;
-            sql.push_str(&format!(" AND store = ${param_index}"));
-        }
         if params.pipeline.is_some() {
             param_index += 1;
             sql.push_str(&format!(" AND pipeline = ${param_index}"));
@@ -500,9 +491,6 @@ impl Rule {
             query = query.bind(value);
         }
         if let Some(val) = params.allow {
-            query = query.bind(val);
-        }
-        if let Some(val) = params.store {
             query = query.bind(val);
         }
         if let Some(ref val) = params.pipeline {
@@ -555,10 +543,6 @@ impl Rule {
             param_index += 1;
             sql.push_str(&format!(" AND allow = ${param_index}"));
         }
-        if params.store.is_some() {
-            param_index += 1;
-            sql.push_str(&format!(" AND store = ${param_index}"));
-        }
         if params.pipeline.is_some() {
             param_index += 1;
             sql.push_str(&format!(" AND pipeline = ${param_index}"));
@@ -590,7 +574,6 @@ impl Rule {
             "pipeline",
             "weight",
             "allow",
-            "store",
             "active",
             "ip_address",
             "protocol",
@@ -615,9 +598,6 @@ impl Rule {
             query = query.bind(value);
         }
         if let Some(val) = params.allow {
-            query = query.bind(val);
-        }
-        if let Some(val) = params.store {
             query = query.bind(val);
         }
         if let Some(ref val) = params.pipeline {
