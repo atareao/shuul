@@ -34,7 +34,8 @@ pub use rate_limiter::RateLimiter;
 pub use report::ReportPayload;
 pub use request::{NewRequest, ReadRequestParams, Request};
 pub use response::{ApiResponse, EmptyResponse, PagedResponse, Pagination};
-pub use rule::{CacheRule, NewRule, ReadRuleParams, Rule, UpdateRule};
+#[allow(unused_imports)]
+pub use rule::{CacheRule, CachedRateLimit, NewRule, ReadRuleParams, Rule, UpdateRule};
 pub use settings::Settings;
 pub use user::TokenClaims;
 

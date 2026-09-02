@@ -7,4 +7,4 @@
 pub const DEFAULT_PAGE: u32 = 1;
 
 /// Límite de registros por página por defecto.
-pub const DEFAULT_LIMIT: u32 = 20;
+pub const DEFAULT_LIMIT: u32 = 10;

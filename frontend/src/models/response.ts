@@ -3,8 +3,8 @@ export interface Pagination {
     limit: number,
     pages: number,
     records: number,
-    prev: string,
-    next: string,
+    prev?: string,
+    next?: string,
 }
 export default interface Response<T> {
     status?: number;

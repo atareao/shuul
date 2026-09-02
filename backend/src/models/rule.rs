@@ -46,9 +46,27 @@ pub struct Rule {
     updated_at: DateTime<Utc>,
 }
 
+#[derive(Debug, Serialize)]
+pub struct RuleInfoCounts {
+    pub total: i64,
+    pub active: i64,
+}
+
+/// Parámetros de rate limit cacheados junto con la regla (sin consulta a BD).
+#[allow(dead_code)]
+#[derive(Debug, Clone)]
+pub struct CachedRateLimit {
+    pub max_retry: i32,
+    pub find_time_seconds: i32,
+    pub ban_time_seconds: i32,
+    pub bantime_increment: bool,
+}
+
 #[derive(Debug, Clone)]
 pub struct CacheRule {
     pub rule: Rule,
+    #[allow(dead_code)]
+    pub rate_limit: Option<CachedRateLimit>,
     pub ip_address: Option<Regex>,
     pub protocol: Option<Regex>,
     pub fqdn: Option<Regex>,
@@ -60,13 +78,30 @@ pub struct CacheRule {
 }
 
 impl CacheRule {
+    /// Construye un `CacheRule` desde una fila de PostgreSQL (con JOIN a `rate_limit_profiles`).
     fn from_row(row: PgRow) -> Self {
+        // Extraer campos de rate limit ANTES de consumir `row` en `Rule::from_row`.
+        let max_retry: Option<i32> = row.try_get("max_retry").ok().flatten();
+        let find_time_seconds: Option<i32> = row.try_get("find_time_seconds").ok().flatten();
+        let ban_time_seconds: Option<i32> = row.try_get("ban_time_seconds").ok().flatten();
+        let bantime_increment: Option<bool> = row.try_get("bantime_increment").ok().flatten();
+
+        let rate_limit = max_retry.map(|mr| CachedRateLimit {
+            max_retry: mr,
+            find_time_seconds: find_time_seconds.unwrap_or(0),
+            ban_time_seconds: ban_time_seconds.unwrap_or(0),
+            bantime_increment: bantime_increment.unwrap_or(false),
+        });
+
         let rule = Rule::from_row(row);
-        Self::from_rule(rule)
+        Self::from_rule_with_rate_limit(rule, rate_limit)
     }
-    pub fn from_rule(rule: Rule) -> Self {
+
+    /// Construye un `CacheRule` con los regex precompilados y el rate limit opcional.
+    fn from_rule_with_rate_limit(rule: Rule, rate_limit: Option<CachedRateLimit>) -> Self {
         Self {
             rule: rule.clone(),
+            rate_limit,
             ip_address: rule
                 .ip_address
                 .as_ref()
@@ -110,9 +145,31 @@ impl CacheRule {
         }
     }
 
+    /// Construye un `CacheRule` desde una [`Rule`] (sin información de rate limit).
+    pub fn from_rule(rule: Rule) -> Self {
+        Self::from_rule_with_rate_limit(rule, None)
+    }
+
+    /// Lee todas las reglas activas desde la base de datos, incluyendo los
+    /// parámetros de rate limit del perfil asociado (vía JOIN).
     pub async fn read_all_active(pool: &PgPool) -> Result<Vec<Self>, Error> {
-        let sql = "SELECT * FROM rules WHERE active = TRUE ORDER BY weight ASC";
+        let sql = "SELECT rules.*, rp.max_retry, rp.find_time_seconds, rp.ban_time_seconds, rp.bantime_increment FROM rules LEFT JOIN rate_limit_profiles rp ON rules.rate_limit_profile_id = rp.id WHERE active = TRUE ORDER BY weight ASC";
         query(sql).map(Self::from_row).fetch_all(pool).await
+    }
+
+    /// Indica si esta regla es exclusivamente un rate limiter (sin filtros
+    /// por IP, protocolo, FQDN, path, query, ciudad, país o código de país).
+    #[allow(dead_code)]
+    pub fn is_pure_rate_limiter(&self) -> bool {
+        self.rate_limit.is_some()
+            && self.ip_address.is_none()
+            && self.protocol.is_none()
+            && self.fqdn.is_none()
+            && self.path.is_none()
+            && self.query.is_none()
+            && self.city_name.is_none()
+            && self.country_name.is_none()
+            && self.country_code.is_none()
     }
 
     pub fn matches(&self, request: &NewRequest) -> bool {
@@ -196,6 +253,9 @@ pub struct UpdateRule {
 #[derive(Debug, Deserialize)]
 pub struct ReadRuleParams {
     pub id: Option<i32>,
+    pub name: Option<String>,
+    pub description: Option<String>,
+    pub mode: Option<String>,
     pub weight: Option<i32>,
     pub allow: Option<bool>,
     pub store: Option<bool>,
@@ -207,6 +267,7 @@ pub struct ReadRuleParams {
     pub city_name: Option<String>,
     pub country_name: Option<String>,
     pub country_code: Option<String>,
+    pub rate_limit_profile_name: Option<String>,
     pub active: Option<bool>,
     pub page: Option<u32>,
     pub limit: Option<u32>,
@@ -307,6 +368,19 @@ impl Rule {
             .await
     }
 
+    pub async fn read_info_all(pool: &PgPool) -> Result<RuleInfoCounts, Error> {
+        let sql = "SELECT
+            (SELECT count(*) FROM rules) as total,
+            (SELECT count(*) FROM rules WHERE active = true) as active";
+        query(sql)
+            .map(|row: PgRow| RuleInfoCounts {
+                total: row.get("total"),
+                active: row.get("active"),
+            })
+            .fetch_one(pool)
+            .await
+    }
+
     pub async fn update(pool: &PgPool, rule: UpdateRule) -> Result<Self, Error> {
         let sql = "UPDATE rules set
                 name = $1,
@@ -366,7 +440,7 @@ impl Rule {
     }
 
     pub async fn count_paged(pool: &PgPool, params: &ReadRuleParams) -> Result<i64, Error> {
-        let filters = vec![
+        let like_filters = vec![
             ("ip_address", &params.ip_address),
             ("protocol", &params.protocol),
             ("fqdn", &params.fqdn),
@@ -375,19 +449,63 @@ impl Rule {
             ("city_name", &params.city_name),
             ("country_name", &params.country_name),
             ("country_code", &params.country_code),
+            ("name", &params.name),
+            ("description", &params.description),
+            ("mode", &params.mode),
         ];
-        let active_filters: Vec<(&str, String)> = filters
+        let active_like_filters: Vec<(&str, String)> = like_filters
             .into_iter()
             .filter_map(|(col, val)| val.as_ref().map(|v| (col, v.clone())))
             .collect();
-        let mut sql = "SELECT COUNT(*) total FROM rules WHERE 1=1".to_string();
-        for (i, (col, _)) in active_filters.iter().enumerate() {
-            let param_index = i + 1;
+        let mut sql = "SELECT COUNT(*) total FROM rules LEFT JOIN rate_limit_profiles ON rules.rate_limit_profile_id = rate_limit_profiles.id WHERE 1=1".to_string();
+        let mut param_index = 0i32;
+        for (col, _) in &active_like_filters {
+            param_index += 1;
             sql.push_str(&format!(" AND {col} LIKE ${param_index}"));
         }
+        // Boolean exact-match filters
+        if params.allow.is_some() {
+            param_index += 1;
+            sql.push_str(&format!(" AND allow = ${param_index}"));
+        }
+        if params.store.is_some() {
+            param_index += 1;
+            sql.push_str(&format!(" AND store = ${param_index}"));
+        }
+        if params.active.is_some() {
+            param_index += 1;
+            sql.push_str(&format!(" AND active = ${param_index}"));
+        }
+        // Integer exact-match filter
+        if params.weight.is_some() {
+            param_index += 1;
+            sql.push_str(&format!(" AND weight = ${param_index}"));
+        }
+        // Joined table filter (rate_limit_profile_name)
+        if params.rate_limit_profile_name.is_some() {
+            param_index += 1;
+            sql.push_str(&format!(
+                " AND rate_limit_profiles.name LIKE ${param_index}"
+            ));
+        }
         let mut query = query(&sql);
-        for (_, value) in active_filters {
+        for (_, value) in active_like_filters {
             query = query.bind(value);
+        }
+        if let Some(val) = params.allow {
+            query = query.bind(val);
+        }
+        if let Some(val) = params.store {
+            query = query.bind(val);
+        }
+        if let Some(val) = params.active {
+            query = query.bind(val);
+        }
+        if let Some(val) = params.weight {
+            query = query.bind(val);
+        }
+        if let Some(ref val) = params.rate_limit_profile_name {
+            query = query.bind(val);
         }
         query
             .map(|row: PgRow| {
@@ -399,7 +517,7 @@ impl Rule {
     }
 
     pub async fn read_paged(pool: &PgPool, params: &ReadRuleParams) -> Result<Vec<Self>, Error> {
-        let filters = vec![
+        let like_filters = vec![
             ("ip_address", &params.ip_address),
             ("protocol", &params.protocol),
             ("fqdn", &params.fqdn),
@@ -408,29 +526,67 @@ impl Rule {
             ("city_name", &params.city_name),
             ("country_name", &params.country_name),
             ("country_code", &params.country_code),
+            ("name", &params.name),
+            ("description", &params.description),
+            ("mode", &params.mode),
         ];
-        let active_filters: Vec<(&str, String)> = filters
+        let active_like_filters: Vec<(&str, String)> = like_filters
             .into_iter()
             .filter_map(|(col, val)| val.as_ref().map(|v| (col, v.clone())))
             .collect();
         let mut sql = "SELECT rules.*, rate_limit_profiles.name as rate_limit_profile_name FROM rules LEFT JOIN rate_limit_profiles ON rules.rate_limit_profile_id = rate_limit_profiles.id WHERE 1=1".to_string();
-        for (i, (col, _)) in active_filters.iter().enumerate() {
-            let param_index = i + 1;
+        let mut param_index = 0i32;
+        for (col, _) in &active_like_filters {
+            param_index += 1;
             sql.push_str(&format!(" AND {col} LIKE ${param_index}"));
         }
-        let limit_index = active_filters.len() + 1;
+        // Boolean exact-match filters
+        if params.allow.is_some() {
+            param_index += 1;
+            sql.push_str(&format!(" AND allow = ${param_index}"));
+        }
+        if params.store.is_some() {
+            param_index += 1;
+            sql.push_str(&format!(" AND store = ${param_index}"));
+        }
+        if params.active.is_some() {
+            param_index += 1;
+            sql.push_str(&format!(" AND active = ${param_index}"));
+        }
+        // Integer exact-match filter
+        if params.weight.is_some() {
+            param_index += 1;
+            sql.push_str(&format!(" AND weight = ${param_index}"));
+        }
+        // Joined table filter (rate_limit_profile_name)
+        if let Some(ref _val) = params.rate_limit_profile_name {
+            param_index += 1;
+            sql.push_str(&format!(
+                " AND rate_limit_profiles.name LIKE ${param_index}"
+            ));
+        }
+        let limit_index = param_index + 1;
         let offset_index = limit_index + 1;
-        if let Some(sort_by) = params.sort_by.as_ref()
-            && [
-                "ip_address",
-                "protocol",
-                "fqdn",
-                "path",
-                "city_name",
-                "country_name",
-                "country_code",
-            ]
-            .contains(&sort_by.as_str())
+        let sort_by = params.sort_by.as_deref().unwrap_or("id");
+        if [
+            "id",
+            "name",
+            "description",
+            "mode",
+            "weight",
+            "allow",
+            "store",
+            "active",
+            "ip_address",
+            "protocol",
+            "fqdn",
+            "path",
+            "city_name",
+            "country_name",
+            "country_code",
+            "rate_limit_profile_name",
+        ]
+        .contains(&sort_by)
         {
             if params.asc.unwrap_or(true) {
                 sql.push_str(&format!(" ORDER BY {sort_by} ASC"));
@@ -440,11 +596,27 @@ impl Rule {
         }
         sql.push_str(&format!(" LIMIT ${limit_index} OFFSET ${offset_index}"));
         let mut query = query(&sql);
-        for (_, value) in active_filters {
+        for (_, value) in active_like_filters {
             query = query.bind(value);
         }
+        if let Some(val) = params.allow {
+            query = query.bind(val);
+        }
+        if let Some(val) = params.store {
+            query = query.bind(val);
+        }
+        if let Some(val) = params.active {
+            query = query.bind(val);
+        }
+        if let Some(val) = params.weight {
+            query = query.bind(val);
+        }
+        if let Some(ref val) = params.rate_limit_profile_name {
+            query = query.bind(val);
+        }
         let limit = params.limit.unwrap_or(DEFAULT_LIMIT) as i32;
-        let offset = ((params.page.unwrap_or(DEFAULT_PAGE) - 1) as i32) * limit;
+        let page = params.page.unwrap_or(DEFAULT_PAGE).max(1);
+        let offset = ((page - 1) as i32) * limit;
         query
             .bind(limit)
             .bind(offset)

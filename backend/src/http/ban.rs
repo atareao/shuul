@@ -49,11 +49,23 @@ pub struct UnbanParams {
     pub rule_id: Option<i32>,
 }
 
-/// GET /api/v1/bans — List all active bans.
+/// GET /api/v1/bans — List active bans with pagination, filtering, and sorting.
+#[derive(Debug, Deserialize)]
+pub struct BanListParams {
+    pub ip_address: Option<String>,
+    pub reason: Option<String>,
+    pub escalation_level: Option<u32>,
+    pub page: Option<u32>,
+    pub limit: Option<u32>,
+    pub sort_by: Option<String>,
+    pub asc: Option<bool>,
+}
+
 pub async fn list_handler(
     State(app_state): State<Arc<AppState>>,
+    Query(params): Query<BanListParams>,
 ) -> Result<impl IntoResponse, AppError> {
-    let bans = {
+    let mut bans = {
         let ban_manager = app_state
             .ban_manager
             .lock()
@@ -72,19 +84,108 @@ pub async fn list_handler(
             })
             .collect::<Vec<_>>()
     };
-    let count = bans.len() as i64;
+
+    // Apply filters
+    if let Some(ref ip) = params.ip_address {
+        let ip_lower = ip.to_lowercase();
+        bans.retain(|b| b.ip_address.to_lowercase().contains(&ip_lower));
+    }
+    if let Some(ref reason) = params.reason {
+        let reason_lower = reason.to_lowercase();
+        bans.retain(|b| b.reason.to_lowercase().contains(&reason_lower));
+    }
+    if let Some(level) = params.escalation_level {
+        bans.retain(|b| b.escalation_level == level);
+    }
+
+    let records = bans.len() as i64;
+
+    // Sort
+    let sort_by = params.sort_by.as_deref().unwrap_or("ip_address");
+    let asc = params.asc.unwrap_or(true);
+    if [
+        "ip_address",
+        "reason",
+        "ban_duration_seconds",
+        "escalation_level",
+        "time_remaining_seconds",
+    ]
+    .contains(&sort_by)
+    {
+        match sort_by {
+            "ip_address" => {
+                if asc {
+                    bans.sort_by(|a, b| a.ip_address.cmp(&b.ip_address));
+                } else {
+                    bans.sort_by(|a, b| b.ip_address.cmp(&a.ip_address));
+                }
+            },
+            "reason" => {
+                if asc {
+                    bans.sort_by(|a, b| a.reason.cmp(&b.reason));
+                } else {
+                    bans.sort_by(|a, b| b.reason.cmp(&a.reason));
+                }
+            },
+            "ban_duration_seconds" => {
+                if asc {
+                    bans.sort_by(|a, b| a.ban_duration_seconds.cmp(&b.ban_duration_seconds));
+                } else {
+                    bans.sort_by(|a, b| b.ban_duration_seconds.cmp(&a.ban_duration_seconds));
+                }
+            },
+            "escalation_level" => {
+                if asc {
+                    bans.sort_by(|a, b| a.escalation_level.cmp(&b.escalation_level));
+                } else {
+                    bans.sort_by(|a, b| b.escalation_level.cmp(&a.escalation_level));
+                }
+            },
+            "time_remaining_seconds" => {
+                if asc {
+                    bans.sort_by(|a, b| a.time_remaining_seconds.cmp(&b.time_remaining_seconds));
+                } else {
+                    bans.sort_by(|a, b| b.time_remaining_seconds.cmp(&a.time_remaining_seconds));
+                }
+            },
+            _ => {},
+        }
+    }
+
+    // Pagination
+    let page = params.page.unwrap_or(1).max(1);
+    let limit = params
+        .limit
+        .unwrap_or(crate::constants::DEFAULT_LIMIT)
+        .min(100);
+    let offset = ((page - 1) as usize) * (limit as usize);
+    let total_pages = if records == 0 {
+        0u32
+    } else {
+        ((records as f64) / (limit as f64)).ceil() as u32
+    };
+    let paged_bans: Vec<_> = bans.into_iter().skip(offset).take(limit as usize).collect();
+
     let pagination = Pagination {
-        page: 1,
-        limit: count.max(1) as u32,
-        pages: 1,
-        records: count,
-        prev: None,
-        next: None,
+        page,
+        limit,
+        pages: total_pages,
+        records,
+        prev: if page > 1 {
+            Some((page - 1).to_string())
+        } else {
+            None
+        },
+        next: if page < total_pages {
+            Some((page + 1).to_string())
+        } else {
+            None
+        },
     };
     Ok(PagedResponse::new(
         StatusCode::OK,
         "Active bans",
-        Data::Some(serde_json::to_value(bans)?),
+        Data::Some(serde_json::to_value(paged_bans)?),
         pagination,
     ))
 }

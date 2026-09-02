@@ -347,6 +347,7 @@ impl BanManager {
     /// Mark all expired (past their `ban_duration_seconds`) bans as expired in the DB.
     ///
     /// Call this periodically (e.g. via a cron-like task) to keep the DB clean.
+    #[allow(dead_code)]
     pub async fn cleanup_expired_db(pool: &sqlx::PgPool) -> Result<(), sqlx::Error> {
         sqlx::query(
             "UPDATE bans SET expired = TRUE \

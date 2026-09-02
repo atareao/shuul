@@ -11,7 +11,7 @@ const TITLE = "Active Bans";
 const ENDPOINT = "bans";
 
 const FIELDS: FieldDefinition<Ban>[] = [
-    { key: 'id', label: 'IP', type: 'string', value: "", width: 140, visible: true },
+    { key: 'id', label: 'IP', type: 'string', value: "", width: 140, visible: true, filterKey: "ip_address", sortKey: "ip_address" },
     { key: 'reason', label: 'Reason', type: 'string', value: "", width: 250, visible: true },
     { key: 'ban_duration_seconds', label: 'Duration (s)', type: 'number', value: 0, width: 100, visible: true },
     { key: 'time_remaining_seconds', label: 'Remaining (s)', type: 'number', value: 0, width: 100, visible: true },
@@ -55,6 +55,7 @@ export class InnerPage extends React.Component<{ navigate: any; t: any }, {}> {
                 dialogMessages={BAN_DIALOG_MESSAGES}
                 t={this.props.t}
                 hasActions={true}
+                defaultSortField="ip_address"
                 renderHeaderAction={this.renderHeaderAction}
                 renderActionColumn={this.renderActionColumn}
             />

@@ -26,6 +26,7 @@ pub fn rule_router() -> Router<Arc<AppState>> {
         .route("/", routing::post(create_handler))
         .route("/", routing::get(read_handler))
         .route("/info", routing::get(read_info_handler))
+        .route("/info/all", routing::get(read_info_all_handler))
         .route("/", routing::patch(update_handler))
         .route("/", routing::delete(delete_handler))
         .route("/export", routing::get(export_handler))
@@ -152,6 +153,17 @@ pub async fn read_info_handler(
         )
         .into_response()),
     }
+}
+
+pub async fn read_info_all_handler(
+    State(app_state): State<Arc<AppState>>,
+) -> Result<impl IntoResponse, AppError> {
+    let info = Rule::read_info_all(&app_state.pool).await?;
+    Ok(ApiResponse::new(
+        StatusCode::OK,
+        "Rule info",
+        Data::Some(serde_json::to_value(info)?),
+    ))
 }
 
 /// Updates an existing rule in the database and refreshes the in‑memory cache.

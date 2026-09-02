@@ -444,6 +444,14 @@ impl Request {
         let offset_index = limit_index + 1;
         let sort_by = params.sort_by.as_deref().unwrap_or("created_at");
         if [
+            "id",
+            "rule_name",
+            "method",
+            "user_agent",
+            "referer",
+            "content_type",
+            "accept_language",
+            "x_request_id",
             "created_at",
             "ip_address",
             "protocol",
@@ -453,12 +461,6 @@ impl Request {
             "city_name",
             "country_name",
             "country_code",
-            "user_agent",
-            "method",
-            "referer",
-            "content_type",
-            "accept_language",
-            "x_request_id",
         ]
         .contains(&sort_by)
         {
@@ -474,7 +476,8 @@ impl Request {
             query = query.bind(value);
         }
         let limit = params.limit.unwrap_or(DEFAULT_LIMIT) as i32;
-        let offset = ((params.page.unwrap_or(DEFAULT_PAGE) - 1) as i32) * limit;
+        let page = params.page.unwrap_or(DEFAULT_PAGE).max(1);
+        let offset = ((page - 1) as i32) * limit;
         query
             .bind(limit)
             .bind(offset)
