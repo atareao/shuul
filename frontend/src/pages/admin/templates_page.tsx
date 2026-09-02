@@ -62,6 +62,11 @@ interface State {
     selectedTemplate: RuleTemplate | null;
     fqdn: string;
     ipAddress: string;
+    ruleName: string;
+    ruleDescription: string;
+    ruleWeight: number;
+    ruleActive: boolean;
+    ruleStore: boolean;
     // Profile template apply modal
     profileModalVisible: boolean;
     selectedProfile: RateLimitProfileTemplate | null;
@@ -82,6 +87,11 @@ export default class TemplatesPage extends React.Component<{}, State> {
             selectedTemplate: null,
             fqdn: "",
             ipAddress: "",
+            ruleName: "",
+            ruleDescription: "",
+            ruleWeight: 100,
+            ruleActive: true,
+            ruleStore: true,
             profileModalVisible: false,
             selectedProfile: null,
         };
