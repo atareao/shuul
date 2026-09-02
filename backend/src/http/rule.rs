@@ -270,18 +270,19 @@ pub async fn import_handler(
     for rule in &payload.rules {
         let now = chrono::Utc::now();
         let sql = r#"INSERT INTO rules (
-            name, description, weight, mode, allow, store,
+            name, description, weight, mode, pipeline, allow, store,
             ip_address, protocol, fqdn, path, query,
             city_name, country_name, country_code,
             user_agent, method, referer, content_type, accept_language, x_request_id,
             rate_limit_profile_id, active, created_at, updated_at
         ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10,
                   $11, $12, $13, $14, $15, $16, $17, $18, $19, $20,
-                  $21, $22, $23, $24)
+                  $21, $22, $23, $24, $25)
         ON CONFLICT (name) DO UPDATE SET
             description = EXCLUDED.description,
             weight = EXCLUDED.weight,
             mode = EXCLUDED.mode,
+            pipeline = EXCLUDED.pipeline,
             allow = EXCLUDED.allow,
             store = EXCLUDED.store,
             ip_address = EXCLUDED.ip_address,
@@ -307,6 +308,7 @@ pub async fn import_handler(
             .bind(rule.description.as_deref().unwrap_or(""))
             .bind(rule.weight.unwrap_or(100))
             .bind(rule.mode.as_deref().unwrap_or("log_only"))
+            .bind(rule.pipeline.as_deref().unwrap_or("waf"))
             .bind(rule.allow.unwrap_or(true))
             .bind(rule.store.unwrap_or(true))
             .bind(&rule.ip_address)

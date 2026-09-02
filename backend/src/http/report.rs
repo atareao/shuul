@@ -7,8 +7,8 @@
 //! ## Flujo
 //!
 //! 1. Recibe `ReportPayload` (ip, status_code, path, method)
-//! 2. Matchea contra las reglas activas (reusa `CacheRule::matches`)
-//! 3. Si matchea una regla con `rate_limit_profile_id`:
+//! 2. Matchea contra TODAS las reglas activas (fail2ban-style: múltiples jails)
+//! 3. Para cada regla que matchee con `rate_limit_profile_id`:
 //!    a. Carga el perfil de rate limiting
 //!    b. Si `status_code` está en `profile.fail_codes`:
 //!       - Obtiene/crea el `RateLimiter` y llama a `rl.record(ip)`
@@ -59,8 +59,8 @@ async fn report_handler(
         created_at: chrono::Utc::now(),
     };
 
-    // ── Step 2: Match against cached rules (sync, releases lock before any await) ──
-    let matched: Option<(i32, i32)> = {
+    // ── Step 2: Match against ALL cached rules (fail2ban-style: múltiples jails) ──
+    let matches: Vec<(i32, i32)> = {
         let rules = match app_state.rules.lock() {
             Ok(g) => g,
             Err(e) => {
@@ -69,25 +69,39 @@ async fn report_handler(
             },
         };
 
-        let mut result: Option<(i32, i32)> = None;
+        let mut results: Vec<(i32, i32)> = Vec::new();
         for cache_rule in rules.iter() {
             if !cache_rule.matches(&request) {
+                continue;
+            }
+            // Skip waf-only rules in Jail pipeline
+            if cache_rule.rule.pipeline == "waf" {
                 continue;
             }
             if cache_rule.rule.mode.as_str() == "off" {
                 continue;
             }
             if let Some(profile_id) = cache_rule.rule.rate_limit_profile_id {
-                result = Some((cache_rule.rule.id, profile_id));
+                results.push((cache_rule.rule.id, profile_id));
             }
-            break;
         }
-        result
+        results
     };
     // rules lock is released here
 
-    // ── Step 3: Apply rate limiting if matched and fail_code ──
-    if let Some((rule_id, profile_id)) = matched {
+    if matches.is_empty() {
+        debug!(
+            "Report: no matching rule for {} {}",
+            payload.ip_address,
+            payload.path.as_deref().unwrap_or("?")
+        );
+        return EmptyResponse::create(StatusCode::OK, "Ok");
+    }
+
+    // ── Step 3: Apply rate limiting for each matched rule (fail2ban-style) ──
+    let ip: Option<IpAddr> = payload.ip_address.parse().ok();
+
+    for (rule_id, profile_id) in &matches {
         debug!(
             "Report: {} {} {} (status={}) matched rule #{}, profile #{}",
             payload.method.as_deref().unwrap_or("?"),
@@ -99,107 +113,100 @@ async fn report_handler(
         );
 
         // Load the profile from DB (async, no locks held)
-        let profile = match RateLimitProfile::read(&app_state.pool, profile_id).await {
+        let profile = match RateLimitProfile::read(&app_state.pool, *profile_id).await {
             Ok(p) => p,
             Err(e) => {
                 warn!("Failed to load RateLimitProfile {profile_id}: {e}");
-                return EmptyResponse::create(StatusCode::OK, "Ok");
+                continue;
             },
         };
 
         // Check if the reported status_code is in the profile's fail_codes
         let status_i32 = i32::from(payload.status_code);
-        if profile.fail_codes.contains(&status_i32) {
+        if !profile.fail_codes.contains(&status_i32) {
             debug!(
-                "Status code {} is in fail_codes {:?} for profile '{}'",
-                status_i32, profile.fail_codes, profile.name
+                "Status code {} NOT in fail_codes {:?}, skipping rate limit for rule #{}",
+                status_i32, profile.fail_codes, rule_id
             );
+            continue;
+        }
 
-            if let Ok(ip) = payload.ip_address.parse::<IpAddr>() {
-                // Rate limiter check (sync)
-                let should_ban = {
-                    let mut rate_limiters = match app_state.rate_limiter.lock() {
+        debug!(
+            "Status code {} is in fail_codes {:?} for profile '{}'",
+            status_i32, profile.fail_codes, profile.name
+        );
+
+        if let Some(ip) = ip {
+            // Rate limiter check (sync)
+            let should_ban = {
+                let mut rate_limiters = match app_state.rate_limiter.lock() {
+                    Ok(g) => g,
+                    Err(e) => {
+                        error!("Rate limiter mutex poisoned: {e}");
+                        return EmptyResponse::create(
+                            StatusCode::INTERNAL_SERVER_ERROR,
+                            "Internal error",
+                        );
+                    },
+                };
+                let rl = rate_limiters.entry(*rule_id).or_insert_with(|| {
+                    RateLimiter::new(profile.max_retry as u32, profile.find_time_seconds)
+                });
+                rl.record(ip)
+            };
+            // rate_limiter lock released
+
+            if should_ban {
+                debug!(
+                    "Report: BANNED {} via rule #{} (profile: {})",
+                    ip, rule_id, profile.name
+                );
+
+                // Ban in memory (sync, releases lock before await)
+                let ban_info = {
+                    let mut ban_manager = match app_state.ban_manager.lock() {
                         Ok(g) => g,
                         Err(e) => {
-                            error!("Rate limiter mutex poisoned: {e}");
+                            error!("Ban manager mutex poisoned: {e}");
                             return EmptyResponse::create(
                                 StatusCode::INTERNAL_SERVER_ERROR,
                                 "Internal error",
                             );
                         },
                     };
-                    let rl = rate_limiters.entry(rule_id).or_insert_with(|| {
-                        RateLimiter::new(profile.max_retry as u32, profile.find_time_seconds)
-                    });
-                    rl.record(ip)
-                };
-                // rate_limiter lock released
+                    let ban_duration = if profile.bantime_increment {
+                        None
+                    } else {
+                        Some(i64::from(profile.ban_time_seconds))
+                    };
 
-                if should_ban {
-                    debug!(
-                        "Report: BANNED {} via {} (profile: {})",
-                        ip,
-                        payload.path.as_deref().unwrap_or("?"),
-                        profile.name
+                    let reason = format!(
+                        "Rate limit (report): {} requests in {}s (profile: {})",
+                        profile.max_retry, profile.find_time_seconds, profile.name
                     );
 
-                    // Ban in memory (sync, releases lock before await)
-                    let ban_info = {
-                        let mut ban_manager = match app_state.ban_manager.lock() {
-                            Ok(g) => g,
-                            Err(e) => {
-                                error!("Ban manager mutex poisoned: {e}");
-                                return EmptyResponse::create(
-                                    StatusCode::INTERNAL_SERVER_ERROR,
-                                    "Internal error",
-                                );
-                            },
-                        };
-                        let ban_duration = if profile.bantime_increment {
-                            None
-                        } else {
-                            Some(i64::from(profile.ban_time_seconds))
-                        };
+                    let info = ban_manager
+                        .ban(ip, Some(*rule_id), reason.clone(), ban_duration)
+                        .clone();
+                    (reason, info)
+                };
+                // ban_manager lock released
 
-                        let reason = format!(
-                            "Rate limit (report): {} requests in {}s (profile: {})",
-                            profile.max_retry, profile.find_time_seconds, profile.name
-                        );
-
-                        let info = ban_manager
-                            .ban(ip, Some(profile_id), reason.clone(), ban_duration)
-                            .clone();
-                        (reason, info)
-                    };
-                    // ban_manager lock released
-
-                    // Persist to database (async, no locks held)
-                    if let Err(e) = BanManager::persist_ban(
-                        &app_state.pool,
-                        ip,
-                        Some(profile_id),
-                        &ban_info.0,
-                        ban_info.1.ban_duration_seconds,
-                        ban_info.1.escalation_level,
-                    )
-                    .await
-                    {
-                        warn!("Failed to persist ban to DB: {e}");
-                    }
+                // Persist to database (async, no locks held)
+                if let Err(e) = BanManager::persist_ban(
+                    &app_state.pool,
+                    ip,
+                    Some(*rule_id),
+                    &ban_info.0,
+                    ban_info.1.ban_duration_seconds,
+                    ban_info.1.escalation_level,
+                )
+                .await
+                {
+                    warn!("Failed to persist ban to DB: {e}");
                 }
             }
-        } else {
-            debug!(
-                "Status code {} NOT in fail_codes {:?}, skipping rate limit",
-                status_i32, profile.fail_codes
-            );
         }
-    } else {
-        debug!(
-            "Report: no matching rule for {} {}",
-            payload.ip_address,
-            payload.path.as_deref().unwrap_or("?")
-        );
     }
 
     // Always return 200 OK (fire-and-forget semantics)
