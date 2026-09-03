@@ -1,3 +1,12 @@
+## [0.8.0] - 2026-09-03
+
+### 🚀 Features
+
+- Production deployment config with Traefik reverse proxy
+- Env-based migrations path (executable-relative in production)
+- Compose.yml with Traefik labels, external geo volume, proxy network
+- Fix justfile push recipe (remove redundant docker.io/ prefix)
+
 ## [0.6.0] - 2026-09-02
 
 ### 💼 Other
