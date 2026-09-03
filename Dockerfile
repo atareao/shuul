@@ -44,6 +44,7 @@ RUN CI=true pnpm build
 FROM alpine:3.23
 
 ENV RUST_LOG=info \
+    RUST_ENV=production \
     USER=app \
     UID=1000
 

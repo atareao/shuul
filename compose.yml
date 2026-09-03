@@ -1,55 +1,51 @@
-# Shuul Production Stack — SQLite
-# ────────────────────────────────────────────────────────────
-# Variables de entorno requeridas (poner en .env):
-#
-#   SECRET=<random-string>
-#   OIDC_ISSUER_URL=https://auth.tudominio.com
-#   OIDC_CLIENT_ID=<client-id>
-#   OIDC_CLIENT_SECRET=<client-secret>
-#   OIDC_REDIRECT_URL=https://shuul.tudominio.com/api/v1/auth/callback
-#
-#   MAXMIND_LICENSE_KEY=<key>   # opcional, para GeoIP
-# ────────────────────────────────────────────────────────────
-
 services:
   shuul:
-    image: atareao/shuul:latest
+    image: atareao/shuul
     container_name: shuul
-    init: true
     restart: unless-stopped
-
-    ports:
-      - "3000:3000"
-
+    init: true
     environment:
-      # ── App ──
-      RUST_LOG: "${RUST_LOG:-debug}"
-      PORT: "3000"
-      DATABASE_URL: "sqlite:///app/db/shuul.db"
-
+      # --- App ---
+      RUST_LOG: backend=debug,maxminddb=warn
+      RUST_BACTRACE: full
+      RUST_ENV: production
+      PORT: 3000
+      DATABASE_URL: sqlite:///app/db/shuul.db
       # ── Auth (OIDC / PocketID) ──
-      SECRET: "${SECRET}"
-      OIDC_ISSUER_URL: "${OIDC_ISSUER_URL}"
-      OIDC_CLIENT_ID: "${OIDC_CLIENT_ID}"
-      OIDC_CLIENT_SECRET: "${OIDC_CLIENT_SECRET}"
-      OIDC_REDIRECT_URL: "${OIDC_REDIRECT_URL}"
-
-      # ── GeoIP (MaxMind) ──
-      MAXMIND_DB_PATH: "${MAXMIND_DB_PATH:-/app/data/GeoLite2-City.mmdb}"
-
+      SECRET: $SECRET
+      OIDC_ISSUER_URL: $OIDC_ISSUER_URL
+      OIDC_CLIENT_ID: $OIDC_CLIENT_ID
+      OIDC_CLIENT_SECRET: $OIDC_CLIENT_SECRET
+      OIDC_REDIRECT_URL: $OIDC_REDIRECT_URL
+      # --- GeoIP (MaxMind) ---
+      MAXMIND_DB_PATH: /app/geo/GeoLite2-City.mmdb
     volumes:
+      - geo:/app/geo
       - db:/app/db
-      - ./data/GeoLite2-City.mmdb:/app/data/GeoLite2-City.mmdb
-
+    networks:
+      - proxy
     healthcheck:
-      test: ["CMD", "wget", "-qO-", "http://localhost:3000/api/v1/health/"]
-      interval: 30s
+      test:
+        - CMD
+        - curl
+        - -f
+        - http://localhost:3000/api/v1/health/
+      interval: 60s
       timeout: 5s
       retries: 3
       start_period: 10s
-
-    # Opcional: redes personalizadas
-    # networks:
-    #   - proxy   # si usas Traefik/Caddy como reverse proxy
+    labels:
+      traefik.enable: true
+      traefik.http.routers.shuul.rule: Host(`${FQDN}`)
+      traefik.http.routers.shuul.entrypoints: https
+      traefik.http.services.shuul.loadbalancer.server.port: 3000
 volumes:
+  geo:
+    external: true
   db: {}
+networks:
+  proxy:
+    external: true
+x-dockge:
+  urls:
+    - https://${FQDN}

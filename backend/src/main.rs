@@ -94,7 +94,13 @@ async fn main() -> Result<(), Error> {
     // Ejecutar migraciones
     // Runtime: migrations at ./migrations/ (Docker: /app/migrations, dev: project root)
     const MIGRATIONS_DIR: &str = "migrations";
-    let migrations_path = if std::path::Path::new(MIGRATIONS_DIR).exists() {
+    let migrations_path = if var("RUST_ENV").as_deref() == Ok("production") {
+        // En producción: relativo al ejecutable, no al working directory
+        let exe_dir = std::env::current_exe()
+            .map(|p| p.parent().unwrap().to_path_buf())
+            .unwrap_or_else(|_| std::path::PathBuf::from("."));
+        exe_dir.join(MIGRATIONS_DIR)
+    } else if std::path::Path::new(MIGRATIONS_DIR).exists() {
         std::path::PathBuf::from(MIGRATIONS_DIR)
     } else {
         // Fallback for development via cargo run
