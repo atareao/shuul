@@ -1,0 +1,55 @@
+# Shuul Production Stack — SQLite
+# ────────────────────────────────────────────────────────────
+# Variables de entorno requeridas (poner en .env):
+#
+#   SECRET=<random-string>
+#   OIDC_ISSUER_URL=https://auth.tudominio.com
+#   OIDC_CLIENT_ID=<client-id>
+#   OIDC_CLIENT_SECRET=<client-secret>
+#   OIDC_REDIRECT_URL=https://shuul.tudominio.com/api/v1/auth/callback
+#
+#   MAXMIND_LICENSE_KEY=<key>   # opcional, para GeoIP
+# ────────────────────────────────────────────────────────────
+
+services:
+  shuul:
+    image: atareao/shuul:latest
+    container_name: shuul
+    init: true
+    restart: unless-stopped
+
+    ports:
+      - "3000:3000"
+
+    environment:
+      # ── App ──
+      RUST_LOG: "${RUST_LOG:-debug}"
+      PORT: "3000"
+      DATABASE_URL: "sqlite:///app/db/shuul.db"
+
+      # ── Auth (OIDC / PocketID) ──
+      SECRET: "${SECRET}"
+      OIDC_ISSUER_URL: "${OIDC_ISSUER_URL}"
+      OIDC_CLIENT_ID: "${OIDC_CLIENT_ID}"
+      OIDC_CLIENT_SECRET: "${OIDC_CLIENT_SECRET}"
+      OIDC_REDIRECT_URL: "${OIDC_REDIRECT_URL}"
+
+      # ── GeoIP (MaxMind) ──
+      MAXMIND_DB_PATH: "${MAXMIND_DB_PATH:-/app/data/GeoLite2-City.mmdb}"
+
+    volumes:
+      - db:/app/db
+      - ./data/GeoLite2-City.mmdb:/app/data/GeoLite2-City.mmdb
+
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://localhost:3000/api/v1/health/"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 10s
+
+    # Opcional: redes personalizadas
+    # networks:
+    #   - proxy   # si usas Traefik/Caddy como reverse proxy
+volumes:
+  db: {}
