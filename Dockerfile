@@ -6,9 +6,7 @@ FROM docker.io/library/rust:alpine3.23 AS backend-builder
 RUN apk add --no-cache --update \
     build-base \
     musl-dev \
-    pkgconfig \
-    openssl-dev \
-    openssl-libs-static
+    pkgconfig
 
 WORKDIR /build
 
@@ -19,9 +17,6 @@ RUN cargo init --bin --name backend . && \
 COPY backend/Cargo.toml backend/Cargo.lock ./
 RUN cargo build --release && \
     rm -rf src
-
-ENV OPENSSL_LIB_DIR=/usr/lib \
-    OPENSSL_STATIC=1
 
 COPY backend/src ./src
 RUN touch src/main.rs src/lib.rs && \
@@ -48,19 +43,34 @@ RUN CI=true pnpm build
 # ═══════════════════════════════════════════════════════════════
 FROM alpine:3.23
 
-RUN apk add --no-cache \
-    ca-certificates \
-    && adduser -D -h /app -u 1000 app
+ENV RUST_LOG=info \
+    USER=app \
+    UID=1000
+
+RUN apk add --update --no-cache \
+    curl \
+    sqlite \
+    ca-certificates && \
+    rm -rf /var/cache/apk && \
+    rm -rf /var/lib/app/lists && \
+    mkdir -p /app/db /app/data
+
+COPY --from=backend-builder /build/target/release/backend /app
+COPY --from=frontend-builder /build/dist /app/static
+COPY backend/migrations /app/migrations/
+
+# Create the user
+RUN adduser \
+    --disabled-password \
+    --gecos "" \
+    --home "/${USER}" \
+    --shell "/sbin/nologin" \
+    --uid "${UID}" \
+    "${USER}" && \
+    chown -R app:app /app
 
 WORKDIR /app
-COPY --from=backend-builder /build/target/release/backend .
-COPY --from=frontend-builder /build/dist ./static
-COPY backend/migrations ./migrations/
-
-RUN chown -R app:app /app
-
 USER app
 EXPOSE 3000
-ENV RUST_LOG=info
 
 CMD ["./backend"]
