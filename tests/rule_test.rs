@@ -7,7 +7,6 @@ async fn cache_rule_matches_ip() {
         id: 1,
         weight: 1,
         allow: true,
-        store: true,
         ip_address: Some("^127\\.0\\.0\\.1$".to_string()),
         protocol: None,
         fqdn: None,
