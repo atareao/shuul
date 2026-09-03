@@ -5,10 +5,9 @@
 
 use chrono::{DateTime, Utc};
 use http::Uri;
-use maxminddb::Reader;
 use serde::{Deserialize, Serialize};
 
-use super::IPData;
+use super::GeoIpService;
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
 pub struct NewRequest {
@@ -36,7 +35,7 @@ impl NewRequest {
     /// Los encabezados `x-forwarded-*` son la fuente principal de datos.
     /// Para campos de encabezado HTTP estándar, se usa primero el prefijo
     /// `x-forwarded-*` y como fallback el encabezado original.
-    pub fn from_request(headers: &http::HeaderMap, maxmind_db: Option<&Reader<Vec<u8>>>) -> Self {
+    pub fn from_request(headers: &http::HeaderMap, geoip: Option<&GeoIpService>) -> Self {
         let protocol = headers
             .get("x-forwarded-proto")
             .map(|s| s.to_str())
@@ -87,9 +86,9 @@ impl NewRequest {
             }
         });
 
-        // GeoIP lookup: only perform if a MaxMind DB reference is provided
-        let (city_name, country_name, country_code) = if let Some(db) = maxmind_db {
-            let ip_data = IPData::complete(db, ip);
+        // GeoIP lookup: usa el cache de GeoIpService si está disponible
+        let (city_name, country_name, country_code) = if let Some(geoip) = geoip {
+            let ip_data = geoip.lookup(ip);
             (
                 ip_data.city_name.filter(|s| !s.is_empty()),
                 ip_data.country_name.filter(|s| !s.is_empty()),

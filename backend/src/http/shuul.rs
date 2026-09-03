@@ -59,7 +59,7 @@ pub async fn shuul(
     let mut request = crate::models::NewRequest::from_request(
         &headers,
         if needs_geoip {
-            Some(&app_state.maxmind_db)
+            Some(&app_state.geoip)
         } else {
             None
         },
