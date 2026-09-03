@@ -208,9 +208,28 @@ pub async fn ban_handler(
             .lock()
             .map_err(|_| AppError::CachePoisoned)?;
         ban_manager
-            .ban(ip, params.rule_id, reason, params.ban_duration_seconds)
+            .ban(
+                ip,
+                params.rule_id,
+                reason.clone(),
+                params.ban_duration_seconds,
+            )
             .clone()
     };
+
+    // Persist to database (async, no locks held)
+    if let Err(e) = BanManager::persist_ban(
+        &app_state.pool,
+        ip,
+        params.rule_id,
+        &reason,
+        ban_info.ban_duration_seconds,
+        ban_info.escalation_level,
+    )
+    .await
+    {
+        warn!("Failed to persist ban to DB: {e}");
+    }
 
     Ok(ApiResponse::new(
         StatusCode::CREATED,

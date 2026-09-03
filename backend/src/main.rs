@@ -37,11 +37,11 @@ use models::{
 };
 use sqlx::{
     migrate::{MigrateDatabase, Migrator},
-    postgres::PgPoolOptions,
+    sqlite::{SqlitePool, SqlitePoolOptions},
 };
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
-use std::{env::var, path::Path, str::FromStr};
+use std::{env::var, str::FromStr};
 use tower_http::services::{ServeDir, ServeFile};
 use tower_http::{
     cors::{Any, CorsLayer},
@@ -67,8 +67,8 @@ async fn main() -> Result<(), Error> {
         .init();
     info!("Log level: {log_level}");
 
-    let db_url = var("DATABASE_URL").expect("DB_URL environment mandatory");
-    debug!("DB url: {}", db_url);
+    let db_url = var("DATABASE_URL").expect("DATABASE_URL environment mandatory");
+    debug!("DATABASE_URL url: {}", db_url);
     let port = var("PORT").unwrap_or("3000".to_string());
     info!("Port: {}", port);
     let maxmind_db_path = var("MAXMIND_DB_PATH").unwrap_or("geo/GeoLite2-City.mmdb".to_string());
@@ -76,37 +76,33 @@ async fn main() -> Result<(), Error> {
     let secret = var("SECRET").expect("SECRET environment variable is mandatory");
     debug!("Secret: {}", secret);
 
-    // Asegurarse de que la base de datos exista; propagar errores vía `?`
-    if !sqlx::Postgres::database_exists(&db_url).await? {
-        sqlx::Postgres::create_database(&db_url).await?;
+    if !sqlx::Sqlite::database_exists(&db_url).await.unwrap() {
+        sqlx::Sqlite::create_database(&db_url).await.unwrap();
     }
 
-    // Ruta de migraciones (compatible con producción y desarrollo)
-    let migrations = if var("RUST_ENV") == Ok("production".to_string()) {
-        let exe_path = std::env::current_exe()
-            .map_err(|e| Error::Other(format!("failed to get current exe: {e}")))?;
-        let parent = exe_path
-            .parent()
-            .ok_or_else(|| Error::Other("executable has no parent".to_string()))?;
-        parent.join("migrations")
-    } else {
-        let crate_dir = std::env::var("CARGO_MANIFEST_DIR").map_err(Error::from)?;
-        Path::new(&crate_dir).join("migrations")
-    };
-    info!("Migrations path: {}", migrations.display());
-
     // Crear el pool de conexiones (propagar error con `?`)
-    let pool = PgPoolOptions::new()
-        .max_connections(2)
+    let pool = SqlitePoolOptions::new()
+        .max_connections(5)
         .connect(&db_url)
         .await
         .map_err(|e| {
             tracing::error!("Failed to create DB pool: {}", e);
             Error::Other(format!("Failed to create DB pool: {e}"))
         })?;
+    debug!("Created databae pool");
 
     // Ejecutar migraciones
-    Migrator::new(migrations)
+    // Runtime: migrations at ./migrations/ (Docker: /app/migrations, dev: project root)
+    const MIGRATIONS_DIR: &str = "migrations";
+    let migrations_path = if std::path::Path::new(MIGRATIONS_DIR).exists() {
+        std::path::PathBuf::from(MIGRATIONS_DIR)
+    } else {
+        // Fallback for development via cargo run
+        let manifest_dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
+        manifest_dir.join(MIGRATIONS_DIR)
+    };
+    debug!("Migrations path: {:?}", migrations_path);
+    Migrator::new(migrations_path)
         .await
         .map_err(|e| {
             tracing::error!("Failed to load migrations: {}", e);

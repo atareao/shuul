@@ -16,8 +16,7 @@
 
 use chrono::Utc;
 use serde::{Deserialize, Serialize};
-use sqlx::Row;
-use sqlx::postgres::PgPool;
+use sqlx::{Row, SqlitePool};
 use std::collections::HashMap;
 use std::sync::Mutex;
 use std::sync::atomic::{AtomicI64, AtomicU64, Ordering};
@@ -79,7 +78,7 @@ impl StatsCollector {
     }
 
     /// Carga un snapshot desde la BD (si existe).
-    pub async fn load(pool: &PgPool) -> Self {
+    pub async fn load(pool: &SqlitePool) -> Self {
         let stats = Self::new();
         match sqlx::query("SELECT snapshot FROM stats_cache WHERE id = 1")
             .fetch_optional(pool)
@@ -125,7 +124,7 @@ impl StatsCollector {
     }
 
     /// Persiste el snapshot actual a la BD.
-    pub async fn persist(&self, pool: &PgPool) {
+    pub async fn persist(&self, pool: &SqlitePool) {
         let now = Utc::now().timestamp();
         self.last_persist.store(now, Ordering::Relaxed);
 
@@ -158,8 +157,8 @@ impl StatsCollector {
         };
 
         let result = sqlx::query(
-            "INSERT INTO stats_cache (id, snapshot, updated_at) VALUES (1, $1, $2)
-             ON CONFLICT (id) DO UPDATE SET snapshot = EXCLUDED.snapshot, updated_at = EXCLUDED.updated_at",
+            "INSERT INTO stats_cache (id, snapshot, updated_at) VALUES (1, ?, ?)
+             ON CONFLICT (id) DO UPDATE SET snapshot = excluded.snapshot, updated_at = excluded.updated_at",
         )
         .bind(&json_str)
         .bind(Utc::now())

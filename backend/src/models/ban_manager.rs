@@ -236,14 +236,14 @@ impl BanManager {
     /// This is useful on application startup to restore ban state from
     /// the previous session.
     pub async fn load_from_db(
-        pool: &sqlx::PgPool,
+        pool: &sqlx::SqlitePool,
     ) -> Result<(Self, Vec<(IpAddr, Instant)>), sqlx::Error> {
         use chrono::{DateTime, Utc};
         use sqlx::Row;
 
         let rows = sqlx::query(
             "SELECT ip_address, rule_id, reason, banned_at, ban_duration_seconds, escalation_level \
-             FROM bans WHERE expired = FALSE",
+             FROM bans WHERE expired = 0",
         )
         .fetch_all(pool)
         .await?;
@@ -293,7 +293,7 @@ impl BanManager {
     ///
     /// Call this AFTER `BanManager::ban()` to ensure the ban is durable.
     pub async fn persist_ban(
-        pool: &sqlx::PgPool,
+        pool: &sqlx::SqlitePool,
         ip: IpAddr,
         rule_id: Option<i32>,
         reason: &str,
@@ -304,7 +304,7 @@ impl BanManager {
 
         sqlx::query(
             "INSERT INTO bans (ip_address, rule_id, reason, banned_at, ban_duration_seconds, escalation_level, expired, created_at) \
-             VALUES ($1, $2, $3, $4, $5, $6, FALSE, $7)"
+             VALUES (?, ?, ?, ?, ?, ?, 0, ?)"
         )
         .bind(ip.to_string())
         .bind(rule_id)
@@ -323,20 +323,20 @@ impl BanManager {
     ///
     /// Call this AFTER `BanManager::unban()` to keep the DB consistent.
     pub async fn remove_from_db(
-        pool: &sqlx::PgPool,
+        pool: &sqlx::SqlitePool,
         ip: &IpAddr,
         rule_id: Option<i32>,
     ) -> Result<(), sqlx::Error> {
         if let Some(rid) = rule_id {
             sqlx::query(
-                "UPDATE bans SET expired = TRUE WHERE ip_address = $1 AND rule_id = $2 AND expired = FALSE"
+                "UPDATE bans SET expired = 1 WHERE ip_address = ? AND rule_id = ? AND expired = 0",
             )
             .bind(ip.to_string())
             .bind(rid)
             .execute(pool)
             .await?;
         } else {
-            sqlx::query("UPDATE bans SET expired = TRUE WHERE ip_address = $1 AND expired = FALSE")
+            sqlx::query("UPDATE bans SET expired = 1 WHERE ip_address = ? AND expired = 0")
                 .bind(ip.to_string())
                 .execute(pool)
                 .await?;
@@ -348,11 +348,12 @@ impl BanManager {
     ///
     /// Call this periodically (e.g. via a cron-like task) to keep the DB clean.
     #[allow(dead_code)]
-    pub async fn cleanup_expired_db(pool: &sqlx::PgPool) -> Result<(), sqlx::Error> {
+    pub async fn cleanup_expired_db(pool: &sqlx::SqlitePool) -> Result<(), sqlx::Error> {
         sqlx::query(
-            "UPDATE bans SET expired = TRUE \
-             WHERE expired = FALSE \
-             AND banned_at + (ban_duration_seconds * INTERVAL '1 second') < NOW()",
+            "UPDATE bans SET expired = 1 \
+             WHERE expired = 0 \
+             AND CAST(strftime('%s', banned_at) AS INTEGER) + ban_duration_seconds \
+                 < CAST(strftime('%s', 'now') AS INTEGER)",
         )
         .execute(pool)
         .await?;

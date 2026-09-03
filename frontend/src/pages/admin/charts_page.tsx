@@ -1,11 +1,13 @@
-import react from "react";
+import react, { lazy, Suspense } from "react";
 import { useNavigate } from 'react-router';
 import { useTranslation } from "react-i18next";
 import { Flex, Typography, Spin, InputNumber, Select, Card } from 'antd';
-import { Pie, Line } from '@ant-design/charts';
 const { Title } = Typography;
 import { loadData } from "@/common/utils";
 import ModeContext from "@/components/mode_context";
+
+const Line = lazy(() => import('@/components/charts/antd_line'));
+const Pie = lazy(() => import('@/components/charts/antd_pie'));
 
 interface Props {
     navigate: any;
@@ -14,6 +16,7 @@ interface Props {
 
 interface State {
     loading: boolean;
+    error: boolean;
     top_countries: Array<[string, number, number]>;
     top_rules: Array<[string, number, number]>;
     evolution_data: Array<{ id: string; data: Array<{ x: string; y: number }> }>;
@@ -32,6 +35,7 @@ export class InnerPage extends react.Component<Props, State> {
         super(props);
         this.state = {
             loading: true,
+            error: false,
             top_countries: [],
             top_rules: [],
             evolution_data: [],
@@ -44,42 +48,52 @@ export class InnerPage extends react.Component<Props, State> {
         const unit = newUnit || this.state.unit;
         const last = newLast || this.state.last;
 
-        if (all) {
-            this.setState({ loading: true });
-            const [top_countries_res, top_rules_res, evolution_data_res] = await Promise.all([
-                loadData("stats/top_countries"),
-                loadData("stats/top_rules"),
-                loadData("stats/evolution", new Map([
+        try {
+            if (all) {
+                this.setState({ loading: true, error: false });
+                const [top_countries_res, top_rules_res, evolution_data_res] = await Promise.all([
+                    loadData("stats/top_countries"),
+                    loadData("stats/top_rules"),
+                    loadData("stats/evolution", new Map([
+                        ["unit", unit],
+                        ["last", last.toString()],
+                    ])),
+                ]);
+
+                this.setState({
+                    loading: false,
+                    top_countries: top_countries_res.status === 200 ? top_countries_res.data as Array<[string, number, number]> : [],
+                    top_rules: top_rules_res.status === 200 ? top_rules_res.data as Array<[string, number, number]> : [],
+                    evolution_data: evolution_data_res.status === 200 ? evolution_data_res.data as Array<{ id: string; data: Array<{ x: string; y: number }> }> : [],
+                });
+            } else {
+                this.setState({ loading: true, error: false });
+                const evolution_data = await loadData("stats/evolution", new Map([
                     ["unit", unit],
                     ["last", last.toString()],
-                ])),
-            ]);
-
-            this.setState({
-                loading: false,
-                top_countries: top_countries_res.status === 200 ? top_countries_res.data as Array<[string, number, number]> : [],
-                top_rules: top_rules_res.status === 200 ? top_rules_res.data as Array<[string, number, number]> : [],
-                evolution_data: evolution_data_res.status === 200 ? evolution_data_res.data as Array<{ id: string; data: Array<{ x: string; y: number }> }> : [],
-            });
-        } else {
-            this.setState({ loading: true });
-            const evolution_data = await loadData("stats/evolution", new Map([
-                ["unit", unit],
-                ["last", last.toString()],
-            ]));
-            this.setState({
-                loading: false,
-                evolution_data: evolution_data.status === 200 ? evolution_data.data as Array<{ id: string; data: Array<{ x: string; y: number }> }> : [],
-            });
+                ]));
+                this.setState({
+                    loading: false,
+                    evolution_data: evolution_data.status === 200 ? evolution_data.data as Array<{ id: string; data: Array<{ x: string; y: number }> }> : [],
+                });
+            }
+        } catch (err) {
+            console.error("Failed to load charts data:", err);
+            this.setState({ loading: false, error: true });
         }
     }
 
     componentDidMount = async () => {
-        await this.refreshData(true);
+        try {
+            await this.refreshData(true);
+        } catch (err) {
+            console.error("Failed to load charts data on mount:", err);
+            this.setState({ loading: false, error: true });
+        }
     }
 
     render = () => {
-        const { top_countries, top_rules, evolution_data, loading } = this.state;
+        const { top_countries, top_rules, evolution_data, loading, error } = this.state;
 
         const topCountriesData = top_countries.map(([name, count]) => ({ name, value: count }));
         const topRulesData = top_rules.map(([name, count]) => ({ name, value: count }));
@@ -95,6 +109,18 @@ export class InnerPage extends react.Component<Props, State> {
             return (
                 <Flex vertical justify="center" align="center" style={{ minHeight: 400 }}>
                     <Spin size="large" />
+                </Flex>
+            );
+        }
+
+        if (error) {
+            return (
+                <Flex vertical justify="center" align="center" style={{ minHeight: 400 }}>
+                    <Card style={{ width: 400, textAlign: 'center' }}>
+                        <Typography.Text type="danger" style={{ fontSize: 16 }}>
+                            Failed to load charts data
+                        </Typography.Text>
+                    </Card>
                 </Flex>
             );
         }
@@ -129,17 +155,19 @@ export class InnerPage extends react.Component<Props, State> {
                     </Flex>
                     <div style={{ height: 400 }}>
                         {evolutionFlatData.length > 0 ? (
-                            <Line
-                                data={evolutionFlatData}
-                                xField="time"
-                                yField="requests"
-                                seriesField="category"
-                                smooth
-                                point={{ shapeField: 'circle', sizeField: 3 }}
-                                legend={{ color: { position: 'top', layout: { justifyContent: 'center' } } }}
-                                axis={{ x: { title: 'Time' }, y: { title: 'Requests' } }}
-                                slider={{}}
-                            />
+                            <Suspense fallback={<Spin />}>
+                                <Line
+                                    data={evolutionFlatData}
+                                    xField="time"
+                                    yField="requests"
+                                    seriesField="category"
+                                    smooth
+                                    point={{ shapeField: 'circle', sizeField: 3 }}
+                                    legend={{ color: { position: 'top', layout: { justifyContent: 'center' } } }}
+                                    axis={{ x: { title: 'Time' }, y: { title: 'Requests' } }}
+                                    slider={{}}
+                                />
+                            </Suspense>
                         ) : (
                             <Flex justify="center" align="center" style={{ height: '100%' }}>
                                 <Typography.Text type="secondary">No evolution data available</Typography.Text>
@@ -153,15 +181,17 @@ export class InnerPage extends react.Component<Props, State> {
                     <Card title="Top Countries" size="small" style={{ flex: 1, minWidth: 350 }}>
                         <div style={{ height: 350 }}>
                             {topCountriesData.length > 0 ? (
-                                <Pie
-                                    data={topCountriesData}
-                                    angleField="value"
-                                    colorField="name"
-                                    color={COLORS}
-                                    innerRadius={0.5}
-                                    label={{ text: 'name', style: { fontWeight: 'bold' } }}
-                                    legend={{ color: { position: 'right', rowPadding: 4 } }}
-                                />
+                                <Suspense fallback={<Spin />}>
+                                    <Pie
+                                        data={topCountriesData}
+                                        angleField="value"
+                                        colorField="name"
+                                        color={COLORS}
+                                        innerRadius={0.5}
+                                        label={{ text: 'name', style: { fontWeight: 'bold' } }}
+                                        legend={{ color: { position: 'right', rowPadding: 4 } }}
+                                    />
+                                </Suspense>
                             ) : (
                                 <Flex justify="center" align="center" style={{ height: '100%' }}>
                                     <Typography.Text type="secondary">No country data available</Typography.Text>
@@ -172,15 +202,17 @@ export class InnerPage extends react.Component<Props, State> {
                     <Card title="Top Rules" size="small" style={{ flex: 1, minWidth: 350 }}>
                         <div style={{ height: 350 }}>
                             {topRulesData.length > 0 ? (
-                                <Pie
-                                    data={topRulesData}
-                                    angleField="value"
-                                    colorField="name"
-                                    color={COLORS}
-                                    innerRadius={0.5}
-                                    label={{ text: 'name', style: { fontWeight: 'bold' } }}
-                                    legend={{ color: { position: 'right', rowPadding: 4 } }}
-                                />
+                                <Suspense fallback={<Spin />}>
+                                    <Pie
+                                        data={topRulesData}
+                                        angleField="value"
+                                        colorField="name"
+                                        color={COLORS}
+                                        innerRadius={0.5}
+                                        label={{ text: 'name', style: { fontWeight: 'bold' } }}
+                                        legend={{ color: { position: 'right', rowPadding: 4 } }}
+                                    />
+                                </Suspense>
                             ) : (
                                 <Flex justify="center" align="center" style={{ height: '100%' }}>
                                     <Typography.Text type="secondary">No rule data available</Typography.Text>

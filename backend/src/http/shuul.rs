@@ -51,7 +51,7 @@ pub async fn shuul(
             return EmptyResponse::create(StatusCode::INTERNAL_SERVER_ERROR, "Internal error");
         },
     };
-    debug!("Loaded settings: {:?}", settings);
+    debug!("Loaded settings");
 
     // ── Step 2: Safe paths check ──
     if let Some(ref path) = request.path {

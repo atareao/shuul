@@ -27,3 +27,8 @@ dist-ssr
 *.sw?
 .env
 geo
+
+# runtime
+data
+db
+backed
