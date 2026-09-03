@@ -1,5 +1,5 @@
 import React from "react";
-import { Table, Input, Flex, Typography, Switch, Select } from 'antd';
+import { Table, Input, Flex, Typography, Switch, Select, Tag } from 'antd';
 import type { GetProp, TableProps, TableColumnsType } from 'antd';
 import type { FilterValue, SorterResult, TableCurrentDataSource } from 'antd/es/table/interface';
 import { CheckOutlined, CloseOutlined } from '@ant-design/icons';
@@ -42,6 +42,8 @@ type Props<T extends { id: number | string }> = {
     defaultSortDesc?: boolean;
     autoRefresh?: boolean;
     autoRefreshInterval?: number;
+    clientFilter?: (items: T[]) => T[];
+    extraHeaderContent?: React.ReactNode;
 } & Partial<ActionProps<T>>;
 
 interface State<T> {
@@ -210,6 +212,10 @@ export default class CustomTable<T extends { id: number | string }> extends Reac
                 if (field.type === 'boolean') {
                     return content ? <CheckOutlined style={{ color: 'green' }} /> : <CloseOutlined style={{ color: 'red' }} />;
                 }
+                if (field.type === 'tag' && field.options) {
+                    const option = field.options.find(o => o.value === content);
+                    return <Tag color={option?.color}>{option?.label || content}</Tag>;
+                }
                 return <Text>{content}</Text>
             };
             const isNested = fieldKey.includes('.');
@@ -220,6 +226,10 @@ export default class CustomTable<T extends { id: number | string }> extends Reac
                     const value = getNestedValue(record, fieldKey);
                     if (field.type === 'boolean') {
                         return value ? <CheckOutlined style={{ color: 'green' }} /> : <CloseOutlined style={{ color: 'red' }} />;
+                    }
+                    if (field.type === 'tag' && field.options) {
+                        const option = field.options.find(o => o.value === value);
+                        return <Tag color={option?.color}>{option?.label || value}</Tag>;
                     }
                     return <Text>{value !== undefined && value !== null ? value : ''}</Text>;
                 };
@@ -240,7 +250,7 @@ export default class CustomTable<T extends { id: number | string }> extends Reac
                 ),
                 dataIndex: field.key.toString(),
                 key: field.key.toString(),
-                sorter: field.type !== 'boolean',
+                sorter: !field.virtual && field.type !== 'boolean',
                 ellipsis: { showTitle: true },
                 width: field.width || 100,
                 render: (content: any, record: T) => field.render ? field.render(content, record ) : finalRender(content, record),
@@ -376,6 +386,11 @@ export default class CustomTable<T extends { id: number | string }> extends Reac
         const titleText = this.props.t(this.props.title);
         const { hasActions, renderHeaderAction } = this.props;
 
+        // Apply client-side filter if provided
+        const displayItems = this.props.clientFilter
+            ? this.props.clientFilter(this.state.items)
+            : this.state.items;
+
         // Computed pagination config with size changer and total display
         const paginationConfig: TablePaginationConfig = {
             ...this.state.pagination,
@@ -414,7 +429,12 @@ export default class CustomTable<T extends { id: number | string }> extends Reac
         }
         
         const headerUI = hasActions && renderHeaderAction ? (
-            renderHeaderAction(this.handleCreate)
+            <Flex vertical gap="small">
+                <Flex align="center" gap="small">
+                    {renderHeaderAction(this.handleCreate)}
+                </Flex>
+                {this.props.extraHeaderContent}
+            </Flex>
         ) : (
             <Flex align="center" gap="small">
                 <Text style={{ fontSize: '24px' }} strong>{titleText}</Text>
@@ -454,7 +474,7 @@ export default class CustomTable<T extends { id: number | string }> extends Reac
                         style={{ width: '100%' }}
                         columns={this.columns}
                         rowKey={record => record.id.toString()}
-                        dataSource={this.state.items || []}
+                        dataSource={displayItems || []}
                         sortDirections={['ascend', 'descend']}
                         pagination={paginationConfig}
                         loading={this.state.loading}

@@ -5,7 +5,7 @@ export default interface Rule {
     mode: string;
     weight?: number;
     allow?: boolean;
-    store?: boolean;
+    pipeline?: string;
     ip_address?: string;
     protocol?: string;
     fqdn?: string;

@@ -5,6 +5,8 @@ fail2ban-style rate limiting based on HTTP response codes.
 
 ## Architecture
 
+Shuul operates **two independent pipelines** over a single set of rules:
+
 ```
                     ┌──────────────────────────────────────────────┐
                     │                   Traefik                    │
@@ -16,44 +18,62 @@ fail2ban-style rate limiting based on HTTP response codes.
                     ┌──────────────────────────────┼───────────────┐
                     │           shuul              │               │
                     │                              │               │
-                    │  POST /shuul ◄───────────────┘               │
-                    │       │                                      │
-                    │  ┌────┴────┐                                 │
-                    │  │ Rules   │  Match IP, path, UA, geo...     │
-                    │  ├─────────┤                                 │
-                    │  │ Rate    │  fail2ban-style: max_retry,     │
-                    │  │ Limiter │  find_time, ban_time, escalate  │
-                    │  ├─────────┤                                 │
-                    │  │ Ban     │  Memory + DB persistence        │
-                    │  │ Manager │                                 │
-                    │  └─────────┘                                 │
+                    │  ┌───────────────────────────┘               │
+                    │  │                                           │
+                    │  │  Pipeline 1: WAF (POST /shuul)            │
+                    │  │  ┌──────────┐                             │
+                    │  │  │ Matching │  First match wins           │
+                    │  │  ├──────────┤                             │
+                    │  │  │ Allow /  │  allow, store, mode         │
+                    │  │  │ Deny     │                             │
+                    │  │  └──────────┘                             │
+                    │  │  200 OK or 403 FORBIDDEN                  │
+                    │  │                                           │
+                    │  │  Pipeline 2: Jail (POST /report)          │
+                    │  │  ┌──────────┐                             │
+                    │  │  │ Matching │  ALL matches count           │
+                    │  │  ├──────────┤                             │
+                    │  │  │ Rate     │  fail2ban-style: max_retry, │
+                    │  │  │ Limiter  │  find_time, ban_time,       │
+                    │  │  │          │  fail_codes, escalation     │
+                    │  │  ├──────────┤                             │
+                    │  │  │ Ban      │  Memory + DB persistence    │
+                    │  │  │ Manager  │                             │
+                    │  │  └──────────┘                             │
+                    │  │  200 OK (fire-and-forget)                 │
+                    │  │                                           │
+                    │  └───────────────────────────────────────────┘
                     │                                              │
                     │  POST /api/v1/report ◄── Plugin async POST   │
                     │       │               (status_code report)   │
                     │       ▼                                      │
-                    │  If status_code ∈ fail_codes → rate limit    │
+                    │  For EACH matching rule with rate limit:     │
+                    │  If status_code ∈ fail_codes → rate + ban    │
                     └──────────────────────────────────────────────┘
 ```
 
 ### Components
 
-1. **shuul** — ForwardAuth service that authorizes requests before they reach
-   your backend. Returns 200 OK (allow) or 403 (deny).
-2. **traefik-shuul-reporter** — Traefik middleware plugin that captures the
-   backend's actual HTTP response code and reports it back to shuul for
-   intelligent rate limiting.
-3. **PostgreSQL** — Persistent storage for rules, rate limit profiles, bans,
+1. **shuul (WAF)** — ForwardAuth service that authorizes requests before they reach
+   your backend. Returns 200 OK (allow) or 403 (deny). **No rate limiting** — pure
+   matching + allow/deny.
+2. **shuul (Jail)** — Post-factum rate limiter. Receives backend HTTP response codes
+   from the Traefik plugin and applies fail2ban-style rate limiting. Multiple
+   independent jails (rules) can track the same IP simultaneously.
+3. **traefik-shuul-reporter** — Traefik middleware plugin that captures the
+   backend's actual HTTP response code and reports it back to shuul.
+4. **PostgreSQL** — Persistent storage for rules, rate limit profiles, bans,
    requests, and settings.
 
 ---
 
 ## Features
 
-### Rule Engine
+### Rule Engine (WAF)
 - Match requests by: IP, FQDN, path, query, country, user-agent, method,
   referer, content-type, accept-language, x-request-id
 - Regex patterns for flexible matching
-- Weight-based priority ordering
+- Weight-based priority ordering (lower weight = evaluated first)
 - Modes: `enforce` (block if not allowed), `log_only` (log but don't block),
   `off` (ignore rule)
 - Actions: `allow` (let through) or `deny` (block with 403)
@@ -61,22 +81,31 @@ fail2ban-style rate limiting based on HTTP response codes.
 - Template library with 40+ preconfigured rules for common services
   (WordPress, Nextcloud, Grafana, phpMyAdmin, etc.)
 
-### Rate Limiting (fail2ban-style)
+### Rate Limiting (Jail — fail2ban-style)
+- **Post-factum**: rate limiting happens AFTER the backend responds, not during
+  the request. Zero latency impact.
+- **Multiple independent jails**: ALL matching rules with rate limit profiles
+  are evaluated independently. Each rule is a separate "jail" like fail2ban.
+- **fail_codes**: only HTTP status codes defined in the profile count as failures
+  (e.g., `[401, 403, 404]`). 200 OK responses are never counted.
 - Per-rule rate limit profiles with independent configuration
 - Sliding window counter (find_time): 3 failures in 10 minutes
 - Automatic ban with configurable duration
 - Ban escalation: multipliers `[1, 2, 4, 8]` for repeat offenders
 - Ban count decay over configurable days
-- Optional webhook on ban events
 - IP whitelist (`ignoreip`)
 
-### Status Code Rate Limiting ⭐
-- **NEW**: Rate limit based on actual backend HTTP response codes
-- Uses the [traefik-shuul-reporter](https://github.com/atareao/traefik-shuul-reporter)
-  plugin to capture backend responses
-- Configure which status codes count via `fail_codes` per profile
-- Only non-2xx responses are reported (2xx is irrelevant for rate limiting)
-- Async fire-and-forget reporting — zero latency impact
+### Rule Types (UI)
+
+Each rule is classified into one of three types in the frontend:
+
+| Type | Badge | Condition | Example |
+|---|---|---|---|
+| **WAF** | 🔵 Blue | Has filters but **no** rate limit profile | Block requests from China |
+| **Jail** | 🟢 Green | Has rate limit profile but **no** filters | Rate limit 100/600s for all traffic |
+| **WAF + Jail** | 🟣 Purple | Has both filters AND rate limit profile | Block `/api/login` + rate limit 5/60s |
+
+A `Select` filter above the rules table lets you show only WAF, only Jail, or both.
 
 ### Geo IP
 - MaxMind GeoLite2 database integration
@@ -181,13 +210,13 @@ All endpoints are prefixed with `/api/v1`.
 
 | Method | Path | Description |
 |---|---|---|
-| `POST` | `/shuul` | ForwardAuth — validate and filter request |
+| `POST` | `/shuul` | **WAF** — ForwardAuth: validate and filter request |
 | `GET` | `/util` | Utility endpoints (geo lookup) |
 | `GET` | `/health` | Health check |
 | `GET` | `/auth/sso` | OIDC SSO redirect |
 | `GET` | `/auth/callback` | OIDC callback |
 | `GET` | `/auth/sso-status` | SSO configuration status |
-| `POST` | `/report` | **Receive backend status code report from plugin** |
+| `POST` | `/report` | **Jail** — Receive backend status code report from plugin |
 
 ### Protected Endpoints (JWT required)
 
@@ -208,6 +237,24 @@ All endpoints are prefixed with `/api/v1`.
 | `GET` | `/templates/rules` | Rule templates |
 | `GET` | `/templates/rate-limit-profiles` | Profile templates |
 
+### WAF Endpoint (`POST /api/v1/shuul`)
+
+Called by Traefik as ForwardAuth for every incoming request.
+
+**Logic:**
+1. Safe paths → ALLOW (skip all checks)
+2. Trusted IPs → ALLOW (skip all checks)
+3. Trusted User-Agents → ALLOW (skip all checks)
+4. Banned IP → 403 FORBIDDEN
+5. Match against rules (first match wins by weight):
+   - `mode = "off"` → skip
+   - `mode = "log_only"` → allow=true
+   - `mode = "enforce"` → apply allow/store
+6. Persist if `store = true`
+7. 200 OK or 403 FORBIDDEN
+
+**No rate limiting is evaluated in this endpoint.**
+
 ### Report Endpoint (`POST /api/v1/report`)
 
 Called by the Traefik plugin to report a backend HTTP response.
@@ -223,8 +270,9 @@ Called by the Traefik plugin to report a backend HTTP response.
 ```
 
 **Logic:**
-1. Match IP/path/method against active rules
-2. If match found with `rate_limit_profile_id`:
+1. Match IP/path/method against **ALL** active rules (fail2ban-style)
+2. For **each** matching rule with `rate_limit_profile_id`:
+   - Load the rate limit profile
    - Check if `status_code` is in the profile's `fail_codes`
    - If yes → increment rate limiter counter for that IP
    - If threshold exceeded → ban the IP
@@ -330,9 +378,9 @@ plugin bridges the gap between shuul and the backend.
 
 ### Why it's needed
 
-shuul is a **ForwardAuth** — it only sees requests, never backend responses.
-Without the plugin, shuul can only rate limit based on request patterns
-(IP, path, user-agent, etc.). With the plugin, shuul knows:
+shuul's WAF pipeline only sees requests, never backend responses.
+Without the plugin, shuul can only match and filter requests.
+With the plugin, shuul's Jail pipeline knows:
 
 - "This IP got 5 login failures in 10 minutes" (401 from backend)
 - "This IP is scanning for PHP files" (404 from backend)

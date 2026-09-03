@@ -1,129 +1,49 @@
-# Plan de Mejora de UX — Vistas de Reglas y Peticiones
+# Plan: Añadir columna `pipeline` a `rules`
 
-## Objetivo
+## 1. Migración SQL
+Crear `backend/migrations/20260827000001_add_pipeline_to_rules.up.sql`:
+```sql
+ALTER TABLE rules ADD COLUMN pipeline VARCHAR NOT NULL DEFAULT 'waf';
+```
 
-Mejorar la experiencia de usuario en las vistas de administración de reglas y peticiones, simplificando los campos visibles y añadiendo un diálogo de detalle para las peticiones.
+## 2. Backend — `backend/src/models/rule.rs`
+- Añadir `pub pipeline: String` a `Rule`
+- Añadir `pub pipeline: Option<String>` a `NewRule`
+- Añadir `pub pipeline: String` a `UpdateRule`
+- Añadir `pub pipeline: Option<String>` a `ReadRuleParams`
+- `from_row()`: `row.get("pipeline")`
+- `create()`: añadir pipeline a INSERT y bind
+- `update()`: añadir pipeline a UPDATE y bind
+- `count_paged()` / `read_paged()`: filtro pipeline como exact-match
 
-## Arquitectura
+## 3. Backend — `backend/src/http/shuul.rs`
+En loop de matching, saltar reglas `pipeline == "jail"`:
+```rust
+if cache_rule.rule.pipeline == "jail" { continue; }
+```
 
-Cambios en backend (modelo `Request` con JOIN a `rules`) y frontend (modelo `Record`, simplificación de tablas, nuevo diálogo de detalle). No se modifican rutas ni lógica de negocio existente.
+## 4. Backend — `backend/src/http/report.rs`
+En loop de matching, saltar reglas `pipeline == "waf"`:
+```rust
+if cache_rule.rule.pipeline == "waf" { continue; }
+```
 
-## Tareas
+## 5. Backend — `backend/src/http/rule.rs`
+Añadir `pipeline` a la query UPSERT de `import_handler`.
 
-### Tarea 1: Backend — Añadir `rule_name` al modelo Request
+## 6. Frontend — `frontend/src/models/rule.ts`
+- Añadir `pipeline?: string` a la interfaz Rule
+- Eliminar `getRuleType()`, `RuleType` y `type: 'tag'` virtual
 
-**Archivos:**
-- Modificar: `backend/src/models/request.rs`
+## 7. Frontend — `frontend/src/pages/admin/rules_page.tsx`
+- Sustituir columna virtual `type` por columna real `pipeline` con `type: 'tag'`
+- Opciones: waf (blue), jail (green)
+- Eliminar opción `both`
+- `clientFilter` filtra por `record.pipeline`
 
-- [ ] **Paso 1:** Añadir campo `rule_name: Option<String>` al struct `Request`
-      ```rust
-      pub struct Request {
-          // ... campos existentes ...
-          pub rule_name: Option<String>,
-      }
-      ```
-
-- [ ] **Paso 2:** Modificar `from_row()` para extraer `rule_name` del resultado
-      ```rust
-      rule_name: row.get("rule_name").ok(),
-      ```
-
-- [ ] **Paso 3:** Modificar `read_paged()` para usar LEFT JOIN con `rules`
-      ```sql
-      SELECT requests.*, rules.name as rule_name
-      FROM requests
-      LEFT JOIN rules ON requests.rule_id = rules.id
-      ```
-      Mantener el resto de la cláusula (WHERE, ORDER BY, LIMIT/OFFSET) igual.
-
-- [ ] **Paso 4:** Modificar `read()` (lectura individual) para incluir el mismo LEFT JOIN.
-      ```sql
-      SELECT requests.*, rules.name as rule_name
-      FROM requests
-      LEFT JOIN rules ON requests.rule_id = rules.id
-      WHERE requests.id = $1
-      ```
-
-- [ ] **Paso 5:** Dejar `count_paged()` sin cambios (solo cuenta registros, no necesita JOIN).
-
-- [ ] **Paso 6:** Dejar `create_bulk()` y `create()` sin cambios (solo insertan, no leen `rule_name`).
-
-### Tarea 2: Frontend — Actualizar modelo Record
-
-**Archivos:**
-- Modificar: `frontend/src/models/record.ts`
-
-- [ ] **Paso 1:** Añadir campo opcional `rule_name` a la interfaz `Record`
-      ```typescript
-      export interface Record {
-          // ... campos existentes ...
-          rule_name?: string;
-      }
-      ```
-
-### Tarea 3: Frontend — Simplificar campos visibles en RulesPage
-
-**Archivos:**
-- Modificar: `frontend/src/pages/admin/rules_page.tsx`
-
-- [ ] **Paso 1:** Localizar la definición de columnas de la tabla de reglas.
-
-- [ ] **Paso 2:** Mantener visibles solo estos campos:
-      - `active`
-      - `allow`
-      - `store`
-      - `weight`
-      - `name`
-      - `description`
-      - `mode`
-      - `profile` (rate_limit_profile_id)
-
-- [ ] **Paso 3:** Ocultar (poner `visible: false` o eliminar la columna) estos campos:
-      - `id`
-      - `ip_address`
-      - `protocol`
-      - `fqdn`
-      - `path`
-      - `query`
-      - `city_name`
-      - `country_name`
-      - `country_code`
-
-- [ ] **Paso 4:** Verificar que `custom_table.tsx` ya aplica `ellipsis: { showTitle: true }` en todas las columnas — no es necesario añadirlo.
-
-### Tarea 4: Frontend — Simplificar RequestsPage + diálogo de detalle
-
-**Archivos:**
-- Modificar: `frontend/src/pages/admin/requests_page.tsx`
-- Crear: `frontend/src/components/dialogs/request_detail_dialog.tsx`
-
-- [ ] **Paso 1:** En `requests_page.tsx`, mantener visibles solo estos campos:
-      - `created_at`
-      - `rule_name` (en lugar de `rule_id`)
-      - `ip_address`
-      - `fqdn`
-      - `path`
-      - `user_agent` (con label "Agent")
-      - `country_name` (con label "Country")
-
-- [ ] **Paso 2:** Ocultar estos campos:
-      - `protocol`
-      - `query`
-      - `method`
-      - `referer`
-      - `content_type`
-      - `accept_language`
-      - `x_request_id`
-      - `city_name`
-      - `country_code`
-      - `rule_id`
-
-- [ ] **Paso 3:** Reemplazar la columna de acciones actual (botón "Rule") por un botón "Details" que abra `RequestDetailDialog`.
-
-- [ ] **Paso 4:** Crear `RequestDetailDialog` en `frontend/src/components/dialogs/request_detail_dialog.tsx`:
-      - Modal de solo lectura con dos tabs:
-        - **General**: `created_at`, `ip_address`, `fqdn`, `path`, `user_agent`, `country_name`, `rule_name`
-        - **Details**: `protocol`, `query`, `method`, `referer`, `content_type`, `accept_language`, `x_request_id`, `city_name`, `country_code`
-      - Botón "Create Rule from Request" al pie del diálogo que abre el `CreateRuleFromRequestDialog` existente.
-
-- [ ] **Paso 5:** Importar y renderizar `RequestDetailDialog` en `requests_page.tsx`, pasando el registro seleccionado como prop.
+## 8. Frontend — `frontend/src/components/dialogs/rule_dialog.tsx`
+- Añadir `pipeline: "waf"` a DEFAULT_VALUES
+- Añadir pipeline a initializeFromItem() y formatForApi()
+- Tabs: General (active, pipeline, name, description, weight, allow*, store*, mode*, rate_limit_profile_id**), Network, Location, Request
+- *allow y mode ocultos cuando pipeline == "jail"
+- **rate_limit_profile_id oculto cuando pipeline == "waf"

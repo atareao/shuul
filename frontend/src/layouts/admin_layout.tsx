@@ -5,7 +5,6 @@ import type { MenuProps } from 'antd';
 import {
     HomeOutlined,
     OrderedListOutlined,
-    MenuUnfoldOutlined,
     PieChartOutlined,
     LogoutOutlined,
     StopOutlined,
@@ -45,9 +44,8 @@ const navigations:{[key: string]: string}  = {
     3: "/admin/rate-limit-profiles",
     4: "/admin/bans",
     5: "/admin/templates",
-    6: "/admin/requests",
-    7: "/admin/charts",
-    8: "/admin/settings",
+    6: "/admin/charts",
+    7: "/admin/settings",
 }
 
 const items: MenuItem[] = [
@@ -56,9 +54,8 @@ const items: MenuItem[] = [
     getItem('Rate Limit Profiles', '3', <RocketOutlined />),
     getItem('Bans', '4', <StopOutlined />),
     getItem('Templates', '5', <AppstoreOutlined />),
-    getItem('Requests', '6', <MenuUnfoldOutlined />),
-    getItem('Charts', '7', <PieChartOutlined />),
-    getItem('Settings', '8', <SettingOutlined />),
+    getItem('Charts', '6', <PieChartOutlined />),
+    getItem('Settings', '7', <SettingOutlined />),
 ];
 
 

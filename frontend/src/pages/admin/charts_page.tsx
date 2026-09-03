@@ -1,37 +1,33 @@
-import react from "react";
+import react, { lazy, Suspense } from "react";
 import { useNavigate } from 'react-router';
 import { useTranslation } from "react-i18next";
-import { Flex, Typography, Space, Spin, InputNumber, Select } from 'antd';
-import { ResponsivePie } from '@nivo/pie';
-import { ResponsiveLine } from '@nivo/line';
+import { Flex, Typography, Spin, InputNumber, Select, Card } from 'antd';
 const { Title } = Typography;
 import { loadData } from "@/common/utils";
 import ModeContext from "@/components/mode_context";
 
-interface TimeSeriesPoint {
-    x: string;
-    y: number;
-}
-
-interface TimeSeries {
-    id: string; // country_code
-    data: TimeSeriesPoint[];
-}
+const Line = lazy(() => import('@/components/charts/antd_line'));
+const Pie = lazy(() => import('@/components/charts/antd_pie'));
 
 interface Props {
     navigate: any;
     t: any;
-    isDarkMode: boolean;
 }
 
 interface State {
     loading: boolean;
+    error: boolean;
     top_countries: Array<[string, number, number]>;
     top_rules: Array<[string, number, number]>;
-    evolution_data: Array<TimeSeries>;
+    evolution_data: Array<{ id: string; data: Array<{ x: string; y: number }> }>;
     unit: string;
     last: number;
 }
+
+const COLORS = [
+    "#fa541c", "#1890ff", "#52c41a", "#faad14", "#722ed1",
+    "#13c2c2", "#eb2f96", "#fa8c16", "#a0d911", "#2f54eb",
+];
 
 export class InnerPage extends react.Component<Props, State> {
 
@@ -39,6 +35,7 @@ export class InnerPage extends react.Component<Props, State> {
         super(props);
         this.state = {
             loading: true,
+            error: false,
             top_countries: [],
             top_rules: [],
             evolution_data: [],
@@ -48,307 +45,183 @@ export class InnerPage extends react.Component<Props, State> {
     }
 
     refreshData = async (all?: boolean, newUnit?: string, newLast?: number) => {
-
-        // Usar los valores pasados o, si no se pasan, usar el estado actual.
         const unit = newUnit || this.state.unit;
         const last = newLast || this.state.last;
 
-        if (all) {
-            this.setState({ loading: true });
-            const [top_countries_res, top_rules_res, evolution_data_res] = await Promise.all([
-                loadData("requests/top_countries"),
-                loadData("requests/top_rules"),
-                loadData("requests/evolution", new Map([
+        try {
+            if (all) {
+                this.setState({ loading: true, error: false });
+                const [top_countries_res, top_rules_res, evolution_data_res] = await Promise.all([
+                    loadData("stats/top_countries"),
+                    loadData("stats/top_rules"),
+                    loadData("stats/evolution", new Map([
+                        ["unit", unit],
+                        ["last", last.toString()],
+                    ])),
+                ]);
+
+                this.setState({
+                    loading: false,
+                    top_countries: top_countries_res.status === 200 ? top_countries_res.data as Array<[string, number, number]> : [],
+                    top_rules: top_rules_res.status === 200 ? top_rules_res.data as Array<[string, number, number]> : [],
+                    evolution_data: evolution_data_res.status === 200 ? evolution_data_res.data as Array<{ id: string; data: Array<{ x: string; y: number }> }> : [],
+                });
+            } else {
+                this.setState({ loading: true, error: false });
+                const evolution_data = await loadData("stats/evolution", new Map([
                     ["unit", unit],
                     ["last", last.toString()],
-                ])),
-            ]);
-
-            this.setState({
-                loading: false,
-                top_countries: top_countries_res.status === 200 ? top_countries_res.data as Array<[string, number, number]> : [],
-                top_rules: top_rules_res.status === 200 ? top_rules_res.data as Array<[string, number, number]> : [],
-                evolution_data: evolution_data_res.status === 200 ? evolution_data_res.data as Array<TimeSeries> : [],
-            });
-        } else {
-            this.setState({ loading: true });
-
-            // 3. USAR unit y last EN LA LLAMADA
-            const evolution_data = await loadData("requests/evolution", new Map([
-                ["unit", unit],
-                ["last", last.toString()],
-            ]));
-
-            console.log("Evolution Call:", `requests/evolution?unit=${unit}&last=${last}`); // <<== IMPRIMIR LA LLAMADA COMPLETA
-            console.log("Evolution Data:", evolution_data);
-
-            this.setState({
-                loading: false,
-                evolution_data: evolution_data.status === 200 ? evolution_data.data as Array<TimeSeries> : [],
-            });
+                ]));
+                this.setState({
+                    loading: false,
+                    evolution_data: evolution_data.status === 200 ? evolution_data.data as Array<{ id: string; data: Array<{ x: string; y: number }> }> : [],
+                });
+            }
+        } catch (err) {
+            console.error("Failed to load charts data:", err);
+            this.setState({ loading: false, error: true });
         }
     }
 
     componentDidMount = async () => {
-        await this.refreshData(true);
+        try {
+            await this.refreshData(true);
+        } catch (err) {
+            console.error("Failed to load charts data on mount:", err);
+            this.setState({ loading: false, error: true });
+        }
     }
 
     render = () => {
-        const { isDarkMode } = this.props;
-        const { top_countries, top_rules, evolution_data, loading } = this.state;
-        const top_countries_data = top_countries.map(item => ({ id: item[0], label: item[1], value: Math.round(item[2] * 100) / 100 }));
-        const top_rules_data = top_rules.map(item => ({ id: item[0], label: item[1], value: Math.round(item[2] * 100) / 100 }));
+        const { top_countries, top_rules, evolution_data, loading, error } = this.state;
+
+        const topCountriesData = top_countries.map(([name, count]) => ({ name, value: count }));
+        const topRulesData = top_rules.map(([name, count]) => ({ name, value: count }));
+        const evolutionFlatData = evolution_data.flatMap(series =>
+            series.data.map(point => ({
+                category: series.id,
+                time: point.x,
+                requests: point.y,
+            }))
+        );
+
         if (loading) {
             return (
-                <Flex vertical justify="center" align="center" >
+                <Flex vertical justify="center" align="center" style={{ minHeight: 400 }}>
                     <Spin size="large" />
                 </Flex>
             );
         }
-        let fontColor = "#222222";
-        let toolTipBgColor = "#fff";
-        if (isDarkMode) {
-            fontColor = "#eeeeee";
-            toolTipBgColor = "#333";
+
+        if (error) {
+            return (
+                <Flex vertical justify="center" align="center" style={{ minHeight: 400 }}>
+                    <Card style={{ width: 400, textAlign: 'center' }}>
+                        <Typography.Text type="danger" style={{ fontSize: 16 }}>
+                            Failed to load charts data
+                        </Typography.Text>
+                    </Card>
+                </Flex>
+            );
         }
-        const theme = {
-            text: {
-                fontSize: 16,
-                fill: fontColor,
-            },
-            tooltip: {
-                container: {
-                    background: toolTipBgColor,
-                }
-            }
-        }
-        // Define la configuración de la escala X y el formato del eje X
-        const isHourly = this.state.unit === 'hour';
-        const xScaleConfig = {
-            type: 'time' as const,
-            // format: 'iso' as  const,
-            format: '%Y-%m-%dT%H:%M:%SZ' as const,
-            precision: isHourly ? 'hour' as const : 'day' as const, // <-- Precision dinamica
-            useUTC: true
-        };
-        const tickValues = isHourly ? 'every 1 hours' : 'every 1 days';
-        const axisBottomFormat = isHourly ? '%Hh' : '%d';
-        const axisBottomLegend = isHourly ? 'Time (Hour)' : 'Date (Day)';
-        const legendOffset = isHourly ? 45 : 36;
-        const valid_evolution_data = evolution_data
-            // Asegurarse de que la serie y su array de datos existen
-            .filter(series => series && series.data && Array.isArray(series.data))
-            // Para cada serie, filtrar los puntos donde 'x' es null, undefined, o una cadena vacía
-            .map(series => ({
-                ...series,
-                data: series.data.filter(point => point && point.x && point.x.length > 0) // <-- FILTRADO CLAVE
-            }));
+
         return (
-            <Flex vertical justify="center" align="center" >
+            <Flex vertical gap="large" style={{ padding: 24 }}>
                 <Title level={2}>Charts</Title>
-                {/* 5. Añadir la sección de la gráfica de evolución */}
-                <Flex vertical gap="middle" style={{ height: 400, width: '90%', maxWidth: 1200, marginBottom: 100 }}>
-                    <Flex vertical justify="center" align="center">
-                        <Title level={3}>Request Evolution</Title>
-                        <Flex justify="center" align="center" gap="middle">
-                            <InputNumber
-                                min={1}
-                                defaultValue={7}
-                                value={this.state.last}
-                                onChange={(value) => {
-                                    const newLast = value || 7;
-                                    this.setState({ last: newLast }, async () => await this.refreshData(false, undefined, newLast));
-                                }} />
-                            <Select
-                                defaultValue="day"
-                                value={this.state.unit}
-                                onChange={(value) => {
-                                    const newUnit = value || 'day';
-                                    this.setState({ unit: value }, async () => await this.refreshData(false, newUnit, undefined));
-                                }}
-                                options={[
-                                    { value: 'day', label: 'day' },
-                                    { value: 'hour', label: 'hour' },
-                                ]}
-                            />
-                        </Flex>
-                    </Flex>
-                    <Flex
-                        vertical
-                        style={{
-                            height: 600,
-                            borderRadius: '8px',
-                            backgroundColor: 'rgba(75, 75, 75, 0.7)',
-                            backdropFilter: 'blur(5px)',
-                            padding: '20px',
-                            boxShadow: '0 4px 8px rgba(0, 0, 0, 0.2)',
-                            border: '1px solid rgba(100, 100, 100, 0.5)'
-                        }}>
-                        <ResponsiveLine
-                            animate
-                            enableTouchCrosshair
-                            theme={theme}
-                            data={valid_evolution_data}
-                            margin={{ top: 50, right: 110, bottom: 50, left: 60 }}
-                            xFormat="time:%Y-%m-%dT%H:%M:%SZ"
-                            xScale={xScaleConfig}
-                            yScale={{ type: 'linear', min: 'auto', max: 'auto', stacked: false, reverse: false }}
-                            curve="monotoneX"
-                            enablePoints={true}
-                            pointBorderColor={{
-                                from: 'color',
-                                modifiers: [
-                                    [
-                                        'darker',
-                                        0.3
-                                    ]
-                                ]
+
+                {/* Evolution Line Chart */}
+                <Card title="Request Evolution" size="small">
+                    <Flex justify="flex-end" gap="middle" style={{ marginBottom: 16 }}>
+                        <InputNumber
+                            min={1}
+                            value={this.state.last}
+                            onChange={(value) => {
+                                const newLast = value || 7;
+                                this.setState({ last: newLast }, () => this.refreshData(false, undefined, newLast));
                             }}
-                            axisTop={null}
-                            axisRight={null}
-                            axisBottom={{
-                                tickSize: 5,
-                                tickPadding: 5,
-                                tickRotation: 0,
-                                format: axisBottomFormat,
-                                legend: axisBottomLegend,
-                                legendOffset: legendOffset,
-                                tickValues: tickValues,
-                                legendPosition: 'middle',
-                                truncateTickAt: 0
+                        />
+                        <Select
+                            value={this.state.unit}
+                            onChange={(value) => {
+                                const newUnit = value || 'day';
+                                this.setState({ unit: value }, () => this.refreshData(false, newUnit, undefined));
                             }}
-                            axisLeft={{
-                                tickSize: 5,
-                                tickPadding: 5,
-                                tickRotation: 0,
-                                legend: 'Requests',
-                                legendOffset: -50,
-                                legendPosition: 'middle',
-                                truncateTickAt: 0
-                            }}
-                            pointSize={16}
-                            pointColor={{ theme: 'background' }}
-                            pointBorderWidth={2}
-                            useMesh={true}
-                            legends={[
-                                {
-                                    anchor: 'bottom-right',
-                                    direction: 'column',
-                                    justify: false,
-                                    translateX: 100,
-                                    translateY: 0,
-                                    itemsSpacing: 0,
-                                    itemDirection: 'left-to-right',
-                                    itemWidth: 80,
-                                    itemHeight: 20,
-                                    itemOpacity: 0.75,
-                                    symbolSize: 12,
-                                    symbolShape: 'circle',
-                                    symbolBorderColor: 'rgba(0, 0, 0, .5)',
-                                    effects: [
-                                        {
-                                            on: 'hover',
-                                            style: {
-                                                itemBackground: 'rgba(0, 0, 0, .03)',
-                                                itemOpacity: 1
-                                            }
-                                        }
-                                    ]
-                                }
+                            options={[
+                                { value: 'day', label: 'day' },
+                                { value: 'hour', label: 'hour' },
                             ]}
+                            style={{ width: 100 }}
                         />
                     </Flex>
-                </Flex>
-                <Flex justify="center" align="center" gap={50} wrap>
-                    <div style={{ display: 'block', flexDirection: 'column', alignItems: 'center' }}>
-                        <Flex justify="center" align="center" gap={50} wrap>
-                            <Space orientation="vertical" align="center">
-                                <Title level={3}>Top countries</Title>
-                            </Space>
-                        </Flex>
-                        <Flex
-                            vertical
-                            style={{
-                                height: 400,
-                                width: 600,
-                                borderRadius: '8px',
-                                backgroundColor: 'rgba(75, 75, 75, 0.7)',
-                                backdropFilter: 'blur(5px)',
-                                padding: '20px',
-                                boxShadow: '0 4px 8px rgba(0, 0, 0, 0.2)',
-                                border: '1px solid rgba(100, 100, 100, 0.5)'
-                            }}>
-                            <ResponsivePie /* or Pie for fixed dimensions */
-                                theme={theme}
-                                data={top_countries_data}
-                                margin={{ top: 40, right: 80, bottom: 80, left: 80 }}
-                                innerRadius={0.5}
-                                padAngle={0.6}
-                                cornerRadius={2}
-                                activeOuterRadiusOffset={8}
-                                arcLinkLabelsSkipAngle={10}
-                                arcLinkLabelsThickness={2}
-                                arcLinkLabelsColor={{ from: 'color' }}
-                                arcLabelsSkipAngle={10}
-                                arcLabelsTextColor={{ from: 'color', modifiers: [['darker', 3]] }}
-                                legends={[
-                                    {
-                                        anchor: 'bottom',
-                                        direction: 'row',
-                                        translateY: 60,
-                                        itemWidth: 100,
-                                        itemHeight: 18,
-                                    }
-                                ]}
-                            />
-                        </Flex>
+                    <div style={{ height: 400 }}>
+                        {evolutionFlatData.length > 0 ? (
+                            <Suspense fallback={<Spin />}>
+                                <Line
+                                    data={evolutionFlatData}
+                                    xField="time"
+                                    yField="requests"
+                                    seriesField="category"
+                                    smooth
+                                    point={{ shapeField: 'circle', sizeField: 3 }}
+                                    legend={{ color: { position: 'top', layout: { justifyContent: 'center' } } }}
+                                    axis={{ x: { title: 'Time' }, y: { title: 'Requests' } }}
+                                    slider={{}}
+                                />
+                            </Suspense>
+                        ) : (
+                            <Flex justify="center" align="center" style={{ height: '100%' }}>
+                                <Typography.Text type="secondary">No evolution data available</Typography.Text>
+                            </Flex>
+                        )}
                     </div>
-                    <div style={{ display: 'block', flexDirection: 'column', alignItems: 'center' }}>
-                        <Flex justify="center" align="center" gap={50} wrap>
-                            <Space orientation="vertical" align="center">
-                                <Title level={3}>Top rules</Title>
-                            </Space>
-                        </Flex>
-                        <Flex
-                            vertical
-                            style={{
-                                height: 400,
-                                width: 600,
-                                borderRadius: '8px',
-                                backgroundColor: 'rgba(75, 75, 75, 0.7)',
-                                backdropFilter: 'blur(5px)',
-                                padding: '20px',
-                                boxShadow: '0 4px 8px rgba(0, 0, 0, 0.2)',
-                                border: '1px solid rgba(100, 100, 100, 0.5)'
-                            }}>
-                            <ResponsivePie /* or Pie for fixed dimensions */
-                                theme={theme}
-                                data={top_rules_data}
-                                margin={{ top: 40, right: 80, bottom: 80, left: 80 }}
-                                innerRadius={0.5}
-                                padAngle={0.6}
-                                cornerRadius={2}
-                                activeOuterRadiusOffset={8}
-                                arcLinkLabelsSkipAngle={10}
-                                arcLinkLabelsThickness={2}
-                                arcLinkLabelsColor={{ from: 'color' }}
-                                arcLabelsSkipAngle={10}
-                                arcLabelsTextColor={{ from: 'color', modifiers: [['darker', 3]] }}
-                                legends={[
-                                    {
-                                        anchor: 'bottom',
-                                        direction: 'row',
-                                        translateY: 60,
-                                        itemWidth: 100,
-                                        itemHeight: 18,
-                                    }
-                                ]}
-                            />
-                        </Flex>
-                    </div>
+                </Card>
+
+                {/* Pie charts row */}
+                <Flex gap="large" wrap>
+                    <Card title="Top Countries" size="small" style={{ flex: 1, minWidth: 350 }}>
+                        <div style={{ height: 350 }}>
+                            {topCountriesData.length > 0 ? (
+                                <Suspense fallback={<Spin />}>
+                                    <Pie
+                                        data={topCountriesData}
+                                        angleField="value"
+                                        colorField="name"
+                                        color={COLORS}
+                                        innerRadius={0.5}
+                                        label={{ text: 'name', style: { fontWeight: 'bold' } }}
+                                        legend={{ color: { position: 'right', rowPadding: 4 } }}
+                                    />
+                                </Suspense>
+                            ) : (
+                                <Flex justify="center" align="center" style={{ height: '100%' }}>
+                                    <Typography.Text type="secondary">No country data available</Typography.Text>
+                                </Flex>
+                            )}
+                        </div>
+                    </Card>
+                    <Card title="Top Rules" size="small" style={{ flex: 1, minWidth: 350 }}>
+                        <div style={{ height: 350 }}>
+                            {topRulesData.length > 0 ? (
+                                <Suspense fallback={<Spin />}>
+                                    <Pie
+                                        data={topRulesData}
+                                        angleField="value"
+                                        colorField="name"
+                                        color={COLORS}
+                                        innerRadius={0.5}
+                                        label={{ text: 'name', style: { fontWeight: 'bold' } }}
+                                        legend={{ color: { position: 'right', rowPadding: 4 } }}
+                                    />
+                                </Suspense>
+                            ) : (
+                                <Flex justify="center" align="center" style={{ height: '100%' }}>
+                                    <Typography.Text type="secondary">No rule data available</Typography.Text>
+                                </Flex>
+                            )}
+                        </div>
+                    </Card>
                 </Flex>
             </Flex>
-
         );
     }
 };
@@ -358,16 +231,9 @@ export default function ChartsPage() {
     const { t } = useTranslation();
     return (
         <ModeContext.Consumer>
-            {({ isDarkMode }) => {
-                console.log(`Rendering App with isDarkMode ${isDarkMode}`);
-
-                return <InnerPage
-                    navigate={navigate}
-                    isDarkMode={isDarkMode}
-                    t={t}
-                />;
+            {() => {
+                return <InnerPage navigate={navigate} t={t} />;
             }}
         </ModeContext.Consumer>
     );
 }
-

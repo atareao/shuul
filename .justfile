@@ -39,8 +39,8 @@ test-integration-setup:
 
 build:
     @podman build \
-        --tag=docker.io/{{user}}/{{name}}:{{version}} \
-        --tag=docker.io/{{user}}/{{name}}:latest .
+        --tag={{user}}/{{name}}:{{version}} \
+        --tag={{user}}/{{name}}:latest .
 
 push:
     @podman image push docker.io/{{user}}/{{name}}:{{version}}

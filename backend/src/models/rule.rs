@@ -7,15 +7,14 @@
 //! [`CacheRule`] envuelve una [`Rule`] con un [`Regex`] precompilado
 //! para la coincidencia rápida de URIs en memoria.
 
-use crate::models::request::NewRequest;
+use crate::constants::DEFAULT_LIMIT;
+use crate::constants::DEFAULT_PAGE;
+use crate::models::NewRequest;
 use chrono::{DateTime, Utc};
 use regex::Regex;
 use serde::{Deserialize, Serialize};
-use sqlx::{
-    Error, Row,
-    postgres::{PgPool, PgRow},
-    query,
-};
+use sqlx::{Error, Row, SqlitePool, query, sqlite::SqliteRow};
+
 #[derive(Debug, Serialize, Deserialize, Clone)]
 pub struct Rule {
     pub id: i32,
@@ -23,8 +22,8 @@ pub struct Rule {
     pub description: String,
     pub weight: i32,
     pub mode: String,
+    pub pipeline: String,
     pub allow: bool,
-    pub store: bool,
     pub ip_address: Option<String>,
     pub protocol: Option<String>,
     pub fqdn: Option<String>,
@@ -52,21 +51,9 @@ pub struct RuleInfoCounts {
     pub active: i64,
 }
 
-/// Parámetros de rate limit cacheados junto con la regla (sin consulta a BD).
-#[allow(dead_code)]
-#[derive(Debug, Clone)]
-pub struct CachedRateLimit {
-    pub max_retry: i32,
-    pub find_time_seconds: i32,
-    pub ban_time_seconds: i32,
-    pub bantime_increment: bool,
-}
-
 #[derive(Debug, Clone)]
 pub struct CacheRule {
     pub rule: Rule,
-    #[allow(dead_code)]
-    pub rate_limit: Option<CachedRateLimit>,
     pub ip_address: Option<Regex>,
     pub protocol: Option<Regex>,
     pub fqdn: Option<Regex>,
@@ -75,33 +62,25 @@ pub struct CacheRule {
     pub city_name: Option<Regex>,
     pub country_name: Option<Regex>,
     pub country_code: Option<Regex>,
+    pub user_agent: Option<Regex>,
+    pub method: Option<Regex>,
+    pub referer: Option<Regex>,
+    pub content_type: Option<Regex>,
+    pub accept_language: Option<Regex>,
+    pub x_request_id: Option<Regex>,
 }
 
 impl CacheRule {
-    /// Construye un `CacheRule` desde una fila de PostgreSQL (con JOIN a `rate_limit_profiles`).
-    fn from_row(row: PgRow) -> Self {
-        // Extraer campos de rate limit ANTES de consumir `row` en `Rule::from_row`.
-        let max_retry: Option<i32> = row.try_get("max_retry").ok().flatten();
-        let find_time_seconds: Option<i32> = row.try_get("find_time_seconds").ok().flatten();
-        let ban_time_seconds: Option<i32> = row.try_get("ban_time_seconds").ok().flatten();
-        let bantime_increment: Option<bool> = row.try_get("bantime_increment").ok().flatten();
-
-        let rate_limit = max_retry.map(|mr| CachedRateLimit {
-            max_retry: mr,
-            find_time_seconds: find_time_seconds.unwrap_or(0),
-            ban_time_seconds: ban_time_seconds.unwrap_or(0),
-            bantime_increment: bantime_increment.unwrap_or(false),
-        });
-
+    /// Construye un `CacheRule` desde una fila de SQLite.
+    fn from_row(row: SqliteRow) -> Self {
         let rule = Rule::from_row(row);
-        Self::from_rule_with_rate_limit(rule, rate_limit)
+        Self::from_rule(rule)
     }
 
-    /// Construye un `CacheRule` con los regex precompilados y el rate limit opcional.
-    fn from_rule_with_rate_limit(rule: Rule, rate_limit: Option<CachedRateLimit>) -> Self {
+    /// Construye un `CacheRule` con los regex precompilados desde una [`Rule`].
+    pub fn from_rule(rule: Rule) -> Self {
         Self {
             rule: rule.clone(),
-            rate_limit,
             ip_address: rule
                 .ip_address
                 .as_ref()
@@ -142,50 +121,59 @@ impl CacheRule {
                 .as_ref()
                 .filter(|r| !r.is_empty())
                 .and_then(|r| Regex::new(r).ok()),
+            user_agent: rule
+                .user_agent
+                .as_ref()
+                .filter(|r| !r.is_empty())
+                .and_then(|r| Regex::new(r).ok()),
+            method: rule
+                .method
+                .as_ref()
+                .filter(|r| !r.is_empty())
+                .and_then(|r| Regex::new(r).ok()),
+            referer: rule
+                .referer
+                .as_ref()
+                .filter(|r| !r.is_empty())
+                .and_then(|r| Regex::new(r).ok()),
+            content_type: rule
+                .content_type
+                .as_ref()
+                .filter(|r| !r.is_empty())
+                .and_then(|r| Regex::new(r).ok()),
+            accept_language: rule
+                .accept_language
+                .as_ref()
+                .filter(|r| !r.is_empty())
+                .and_then(|r| Regex::new(r).ok()),
+            x_request_id: rule
+                .x_request_id
+                .as_ref()
+                .filter(|r| !r.is_empty())
+                .and_then(|r| Regex::new(r).ok()),
         }
     }
 
-    /// Construye un `CacheRule` desde una [`Rule`] (sin información de rate limit).
-    pub fn from_rule(rule: Rule) -> Self {
-        Self::from_rule_with_rate_limit(rule, None)
-    }
-
-    /// Lee todas las reglas activas desde la base de datos, incluyendo los
-    /// parámetros de rate limit del perfil asociado (vía JOIN).
-    pub async fn read_all_active(pool: &PgPool) -> Result<Vec<Self>, Error> {
-        let sql = "SELECT rules.*, rp.max_retry, rp.find_time_seconds, rp.ban_time_seconds, rp.bantime_increment FROM rules LEFT JOIN rate_limit_profiles rp ON rules.rate_limit_profile_id = rp.id WHERE active = TRUE ORDER BY weight ASC";
+    /// Lee todas las reglas activas desde la base de datos.
+    pub async fn read_all_active(pool: &SqlitePool) -> Result<Vec<Self>, Error> {
+        let sql = "SELECT * FROM rules WHERE active = 1 ORDER BY weight ASC";
         query(sql).map(Self::from_row).fetch_all(pool).await
-    }
-
-    /// Indica si esta regla es exclusivamente un rate limiter (sin filtros
-    /// por IP, protocolo, FQDN, path, query, ciudad, país o código de país).
-    #[allow(dead_code)]
-    pub fn is_pure_rate_limiter(&self) -> bool {
-        self.rate_limit.is_some()
-            && self.ip_address.is_none()
-            && self.protocol.is_none()
-            && self.fqdn.is_none()
-            && self.path.is_none()
-            && self.query.is_none()
-            && self.city_name.is_none()
-            && self.country_name.is_none()
-            && self.country_code.is_none()
     }
 
     pub fn matches(&self, request: &NewRequest) -> bool {
         let check_match = |rule_regex: Option<&Regex>, request_value: Option<&String>| -> bool {
             match (rule_regex, request_value) {
                 (Some(regex), Some(value)) => {
-                    // Si la regla está definida Y el valor existe, DEBE coincidir.
+                    // Si la regla esta definida Y el valor existe, DEBE coincidir.
                     regex.is_match(value)
                 },
-                // Si la regla no está definida (None), la condición se cumple por defecto (true).
-                // Si la regla está definida pero el valor de la solicitud es None,
+                // Si la regla no esta definida (None), la condicion se cumple por defecto (true).
+                // Si la regla esta definida pero el valor de la solicitud es None,
                 // asumimos que el valor no existe y la regla no se puede aplicar (true).
                 _ => true,
             }
         };
-        // Si CUALQUIERA de las comprobaciones devuelve 'false', el método devuelve 'false'.
+        // Si CUALQUIERA de las comprobaciones devuelve 'false', el metodo devuelve 'false'.
         check_match(self.ip_address.as_ref(), request.ip_address.as_ref())
             && check_match(self.protocol.as_ref(), request.protocol.as_ref())
             && check_match(self.fqdn.as_ref(), request.fqdn.as_ref())
@@ -194,6 +182,15 @@ impl CacheRule {
             && check_match(self.city_name.as_ref(), request.city_name.as_ref())
             && check_match(self.country_name.as_ref(), request.country_name.as_ref())
             && check_match(self.country_code.as_ref(), request.country_code.as_ref())
+            && check_match(self.user_agent.as_ref(), request.user_agent.as_ref())
+            && check_match(self.method.as_ref(), request.method.as_ref())
+            && check_match(self.referer.as_ref(), request.referer.as_ref())
+            && check_match(self.content_type.as_ref(), request.content_type.as_ref())
+            && check_match(
+                self.accept_language.as_ref(),
+                request.accept_language.as_ref(),
+            )
+            && check_match(self.x_request_id.as_ref(), request.x_request_id.as_ref())
     }
 }
 
@@ -203,8 +200,8 @@ pub struct NewRule {
     pub description: Option<String>,
     pub weight: Option<i32>,
     pub mode: Option<String>,
+    pub pipeline: Option<String>,
     pub allow: Option<bool>,
-    pub store: Option<bool>,
     pub ip_address: Option<String>,
     pub protocol: Option<String>,
     pub fqdn: Option<String>,
@@ -230,8 +227,8 @@ pub struct UpdateRule {
     pub description: String,
     pub weight: i32,
     pub mode: String,
+    pub pipeline: String,
     pub allow: bool,
-    pub store: bool,
     pub ip_address: Option<String>,
     pub protocol: Option<String>,
     pub fqdn: Option<String>,
@@ -249,6 +246,7 @@ pub struct UpdateRule {
     pub rate_limit_profile_id: Option<i32>,
     pub active: bool,
 }
+
 #[allow(dead_code)]
 #[derive(Debug, Deserialize)]
 pub struct ReadRuleParams {
@@ -256,9 +254,9 @@ pub struct ReadRuleParams {
     pub name: Option<String>,
     pub description: Option<String>,
     pub mode: Option<String>,
+    pub pipeline: Option<String>,
     pub weight: Option<i32>,
     pub allow: Option<bool>,
-    pub store: Option<bool>,
     pub ip_address: Option<String>,
     pub protocol: Option<String>,
     pub fqdn: Option<String>,
@@ -274,8 +272,6 @@ pub struct ReadRuleParams {
     pub sort_by: Option<String>,
     pub asc: Option<bool>,
 }
-use crate::constants::DEFAULT_LIMIT;
-use crate::constants::DEFAULT_PAGE;
 
 impl From<Rule> for CacheRule {
     fn from(val: Rule) -> Self {
@@ -284,15 +280,15 @@ impl From<Rule> for CacheRule {
 }
 
 impl Rule {
-    fn from_row(row: PgRow) -> Self {
+    fn from_row(row: SqliteRow) -> Self {
         Self {
             id: row.get("id"),
             name: row.get("name"),
             description: row.get("description"),
             weight: row.get("weight"),
             mode: row.get("mode"),
+            pipeline: row.get("pipeline"),
             allow: row.get("allow"),
-            store: row.get("store"),
             ip_address: row.get("ip_address"),
             protocol: row.get("protocol"),
             fqdn: row.get("fqdn"),
@@ -307,7 +303,7 @@ impl Rule {
             content_type: row.get("content_type"),
             accept_language: row.get("accept_language"),
             x_request_id: row.get("x_request_id"),
-            rate_limit_profile_id: row.get("rate_limit_profile_id"),
+            rate_limit_profile_id: row.try_get("rate_limit_profile_id").ok().flatten(),
             rate_limit_profile_name: row.try_get("rate_limit_profile_name").ok().flatten(),
             active: row.get("active"),
             created_at: row.get("created_at"),
@@ -315,22 +311,22 @@ impl Rule {
         }
     }
 
-    pub async fn create(pool: &PgPool, rule: NewRule) -> Result<Self, Error> {
-        let sql = "INSERT INTO rules (name, description, weight, mode, allow, store,
+    pub async fn create(pool: &SqlitePool, rule: NewRule) -> Result<Self, Error> {
+        let sql = "INSERT INTO rules (name, description, weight, mode, pipeline, allow,
             ip_address, protocol, fqdn, path, query, city_name, country_name,
             country_code, user_agent, method, referer, content_type,
             accept_language, x_request_id, rate_limit_profile_id,
-            active, created_at, updated_at) VALUES ($1, $2, $3, $4, $5, $6,
-            $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18,
-            $19, $20, $21, $22, $23, $24) RETURNING *";
+            active, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?,
+            ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?,
+            ?, ?, ?, ?, ?, ?) RETURNING *";
         let now = Utc::now();
         query(sql)
             .bind(&rule.name)
             .bind(rule.description.unwrap_or_default())
             .bind(rule.weight.unwrap_or(100))
             .bind(rule.mode.unwrap_or_else(|| "log_only".to_string()))
+            .bind(rule.pipeline.unwrap_or_else(|| "waf".to_string()))
             .bind(rule.allow.unwrap_or(true))
-            .bind(rule.store.unwrap_or(true))
             .bind(rule.ip_address)
             .bind(rule.protocol)
             .bind(rule.fqdn)
@@ -354,26 +350,26 @@ impl Rule {
             .await
     }
 
-    pub async fn read_info(pool: &PgPool, info: &str) -> Result<i64, Error> {
+    pub async fn read_info(pool: &SqlitePool, info: &str) -> Result<i64, Error> {
         let sql = if info == "total" {
             "SELECT count(*) FROM rules"
         } else if info == "active" {
-            "SELECT count(*) FROM rules WHERE active = true"
+            "SELECT count(*) FROM rules WHERE active = 1"
         } else {
             return Err(Error::RowNotFound);
         };
         query(sql)
-            .map(|cp_row: PgRow| cp_row.get(0))
+            .map(|row: SqliteRow| row.get(0))
             .fetch_one(pool)
             .await
     }
 
-    pub async fn read_info_all(pool: &PgPool) -> Result<RuleInfoCounts, Error> {
+    pub async fn read_info_all(pool: &SqlitePool) -> Result<RuleInfoCounts, Error> {
         let sql = "SELECT
             (SELECT count(*) FROM rules) as total,
-            (SELECT count(*) FROM rules WHERE active = true) as active";
+            (SELECT count(*) FROM rules WHERE active = 1) as active";
         query(sql)
-            .map(|row: PgRow| RuleInfoCounts {
+            .map(|row: SqliteRow| RuleInfoCounts {
                 total: row.get("total"),
                 active: row.get("active"),
             })
@@ -381,32 +377,32 @@ impl Rule {
             .await
     }
 
-    pub async fn update(pool: &PgPool, rule: UpdateRule) -> Result<Self, Error> {
-        let sql = "UPDATE rules set
-                name = $1,
-                description = $2,
-                weight = $3,
-                mode = $4,
-                allow = $5,
-                store = $6,
-                ip_address = $7,
-                protocol = $8,
-                fqdn = $9,
-                path = $10,
-                query = $11,
-                city_name = $12,
-                country_name = $13,
-                country_code = $14,
-                user_agent = $15,
-                method = $16,
-                referer = $17,
-                content_type = $18,
-                accept_language = $19,
-                x_request_id = $20,
-                rate_limit_profile_id = $21,
-                active = $22,
-                updated_at = $23
-            WHERE id = $24
+    pub async fn update(pool: &SqlitePool, rule: UpdateRule) -> Result<Self, Error> {
+        let sql = "UPDATE rules SET
+                name = ?,
+                description = ?,
+                weight = ?,
+                mode = ?,
+                pipeline = ?,
+                allow = ?,
+                ip_address = ?,
+                protocol = ?,
+                fqdn = ?,
+                path = ?,
+                query = ?,
+                city_name = ?,
+                country_name = ?,
+                country_code = ?,
+                user_agent = ?,
+                method = ?,
+                referer = ?,
+                content_type = ?,
+                accept_language = ?,
+                x_request_id = ?,
+                rate_limit_profile_id = ?,
+                active = ?,
+                updated_at = ?
+            WHERE id = ?
             RETURNING *";
         let now = Utc::now();
         query(sql)
@@ -414,8 +410,8 @@ impl Rule {
             .bind(&rule.description)
             .bind(rule.weight)
             .bind(&rule.mode)
+            .bind(&rule.pipeline)
             .bind(rule.allow)
-            .bind(rule.store)
             .bind(rule.ip_address)
             .bind(rule.protocol)
             .bind(rule.fqdn)
@@ -439,13 +435,13 @@ impl Rule {
             .await
     }
 
-    pub async fn count_paged(pool: &PgPool, params: &ReadRuleParams) -> Result<i64, Error> {
+    pub async fn count_paged(pool: &SqlitePool, params: &ReadRuleParams) -> Result<i64, Error> {
         let like_filters = vec![
             ("ip_address", &params.ip_address),
             ("protocol", &params.protocol),
             ("fqdn", &params.fqdn),
             ("path", &params.path),
-            ("query", &params.query), // Mapea 'query_for_request' a 'query'
+            ("query", &params.query),
             ("city_name", &params.city_name),
             ("country_name", &params.country_name),
             ("country_code", &params.country_code),
@@ -458,35 +454,26 @@ impl Rule {
             .filter_map(|(col, val)| val.as_ref().map(|v| (col, v.clone())))
             .collect();
         let mut sql = "SELECT COUNT(*) total FROM rules LEFT JOIN rate_limit_profiles ON rules.rate_limit_profile_id = rate_limit_profiles.id WHERE 1=1".to_string();
-        let mut param_index = 0i32;
         for (col, _) in &active_like_filters {
-            param_index += 1;
-            sql.push_str(&format!(" AND {col} LIKE ${param_index}"));
+            sql.push_str(&format!(" AND {col} LIKE ?"));
         }
         // Boolean exact-match filters
         if params.allow.is_some() {
-            param_index += 1;
-            sql.push_str(&format!(" AND allow = ${param_index}"));
+            sql.push_str(" AND allow = ?");
         }
-        if params.store.is_some() {
-            param_index += 1;
-            sql.push_str(&format!(" AND store = ${param_index}"));
+        if params.pipeline.is_some() {
+            sql.push_str(" AND pipeline = ?");
         }
         if params.active.is_some() {
-            param_index += 1;
-            sql.push_str(&format!(" AND active = ${param_index}"));
+            sql.push_str(" AND active = ?");
         }
         // Integer exact-match filter
         if params.weight.is_some() {
-            param_index += 1;
-            sql.push_str(&format!(" AND weight = ${param_index}"));
+            sql.push_str(" AND weight = ?");
         }
         // Joined table filter (rate_limit_profile_name)
         if params.rate_limit_profile_name.is_some() {
-            param_index += 1;
-            sql.push_str(&format!(
-                " AND rate_limit_profiles.name LIKE ${param_index}"
-            ));
+            sql.push_str(" AND rate_limit_profiles.name LIKE ?");
         }
         let mut query = query(&sql);
         for (_, value) in active_like_filters {
@@ -495,7 +482,7 @@ impl Rule {
         if let Some(val) = params.allow {
             query = query.bind(val);
         }
-        if let Some(val) = params.store {
+        if let Some(ref val) = params.pipeline {
             query = query.bind(val);
         }
         if let Some(val) = params.active {
@@ -508,7 +495,7 @@ impl Rule {
             query = query.bind(val);
         }
         query
-            .map(|row: PgRow| {
+            .map(|row: SqliteRow| {
                 let count: i64 = row.get("total");
                 count
             })
@@ -516,13 +503,16 @@ impl Rule {
             .await
     }
 
-    pub async fn read_paged(pool: &PgPool, params: &ReadRuleParams) -> Result<Vec<Self>, Error> {
+    pub async fn read_paged(
+        pool: &SqlitePool,
+        params: &ReadRuleParams,
+    ) -> Result<Vec<Self>, Error> {
         let like_filters = vec![
             ("ip_address", &params.ip_address),
             ("protocol", &params.protocol),
             ("fqdn", &params.fqdn),
             ("path", &params.path),
-            ("query", &params.query), // Mapea 'query_for_request' a 'query'
+            ("query", &params.query),
             ("city_name", &params.city_name),
             ("country_name", &params.country_name),
             ("country_code", &params.country_code),
@@ -535,47 +525,36 @@ impl Rule {
             .filter_map(|(col, val)| val.as_ref().map(|v| (col, v.clone())))
             .collect();
         let mut sql = "SELECT rules.*, rate_limit_profiles.name as rate_limit_profile_name FROM rules LEFT JOIN rate_limit_profiles ON rules.rate_limit_profile_id = rate_limit_profiles.id WHERE 1=1".to_string();
-        let mut param_index = 0i32;
         for (col, _) in &active_like_filters {
-            param_index += 1;
-            sql.push_str(&format!(" AND {col} LIKE ${param_index}"));
+            sql.push_str(&format!(" AND {col} LIKE ?"));
         }
         // Boolean exact-match filters
         if params.allow.is_some() {
-            param_index += 1;
-            sql.push_str(&format!(" AND allow = ${param_index}"));
+            sql.push_str(" AND allow = ?");
         }
-        if params.store.is_some() {
-            param_index += 1;
-            sql.push_str(&format!(" AND store = ${param_index}"));
+        if params.pipeline.is_some() {
+            sql.push_str(" AND pipeline = ?");
         }
         if params.active.is_some() {
-            param_index += 1;
-            sql.push_str(&format!(" AND active = ${param_index}"));
+            sql.push_str(" AND active = ?");
         }
         // Integer exact-match filter
         if params.weight.is_some() {
-            param_index += 1;
-            sql.push_str(&format!(" AND weight = ${param_index}"));
+            sql.push_str(" AND weight = ?");
         }
         // Joined table filter (rate_limit_profile_name)
         if let Some(ref _val) = params.rate_limit_profile_name {
-            param_index += 1;
-            sql.push_str(&format!(
-                " AND rate_limit_profiles.name LIKE ${param_index}"
-            ));
+            sql.push_str(" AND rate_limit_profiles.name LIKE ?");
         }
-        let limit_index = param_index + 1;
-        let offset_index = limit_index + 1;
         let sort_by = params.sort_by.as_deref().unwrap_or("id");
         if [
             "id",
             "name",
             "description",
             "mode",
+            "pipeline",
             "weight",
             "allow",
-            "store",
             "active",
             "ip_address",
             "protocol",
@@ -594,7 +573,7 @@ impl Rule {
                 sql.push_str(&format!(" ORDER BY {sort_by} DESC"));
             }
         }
-        sql.push_str(&format!(" LIMIT ${limit_index} OFFSET ${offset_index}"));
+        sql.push_str(" LIMIT ? OFFSET ?");
         let mut query = query(&sql);
         for (_, value) in active_like_filters {
             query = query.bind(value);
@@ -602,7 +581,7 @@ impl Rule {
         if let Some(val) = params.allow {
             query = query.bind(val);
         }
-        if let Some(val) = params.store {
+        if let Some(ref val) = params.pipeline {
             query = query.bind(val);
         }
         if let Some(val) = params.active {
@@ -625,13 +604,13 @@ impl Rule {
             .await
     }
 
-    pub async fn read_all(pool: &PgPool) -> Result<Vec<Self>, Error> {
+    pub async fn read_all(pool: &SqlitePool) -> Result<Vec<Self>, Error> {
         let sql = "SELECT rules.*, rate_limit_profiles.name as rate_limit_profile_name FROM rules LEFT JOIN rate_limit_profiles ON rules.rate_limit_profile_id = rate_limit_profiles.id ORDER BY weight ASC";
         query(sql).map(Self::from_row).fetch_all(pool).await
     }
 
-    pub async fn read(pool: &PgPool, id: i32) -> Result<Self, Error> {
-        let sql = "SELECT rules.*, rate_limit_profiles.name as rate_limit_profile_name FROM rules LEFT JOIN rate_limit_profiles ON rules.rate_limit_profile_id = rate_limit_profiles.id WHERE rules.id = $1";
+    pub async fn read(pool: &SqlitePool, id: i32) -> Result<Self, Error> {
+        let sql = "SELECT rules.*, rate_limit_profiles.name as rate_limit_profile_name FROM rules LEFT JOIN rate_limit_profiles ON rules.rate_limit_profile_id = rate_limit_profiles.id WHERE rules.id = ?";
         query(sql)
             .bind(id)
             .map(Self::from_row)
@@ -639,8 +618,8 @@ impl Rule {
             .await
     }
 
-    pub async fn delete(pool: &PgPool, id: i32) -> Result<Self, Error> {
-        let sql = "DELETE FROM rules WHERE id = $1 RETURNING *";
+    pub async fn delete(pool: &SqlitePool, id: i32) -> Result<Self, Error> {
+        let sql = "DELETE FROM rules WHERE id = ? RETURNING *";
         query(sql)
             .bind(id)
             .map(Self::from_row)
