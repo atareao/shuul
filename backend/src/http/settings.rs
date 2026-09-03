@@ -120,6 +120,9 @@ pub async fn update_settings(
         settings.log_retention_days = days;
     }
 
+    // Recompile regex patterns before persisting
+    settings.recompile();
+
     // Persist to database
     Settings::save(&app_state.pool, &settings).await?;
 

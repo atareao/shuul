@@ -9,6 +9,7 @@
 use std::net::IpAddr;
 use std::str::FromStr;
 
+use regex::Regex;
 use sqlx::{Row, SqlitePool};
 
 use crate::models::error::AppError;
@@ -28,6 +29,10 @@ pub struct Settings {
     pub trusted_user_agents: Vec<String>,
     pub default_rule_mode: String,
     pub log_retention_days: i32,
+    /// Precompiled regex patterns for safe paths (rebuilt on load/update).
+    pub safe_paths_re: Vec<Regex>,
+    /// Precompiled regex patterns for trusted user agents (rebuilt on load/update).
+    pub trusted_user_agents_re: Vec<Regex>,
 }
 
 impl Default for Settings {
@@ -38,6 +43,8 @@ impl Default for Settings {
             trusted_user_agents: Vec::new(),
             default_rule_mode: "log_only".to_string(),
             log_retention_days: 30,
+            safe_paths_re: Vec::new(),
+            trusted_user_agents_re: Vec::new(),
         }
     }
 }
@@ -171,13 +178,40 @@ impl Settings {
         let log_retention_days_raw = map.remove("log_retention_days").unwrap_or_default();
         let log_retention_days: i32 = log_retention_days_raw.parse().unwrap_or(30);
 
-        Ok(Self {
+        let mut s = Self {
             safe_paths,
             trusted_ips,
             trusted_user_agents,
             default_rule_mode,
             log_retention_days,
-        })
+            safe_paths_re: Vec::new(),
+            trusted_user_agents_re: Vec::new(),
+        };
+        s.recompile_patterns();
+        Ok(s)
+    }
+
+    /// Recompila los patrones regex de `safe_paths` y `trusted_user_agents`
+    /// en sus correspondientes vectores precompilados.
+    ///
+    /// Los patrones inválidos se silencian (no se incluyen en el vector).
+    fn recompile_patterns(&mut self) {
+        self.safe_paths_re = self
+            .safe_paths
+            .iter()
+            .filter_map(|s| Regex::new(s).ok())
+            .collect();
+        self.trusted_user_agents_re = self
+            .trusted_user_agents
+            .iter()
+            .filter_map(|s| Regex::new(s).ok())
+            .collect();
+    }
+
+    /// Recompila los patrones regex. Debe llamarse después de mutar
+    /// `safe_paths` o `trusted_user_agents` y antes de persistir.
+    pub fn recompile(&mut self) {
+        self.recompile_patterns();
     }
 
     /// Persiste la configuración en la base de datos (UPSERT).

@@ -20,9 +20,8 @@
 
 use crate::models::{AppState, EmptyResponse};
 use axum::{Router, extract::State, http::StatusCode, response::IntoResponse, routing};
-use regex::Regex;
 use std::sync::Arc;
-use tracing::{debug, error, warn};
+use tracing::{debug, error};
 
 pub fn shuul_router() -> Router<Arc<AppState>> {
     Router::new().route("/", routing::any(shuul))
@@ -40,7 +39,31 @@ pub async fn shuul(
     State(app_state): State<Arc<AppState>>,
     headers: axum::http::HeaderMap,
 ) -> impl IntoResponse {
-    let mut request = crate::models::NewRequest::from_request(&headers, &app_state.maxmind_db);
+    // ── Step 0: Determine if GeoIP lookup is needed (sync, releases lock immediately) ──
+    let needs_geoip = {
+        let rules = match app_state.rules.lock() {
+            Ok(g) => g,
+            Err(e) => {
+                error!("Rules mutex poisoned: {e}");
+                return EmptyResponse::create(StatusCode::INTERNAL_SERVER_ERROR, "Internal error");
+            },
+        };
+        rules.iter().any(|cr| {
+            cr.rule.city_name.is_some()
+                || cr.rule.country_name.is_some()
+                || cr.rule.country_code.is_some()
+        })
+    };
+    // rules lock is released here
+
+    let mut request = crate::models::NewRequest::from_request(
+        &headers,
+        if needs_geoip {
+            Some(&app_state.maxmind_db)
+        } else {
+            None
+        },
+    );
     debug!("Captured request: {:?}", request);
 
     // ── Step 1: Load settings (sync, no await after this) ──
@@ -55,18 +78,14 @@ pub async fn shuul(
 
     // ── Step 2: Safe paths check ──
     if let Some(ref path) = request.path {
-        for safe_path in &settings.safe_paths {
-            if let Ok(re) = Regex::new(safe_path) {
-                if re.is_match(path) {
-                    debug!(
-                        "Request path '{}' matches safe_path '{}' → ALLOW (skip all checks)",
-                        path, safe_path
-                    );
-                    app_state.stats.record_allowed();
-                    return EmptyResponse::create(StatusCode::OK, "Ok");
-                }
-            } else {
-                warn!("Invalid safe_path regex pattern: {}", safe_path);
+        for safe_path_re in &settings.safe_paths_re {
+            if safe_path_re.is_match(path) {
+                debug!(
+                    "Request path '{}' matches safe_path pattern → ALLOW (skip all checks)",
+                    path,
+                );
+                app_state.stats.record_allowed();
+                return EmptyResponse::create(StatusCode::OK, "Ok");
             }
         }
     }
@@ -89,18 +108,11 @@ pub async fn shuul(
 
     // ── Step 4: Trusted user agents check ──
     if let Some(ref ua) = request.user_agent {
-        for trusted_ua in &settings.trusted_user_agents {
-            if let Ok(re) = Regex::new(trusted_ua) {
-                if re.is_match(ua) {
-                    debug!(
-                        "User-Agent matches trusted pattern '{}' → ALLOW (skip all checks)",
-                        trusted_ua
-                    );
-                    app_state.stats.record_allowed();
-                    return EmptyResponse::create(StatusCode::OK, "Ok");
-                }
-            } else {
-                warn!("Invalid trusted_user_agent regex pattern: {}", trusted_ua);
+        for trusted_ua_re in &settings.trusted_user_agents_re {
+            if trusted_ua_re.is_match(ua) {
+                debug!("User-Agent matches trusted pattern → ALLOW (skip all checks)",);
+                app_state.stats.record_allowed();
+                return EmptyResponse::create(StatusCode::OK, "Ok");
             }
         }
     }

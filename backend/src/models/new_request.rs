@@ -36,7 +36,7 @@ impl NewRequest {
     /// Los encabezados `x-forwarded-*` son la fuente principal de datos.
     /// Para campos de encabezado HTTP estándar, se usa primero el prefijo
     /// `x-forwarded-*` y como fallback el encabezado original.
-    pub fn from_request(headers: &http::HeaderMap, maxmind_db: &Reader<Vec<u8>>) -> Self {
+    pub fn from_request(headers: &http::HeaderMap, maxmind_db: Option<&Reader<Vec<u8>>>) -> Self {
         let protocol = headers
             .get("x-forwarded-proto")
             .map(|s| s.to_str())
@@ -59,7 +59,6 @@ impl NewRequest {
             .map(|s| s.to_str())
             .and_then(Result::ok)
             .unwrap_or("");
-        let ip_data = IPData::complete(maxmind_db, ip);
         let ip_address = if ip.is_empty() {
             None
         } else {
@@ -87,9 +86,18 @@ impl NewRequest {
                 Some(s.to_string())
             }
         });
-        let city_name = ip_data.city_name.filter(|s| !s.is_empty());
-        let country_name = ip_data.country_name.filter(|s| !s.is_empty());
-        let country_code = ip_data.country_code.filter(|s| !s.is_empty());
+
+        // GeoIP lookup: only perform if a MaxMind DB reference is provided
+        let (city_name, country_name, country_code) = if let Some(db) = maxmind_db {
+            let ip_data = IPData::complete(db, ip);
+            (
+                ip_data.city_name.filter(|s| !s.is_empty()),
+                ip_data.country_name.filter(|s| !s.is_empty()),
+                ip_data.country_code.filter(|s| !s.is_empty()),
+            )
+        } else {
+            (None, None, None)
+        };
 
         // Extraer encabezados HTTP adicionales con prefijo x-forwarded-* + fallback
         let user_agent = headers
