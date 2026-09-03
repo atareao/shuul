@@ -208,7 +208,12 @@ pub async fn ban_handler(
             .lock()
             .map_err(|_| AppError::CachePoisoned)?;
         ban_manager
-            .ban(ip, params.rule_id, reason.clone(), params.ban_duration_seconds)
+            .ban(
+                ip,
+                params.rule_id,
+                reason.clone(),
+                params.ban_duration_seconds,
+            )
             .clone()
     };
 

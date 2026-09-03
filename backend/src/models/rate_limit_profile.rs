@@ -5,14 +5,24 @@
 //! limitación de tasa. Cada perfil configura los parámetros de rate limiting
 //! (intentos, ventanas de tiempo, escalado de bans) y puede ser referenciado
 //! desde múltiples reglas mediante `rate_limit_profile_id`.
+//!
+//! # Almacenamiento en SQLite
+//!
+//! Los campos `bantime_multipliers` y `fail_codes` son arrays de enteros que se
+//! almacenan como texto JSON (e.g., `'[1,2,4,8]'`) porque SQLite no tiene un
+//! tipo array nativo.
 
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
-use sqlx::{
-    Error, Row,
-    postgres::{PgPool, PgRow},
-    query,
-};
+use sqlx::{Error, Row, SqlitePool, query, sqlite::SqliteRow};
+
+/// Analiza una columna de tipo `TEXT` con JSON array en un `Vec<i32>`.
+///
+/// Devuelve un vec vacío si el valor es `None` o no se puede parsear.
+fn parse_json_array(val: Option<String>) -> Vec<i32> {
+    val.and_then(|s| serde_json::from_str(&s).ok())
+        .unwrap_or_default()
+}
 
 /// Perfil completo de rate limiting, incluyendo metadatos de persistencia.
 #[derive(Debug, Serialize, Deserialize, Clone)]
@@ -32,7 +42,7 @@ pub struct RateLimitProfile {
     pub updated_at: DateTime<Utc>,
 }
 
-/// Datos necesarios para crear un nuevo perfil de rate limiting.
+/// Dats necesarios para crear un nuevo perfil de rate limiting.
 #[derive(Debug, Serialize, Deserialize, Clone)]
 pub struct NewRateLimitProfile {
     pub name: String,
@@ -47,7 +57,7 @@ pub struct NewRateLimitProfile {
     pub fail_codes: Option<Vec<i32>>,
 }
 
-/// Datos para actualizar un perfil de rate limiting existente.
+/// Dats para actualizar un perfil de rate limiting existente.
 /// Todos los campos excepto `id` son opcionales para permitir actualización parcial.
 #[derive(Debug, Serialize, Deserialize, Clone)]
 pub struct UpdateRateLimitProfile {
@@ -78,8 +88,8 @@ pub struct ReadRateLimitProfileParams {
 use crate::constants::{DEFAULT_LIMIT, DEFAULT_PAGE};
 
 impl RateLimitProfile {
-    /// Construye un `RateLimitProfile` desde una fila de `PostgreSQL`.
-    fn from_row(row: PgRow) -> Self {
+    /// Construye un `RateLimitProfile` desde una fila de SQLite.
+    fn from_row(row: SqliteRow) -> Self {
         Self {
             id: row.get("id"),
             name: row.get("name"),
@@ -88,23 +98,25 @@ impl RateLimitProfile {
             find_time_seconds: row.get("find_time_seconds"),
             ban_time_seconds: row.get("ban_time_seconds"),
             bantime_increment: row.get("bantime_increment"),
-            bantime_multipliers: row.get("bantime_multipliers"),
+            bantime_multipliers: parse_json_array(
+                row.get::<Option<String>, _>("bantime_multipliers"),
+            ),
             bantime_maxtime_seconds: row.get("bantime_maxtime_seconds"),
             ban_count_decay_days: row.get("ban_count_decay_days"),
-            fail_codes: row.get("fail_codes"),
+            fail_codes: parse_json_array(row.get::<Option<String>, _>("fail_codes")),
             created_at: row.get("created_at"),
             updated_at: row.get("updated_at"),
         }
     }
 
-    /// Crea un nuevo perfil de rate limiting en la base de datos.
-    pub async fn create(pool: &PgPool, profile: NewRateLimitProfile) -> Result<Self, Error> {
+    /// Crea un nueo perfil de rate limiting en la ase de datos.
+    pub async fn create(pool: &SqlitePool, profile: NewRateLimitProfile) -> Result<Self, Error> {
         let now = Utc::now();
         let sql = "INSERT INTO rate_limit_profiles (
             name, description, max_retry, find_time_seconds, ban_time_seconds,
             bantime_increment, bantime_multipliers, bantime_maxtime_seconds,
             ban_count_decay_days, fail_codes, created_at, updated_at
-        ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12) RETURNING *";
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) RETURNING *";
         query(sql)
             .bind(&profile.name)
             .bind(profile.description.unwrap_or_default())
@@ -112,10 +124,16 @@ impl RateLimitProfile {
             .bind(profile.find_time_seconds.unwrap_or(600))
             .bind(profile.ban_time_seconds.unwrap_or(3600))
             .bind(profile.bantime_increment.unwrap_or(false))
-            .bind(profile.bantime_multipliers.unwrap_or(vec![1, 2, 4, 8]))
+            .bind(
+                serde_json::to_string(&profile.bantime_multipliers.unwrap_or(vec![1, 2, 4, 8]))
+                    .unwrap_or_default(),
+            )
             .bind(profile.bantime_maxtime_seconds.unwrap_or(604800))
             .bind(profile.ban_count_decay_days.unwrap_or(30))
-            .bind(profile.fail_codes.unwrap_or(vec![401, 403, 404]))
+            .bind(
+                serde_json::to_string(&profile.fail_codes.unwrap_or(vec![401, 403, 404]))
+                    .unwrap_or_default(),
+            )
             .bind(now)
             .bind(now)
             .map(Self::from_row)
@@ -124,8 +142,8 @@ impl RateLimitProfile {
     }
 
     /// Lee un perfil de rate limiting por su ID.
-    pub async fn read(pool: &PgPool, id: i32) -> Result<Self, Error> {
-        let sql = "SELECT * FROM rate_limit_profiles WHERE id = $1";
+    pub async fn read(pool: &SqlitePool, id: i32) -> Result<Self, Error> {
+        let sql = "SELECT * FROM rate_limit_profiles WHERE id = ?";
         query(sql)
             .bind(id)
             .map(Self::from_row)
@@ -134,21 +152,21 @@ impl RateLimitProfile {
     }
 
     /// Devuelve el recuento total de perfiles (para el dashboard/info).
-    pub async fn read_info(pool: &PgPool, info: &str) -> Result<i64, Error> {
+    pub async fn read_info(pool: &SqlitePool, info: &str) -> Result<i64, Error> {
         let sql = if info == "total" {
             "SELECT count(*) FROM rate_limit_profiles"
         } else {
             return Err(Error::RowNotFound);
         };
         query(sql)
-            .map(|row: PgRow| row.get::<i64, _>(0))
+            .map(|row: SqliteRow| row.get::<i64, _>(0))
             .fetch_one(pool)
             .await
     }
 
     /// Lee perfiles con filtro LIKE y paginación.
     pub async fn read_paged(
-        pool: &PgPool,
+        pool: &SqlitePool,
         params: &ReadRateLimitProfileParams,
     ) -> Result<Vec<Self>, Error> {
         let filters = vec![("name", &params.name)];
@@ -158,12 +176,9 @@ impl RateLimitProfile {
             .collect();
 
         let mut sql = "SELECT * FROM rate_limit_profiles WHERE 1=1".to_string();
-        for (i, (col, _)) in active_filters.iter().enumerate() {
-            let param_index = i + 1;
-            sql.push_str(&format!(" AND {col} LIKE ${param_index}"));
+        for (col, _) in &active_filters {
+            sql.push_str(&format!(" AND {col} LIKE ?"));
         }
-        let limit_index = active_filters.len() + 1;
-        let offset_index = limit_index + 1;
         let sort_by = params.sort_by.as_deref().unwrap_or("id");
         if [
             "id",
@@ -186,7 +201,7 @@ impl RateLimitProfile {
                 sql.push_str(&format!(" ORDER BY {sort_by} DESC"));
             }
         }
-        sql.push_str(&format!(" LIMIT ${limit_index} OFFSET ${offset_index}"));
+        sql.push_str(" LIMIT ? OFFSET ?");
 
         let mut query = query(&sql);
         for (_, value) in active_filters {
@@ -205,7 +220,7 @@ impl RateLimitProfile {
 
     /// Cuenta perfiles con el mismo filtro que `read_paged`.
     pub async fn count_paged(
-        pool: &PgPool,
+        pool: &SqlitePool,
         params: &ReadRateLimitProfileParams,
     ) -> Result<i64, Error> {
         let filters = vec![("name", &params.name)];
@@ -214,16 +229,15 @@ impl RateLimitProfile {
             .filter_map(|(col, val)| val.as_ref().map(|v| (col, v.clone())))
             .collect();
         let mut sql = "SELECT COUNT(*) total FROM rate_limit_profiles WHERE 1=1".to_string();
-        for (i, (col, _)) in active_filters.iter().enumerate() {
-            let param_index = i + 1;
-            sql.push_str(&format!(" AND {col} LIKE ${param_index}"));
+        for (col, _) in &active_filters {
+            sql.push_str(&format!(" AND {col} LIKE ?"));
         }
         let mut query = query(&sql);
         for (_, value) in active_filters {
             query = query.bind(value);
         }
         query
-            .map(|row: PgRow| {
+            .map(|row: SqliteRow| {
                 let count: i64 = row.get("total");
                 count
             })
@@ -232,21 +246,21 @@ impl RateLimitProfile {
     }
 
     /// Actualiza un perfil de rate limiting existente.
-    pub async fn update(pool: &PgPool, profile: UpdateRateLimitProfile) -> Result<Self, Error> {
+    pub async fn update(pool: &SqlitePool, profile: UpdateRateLimitProfile) -> Result<Self, Error> {
         let now = Utc::now();
         let sql = "UPDATE rate_limit_profiles SET
-            name = COALESCE($1, name),
-            description = COALESCE($2, description),
-            max_retry = COALESCE($3, max_retry),
-            find_time_seconds = COALESCE($4, find_time_seconds),
-            ban_time_seconds = COALESCE($5, ban_time_seconds),
-            bantime_increment = COALESCE($6, bantime_increment),
-            bantime_multipliers = COALESCE($7, bantime_multipliers),
-            bantime_maxtime_seconds = COALESCE($8, bantime_maxtime_seconds),
-            ban_count_decay_days = COALESCE($9, ban_count_decay_days),
-            fail_codes = COALESCE($10, fail_codes),
-            updated_at = $11
-            WHERE id = $12
+            name = COALESCE(?, name),
+            description = COALESCE(?, description),
+            max_retry = COALESCE(?, max_retry),
+            find_time_seconds = COALESCE(?, find_time_seconds),
+            ban_time_seconds = COALESCE(?, ban_time_seconds),
+            bantime_increment = COALESCE(?, bantime_increment),
+            bantime_multipliers = COALESCE(?, bantime_multipliers),
+            bantime_maxtime_seconds = COALESCE(?, bantime_maxtime_seconds),
+            ban_count_decay_days = COALESCE(?, ban_count_decay_days),
+            fail_codes = COALESCE(?, fail_codes),
+            updated_at = ?
+            WHERE id = ?
             RETURNING *";
         query(sql)
             .bind(&profile.name)
@@ -255,10 +269,20 @@ impl RateLimitProfile {
             .bind(profile.find_time_seconds)
             .bind(profile.ban_time_seconds)
             .bind(profile.bantime_increment)
-            .bind(&profile.bantime_multipliers)
+            .bind(
+                profile
+                    .bantime_multipliers
+                    .as_ref()
+                    .map(|v| serde_json::to_string(v).unwrap_or_default()),
+            )
             .bind(profile.bantime_maxtime_seconds)
             .bind(profile.ban_count_decay_days)
-            .bind(&profile.fail_codes)
+            .bind(
+                profile
+                    .fail_codes
+                    .as_ref()
+                    .map(|v| serde_json::to_string(v).unwrap_or_default()),
+            )
             .bind(now)
             .bind(profile.id)
             .map(Self::from_row)
@@ -267,8 +291,8 @@ impl RateLimitProfile {
     }
 
     /// Elimina un perfil de rate limiting y devuelve el perfil eliminado.
-    pub async fn delete(pool: &PgPool, id: i32) -> Result<Self, Error> {
-        let sql = "DELETE FROM rate_limit_profiles WHERE id = $1 RETURNING *";
+    pub async fn delete(pool: &SqlitePool, id: i32) -> Result<Self, Error> {
+        let sql = "DELETE FROM rate_limit_profiles WHERE id = ? RETURNING *";
         query(sql)
             .bind(id)
             .map(Self::from_row)

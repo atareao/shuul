@@ -42,13 +42,13 @@ pub use stats::StatsCollector;
 pub use user::TokenClaims;
 
 use maxminddb::Reader;
-use sqlx::postgres::PgPool;
+use sqlx::SqlitePool;
 use std::collections::HashMap;
 use std::sync::Mutex;
 use std::time::Instant;
 
 pub struct AppState {
-    pub pool: PgPool,
+    pub pool: SqlitePool,
     pub secret: String,
     pub maxmind_db: Reader<Vec<u8>>,
     pub rules: Mutex<Vec<CacheRule>>,

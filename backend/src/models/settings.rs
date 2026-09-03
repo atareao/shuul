@@ -9,7 +9,7 @@
 use std::net::IpAddr;
 use std::str::FromStr;
 
-use sqlx::{Row, postgres::PgPool};
+use sqlx::{Row, SqlitePool};
 
 use crate::models::error::AppError;
 
@@ -125,7 +125,7 @@ impl Settings {
     ///
     /// Lee todas las claves de la tabla `settings` y construye un [`Settings`].
     /// Si una clave no existe, se usa el valor por defecto.
-    pub async fn load(pool: &PgPool) -> Result<Self, AppError> {
+    pub async fn load(pool: &SqlitePool) -> Result<Self, AppError> {
         let rows = sqlx::query("SELECT key, value FROM settings")
             .fetch_all(pool)
             .await?;
@@ -184,7 +184,7 @@ impl Settings {
     ///
     /// Cada campo de [`Settings`] se guarda como una fila independiente
     /// en la tabla `settings`.
-    pub async fn save(pool: &PgPool, settings: &Self) -> Result<(), AppError> {
+    pub async fn save(pool: &SqlitePool, settings: &Self) -> Result<(), AppError> {
         let pairs = vec![
             ("safe_paths", settings.safe_paths.join(", ")),
             (
@@ -209,8 +209,8 @@ impl Settings {
 
         for (key, value) in pairs {
             sqlx::query(
-                "INSERT INTO settings (key, value) VALUES ($1, $2) \
-                 ON CONFLICT (key) DO UPDATE SET value = EXCLUDED.value",
+                "INSERT INTO settings (key, value) VALUES (?, ?) \
+                 ON CONFLICT (key) DO UPDATE SET value = excluded.value",
             )
             .bind(key)
             .bind(&value)

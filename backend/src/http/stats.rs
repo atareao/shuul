@@ -45,11 +45,38 @@ pub async fn read_evolution(
     debug!("Evolution params: {:?}", params);
     let unit = params.unit.clone().unwrap_or_else(|| "day".to_string());
     let evolution = app_state.stats.get_evolution(&unit);
-    debug!("Request evolution: {:?}", evolution);
+
+    // Convert buckets into frontend-friendly series format:
+    //   [{"id": "blocked", "data": [{"x": "2024-01-01T00:00:00Z", "y": 5}, ...]},
+    //    {"id": "allowed", "data": [{"x": "2024-01-01T00:00:00Z", "y": 10}, ...]}]
+    let blocked_series: Vec<serde_json::Value> = evolution
+        .iter()
+        .map(|bucket| {
+            let chrono_dt =
+                chrono::DateTime::from_timestamp(bucket.timestamp, 0).unwrap_or_default();
+            serde_json::json!({"x": chrono_dt.to_rfc3339(), "y": bucket.blocked})
+        })
+        .collect();
+
+    let allowed_series: Vec<serde_json::Value> = evolution
+        .iter()
+        .map(|bucket| {
+            let chrono_dt =
+                chrono::DateTime::from_timestamp(bucket.timestamp, 0).unwrap_or_default();
+            serde_json::json!({"x": chrono_dt.to_rfc3339(), "y": bucket.allowed})
+        })
+        .collect();
+
+    let result = serde_json::json!([
+        {"id": "blocked", "data": blocked_series},
+        {"id": "allowed", "data": allowed_series},
+    ]);
+
+    debug!("Request evolution: {:?}", result);
     Ok(ApiResponse::new(
         StatusCode::OK,
         "Request evolution",
-        Data::Some(serde_json::to_value(evolution)?),
+        Data::Some(result),
     ))
 }
 
