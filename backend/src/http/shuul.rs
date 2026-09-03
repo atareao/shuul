@@ -213,7 +213,7 @@ pub async fn shuul(
     let path = request.path.clone().unwrap_or_default();
     let user_agent = request.user_agent.clone().unwrap_or_default();
     let country_code = request.country_code.clone().unwrap_or_default();
-    let ip = request.ip_address.clone().unwrap_or_default();
+    let ip = request.ip_address.take().unwrap_or_default();
 
     if let Some(rm) = &matched {
         if allow {

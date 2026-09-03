@@ -38,7 +38,7 @@ use models::{
 };
 use sqlx::{
     migrate::{MigrateDatabase, Migrator},
-    sqlite::{SqlitePool, SqlitePoolOptions},
+    sqlite::SqlitePoolOptions,
 };
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
