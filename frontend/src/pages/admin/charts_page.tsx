@@ -5,6 +5,7 @@ import { Flex, Typography, Spin, InputNumber, Select, Card } from "antd";
 const { Title } = Typography;
 import { loadData } from "@/common/utils";
 import ModeContext from "@/components/mode_context";
+import { ConfigProvider } from "@ant-design/charts";
 
 const Line = lazy(() => import("@/components/charts/antd_line"));
 const Pie = lazy(() => import("@/components/charts/antd_pie"));
@@ -12,6 +13,7 @@ const Pie = lazy(() => import("@/components/charts/antd_pie"));
 interface Props {
   navigate: any;
   t: any;
+  isDarkMode: boolean;
 }
 
 interface State {
@@ -174,133 +176,141 @@ export class InnerPage extends react.Component<Props, State> {
       );
     }
 
+    const { isDarkMode } = this.props;
+
     return (
       <Flex vertical gap="large" style={{ padding: 24 }}>
         <Title level={2}>Charts</Title>
 
-        {/* Evolution Line Chart */}
-        <Card title="Request Evolution" size="small">
-          <Flex justify="flex-end" gap="middle" style={{ marginBottom: 16 }}>
-            <InputNumber
-              min={1}
-              value={this.state.last}
-              onChange={(value) => {
-                const newLast = value || 7;
-                this.setState({ last: newLast }, () =>
-                  this.refreshData(false, undefined, newLast),
-                );
-              }}
-            />
-            <Select
-              value={this.state.unit}
-              onChange={(value) => {
-                const newUnit = value || "day";
-                this.setState({ unit: value }, () =>
-                  this.refreshData(false, newUnit, undefined),
-                );
-              }}
-              options={[
-                { value: "day", label: "day" },
-                { value: "hour", label: "hour" },
-              ]}
-              style={{ width: 100 }}
-            />
-          </Flex>
-          <div style={{ height: 400 }}>
-            {evolutionFlatData.length > 0 ? (
-              <Suspense fallback={<Spin />}>
-                <Line
-                  data={evolutionFlatData}
-                  xField="time"
-                  yField="requests"
-                  seriesField="category"
-                  smooth
-                  point={{ shapeField: "circle", sizeField: 3 }}
-                  legend={{
-                    color: {
-                      position: "top",
-                      layout: { justifyContent: "center" },
-                    },
-                  }}
-                  axis={{ x: { title: "Time" }, y: { title: "Requests" } }}
-                  slider={{}}
-                />
-              </Suspense>
-            ) : (
-              <Flex justify="center" align="center" style={{ height: "100%" }}>
-                <Typography.Text type="secondary">
-                  No evolution data available
-                </Typography.Text>
-              </Flex>
-            )}
-          </div>
-        </Card>
+        <ConfigProvider theme={{ type: isDarkMode ? "dark" : "classic" }}>
+          {/* Evolution Line Chart */}
+          <Card title="Request Evolution" size="small">
+            <Flex justify="flex-end" gap="middle" style={{ marginBottom: 16 }}>
+              <InputNumber
+                min={1}
+                value={this.state.last}
+                onChange={(value) => {
+                  const newLast = value || 7;
+                  this.setState({ last: newLast }, () =>
+                    this.refreshData(false, undefined, newLast),
+                  );
+                }}
+              />
+              <Select
+                value={this.state.unit}
+                onChange={(value) => {
+                  const newUnit = value || "day";
+                  this.setState({ unit: value }, () =>
+                    this.refreshData(false, newUnit, undefined),
+                  );
+                }}
+                options={[
+                  { value: "day", label: "day" },
+                  { value: "hour", label: "hour" },
+                ]}
+                style={{ width: 100 }}
+              />
+            </Flex>
+            <div style={{ height: 400 }}>
+              {evolutionFlatData.length > 0 ? (
+                <Suspense fallback={<Spin />}>
+                  <Line
+                    data={evolutionFlatData}
+                    xField="time"
+                    yField="requests"
+                    seriesField="category"
+                    smooth
+                    point={{ shapeField: "circle", sizeField: 3 }}
+                    legend={{
+                      color: {
+                        position: "top",
+                        layout: { justifyContent: "center" },
+                      },
+                    }}
+                    axis={{ x: { title: "Time" }, y: { title: "Requests" } }}
+                    slider={{}}
+                  />
+                </Suspense>
+              ) : (
+                <Flex
+                  justify="center"
+                  align="center"
+                  style={{ height: "100%" }}
+                >
+                  <Typography.Text type="secondary">
+                    No evolution data available
+                  </Typography.Text>
+                </Flex>
+              )}
+            </div>
+          </Card>
 
-        {/* Pie charts row */}
-        <Flex gap="large" wrap>
-          <Card
-            title="Top Countries"
-            size="small"
-            style={{ flex: 1, minWidth: 350 }}
-          >
-            <div style={{ height: 350 }}>
-              {topCountriesData.length > 0 ? (
-                <Suspense fallback={<Spin />}>
-                  <Pie
-                    data={topCountriesData}
-                    angleField="value"
-                    colorField="name"
-                    color={COLORS}
-                    innerRadius={0.5}
-                    label={{ text: "name", style: { fontWeight: "bold" } }}
-                    legend={{ color: { position: "right", rowPadding: 4 } }}
-                  />
-                </Suspense>
-              ) : (
-                <Flex
-                  justify="center"
-                  align="center"
-                  style={{ height: "100%" }}
-                >
-                  <Typography.Text type="secondary">
-                    No country data available
-                  </Typography.Text>
-                </Flex>
-              )}
-            </div>
-          </Card>
-          <Card
-            title="Top Rules"
-            size="small"
-            style={{ flex: 1, minWidth: 350 }}
-          >
-            <div style={{ height: 350 }}>
-              {topRulesData.length > 0 ? (
-                <Suspense fallback={<Spin />}>
-                  <Pie
-                    data={topRulesData}
-                    angleField="value"
-                    colorField="name"
-                    color={COLORS}
-                    innerRadius={0.5}
-                    label={{ text: "name", style: { fontWeight: "bold" } }}
-                    legend={{ color: { position: "right", rowPadding: 4 } }}
-                  />
-                </Suspense>
-              ) : (
-                <Flex
-                  justify="center"
-                  align="center"
-                  style={{ height: "100%" }}
-                >
-                  <Typography.Text type="secondary">
-                    No rule data available
-                  </Typography.Text>
-                </Flex>
-              )}
-            </div>
-          </Card>
-        </Flex>
+          {/* Pie charts row */}
+          <Flex gap="large" wrap>
+            <Card
+              title="Top Countries"
+              size="small"
+              style={{ flex: 1, minWidth: 350 }}
+            >
+              <div style={{ height: 350 }}>
+                {topCountriesData.length > 0 ? (
+                  <Suspense fallback={<Spin />}>
+                    <Pie
+                      data={topCountriesData}
+                      angleField="value"
+                      colorField="name"
+                      color={COLORS}
+                      innerRadius={0.5}
+                      label={{ text: "name", style: { fontWeight: "bold" } }}
+                      legend={{ color: { position: "right", rowPadding: 4 } }}
+                    />
+                  </Suspense>
+                ) : (
+                  <Flex
+                    justify="center"
+                    align="center"
+                    style={{ height: "100%" }}
+                  >
+                    <Typography.Text type="secondary">
+                      No country data available
+                    </Typography.Text>
+                  </Flex>
+                )}
+              </div>
+            </Card>
+            <Card
+              title="Top Rules"
+              size="small"
+              style={{ flex: 1, minWidth: 350 }}
+            >
+              <div style={{ height: 350 }}>
+                {topRulesData.length > 0 ? (
+                  <Suspense fallback={<Spin />}>
+                    <Pie
+                      data={topRulesData}
+                      angleField="value"
+                      colorField="name"
+                      color={COLORS}
+                      innerRadius={0.5}
+                      label={{ text: "name", style: { fontWeight: "bold" } }}
+                      legend={{ color: { position: "right", rowPadding: 4 } }}
+                    />
+                  </Suspense>
+                ) : (
+                  <Flex
+                    justify="center"
+                    align="center"
+                    style={{ height: "100%" }}
+                  >
+                    <Typography.Text type="secondary">
+                      No rule data available
+                    </Typography.Text>
+                  </Flex>
+                )}
+              </div>
+            </Card>
+          </Flex>
+        </ConfigProvider>
       </Flex>
     );
   };
@@ -311,8 +321,8 @@ export default function ChartsPage() {
   const { t } = useTranslation();
   return (
     <ModeContext.Consumer>
-      {() => {
-        return <InnerPage navigate={navigate} t={t} />;
+      {({ isDarkMode }) => {
+        return <InnerPage navigate={navigate} t={t} isDarkMode={isDarkMode} />;
       }}
     </ModeContext.Consumer>
   );
