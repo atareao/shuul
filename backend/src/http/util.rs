@@ -2,7 +2,7 @@
 //!
 //! Funciones auxiliares como geolocalización por IP.
 
-use crate::models::{ApiResponse, AppState, Data, IPData};
+use crate::models::{ApiResponse, AppState, Data};
 use axum::{
     Router,
     extract::{Query, State},
@@ -28,7 +28,7 @@ async fn complete_ip(
 ) -> impl IntoResponse {
     debug!("Complete IP: {:?}", params);
     if let Some(ip) = params.ip {
-        let ip_data = IPData::complete(&app_state.maxmind_db, &ip);
+        let ip_data = app_state.geoip.lookup(&ip);
         debug!("Response IP data: {:?}", ip_data);
         ApiResponse::new(
             StatusCode::OK,

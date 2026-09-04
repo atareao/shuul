@@ -21,7 +21,32 @@ use crate::models::{
 use axum::{Json, Router, extract::State, http::StatusCode, response::IntoResponse, routing};
 use std::net::IpAddr;
 use std::sync::Arc;
-use tracing::{debug, error, warn};
+use tracing::{error, trace, warn};
+
+/// Determines if a log category should be logged based on the current mode.
+fn should_log(mode: &str, category: &str) -> bool {
+    match mode {
+        "all" => true,
+        "pass" => matches!(category, "pass"),
+        "audit" => matches!(category, "banned" | "block" | "report_block" | "report_ban"),
+        _ => false,
+    }
+}
+
+/// Macro for structured audit logging with visible category tag.
+macro_rules! audit_log {
+    ($category:expr, $($arg:tt)*) => {
+        tracing::info!(
+            "[{}] {}",
+            $category.to_uppercase(),
+            serde_json::json!({
+                "event": $category,
+                "ts": chrono::Utc::now().to_rfc3339(),
+                $($arg)*
+            })
+        )
+    };
+}
 
 pub fn report_router() -> Router<Arc<AppState>> {
     Router::new().route("/", routing::post(report_handler))
@@ -37,7 +62,25 @@ async fn report_handler(
     State(app_state): State<Arc<AppState>>,
     Json(payload): Json<ReportPayload>,
 ) -> impl IntoResponse {
-    debug!("Report received: {:?}", payload);
+    let log_all_requests = app_state
+        .settings
+        .lock()
+        .map(|g| g.log_all_requests.clone())
+        .unwrap_or_else(|_| "all".to_string());
+
+    if should_log(&log_all_requests, "report_received") {
+        audit_log!("report_received",
+            "pipeline": "jail",
+            "rule_id": null,
+            "rule_name": null,
+            "ip": payload.ip_address,
+            "country": null,
+            "path": payload.path,
+            "method": payload.method,
+            "ua": null,
+            "status_code": payload.status_code,
+        );
+    }
 
     // ── Step 1: Build a minimal NewRequest for matching ──
     let request = NewRequest {
@@ -90,11 +133,18 @@ async fn report_handler(
     // rules lock is released here
 
     if matches.is_empty() {
-        debug!(
-            "Report: no matching rule for {} {}",
-            payload.ip_address,
-            payload.path.as_deref().unwrap_or("?")
-        );
+        if should_log(&log_all_requests, "report_ok") {
+            audit_log!("report_ok",
+                "pipeline": "jail",
+                "rule_id": null,
+                "rule_name": null,
+                "ip": payload.ip_address,
+                "country": null,
+                "path": payload.path,
+                "method": payload.method,
+                "ua": null,
+            );
+        }
         return EmptyResponse::create(StatusCode::OK, "Ok");
     }
 
@@ -102,15 +152,20 @@ async fn report_handler(
     let ip: Option<IpAddr> = payload.ip_address.parse().ok();
 
     for (rule_id, profile_id, rule_name) in &matches {
-        debug!(
-            "Report: {} {} {} (status={}) matched rule #{}, profile #{}",
-            payload.method.as_deref().unwrap_or("?"),
-            payload.path.as_deref().unwrap_or("?"),
-            payload.ip_address,
-            payload.status_code,
-            rule_id,
-            profile_id,
-        );
+        if should_log(&log_all_requests, "report_match") {
+            audit_log!("report_match",
+                "pipeline": "jail",
+                "rule_id": rule_id,
+                "rule_name": rule_name,
+                "ip": payload.ip_address,
+                "country": null,
+                "path": payload.path,
+                "method": payload.method,
+                "ua": null,
+                "status_code": payload.status_code,
+                "profile_id": profile_id,
+            );
+        }
 
         // Load the profile from DB (async, no locks held)
         let profile = match RateLimitProfile::read(&app_state.pool, *profile_id).await {
@@ -124,26 +179,33 @@ async fn report_handler(
         // Check if the reported status_code is in the profile's fail_codes
         let status_i32 = i32::from(payload.status_code);
         if !profile.fail_codes.contains(&status_i32) {
-            debug!(
-                "Status code {} NOT in fail_codes {:?}, skipping rate limit for rule #{}",
-                status_i32, profile.fail_codes, rule_id
-            );
+            if should_log(&log_all_requests, "report_warn") {
+                audit_log!("report_warn",
+                    "pipeline": "jail",
+                    "rule_id": rule_id,
+                    "rule_name": rule_name,
+                    "ip": payload.ip_address,
+                    "country": null,
+                    "path": payload.path,
+                    "method": payload.method,
+                    "ua": null,
+                    "status_code": status_i32,
+                    "fail_codes": profile.fail_codes,
+                    "profile": profile.name,
+                );
+            }
             continue;
         }
 
-        debug!(
+        trace!(
             "Status code {} is in fail_codes {:?} for profile '{}'",
             status_i32, profile.fail_codes, profile.name
         );
 
         // ── Record stats and audit log for this match + fail_code ──
         app_state.stats.record_blocked(Some(*rule_id), None);
-        tracing::info!(
-            target: "shuul_audit",
-            "{}",
-            serde_json::json!({
-                "event": "blocked",
-                "ts": chrono::Utc::now().to_rfc3339(),
+        if should_log(&log_all_requests, "report_block") {
+            audit_log!("report_block",
                 "pipeline": "jail",
                 "rule_id": rule_id,
                 "rule_name": rule_name,
@@ -152,8 +214,9 @@ async fn report_handler(
                 "path": payload.path,
                 "method": payload.method,
                 "ua": "",
-            })
-        );
+                "profile": profile.name,
+            );
+        }
 
         if let Some(ip) = ip {
             // Rate limiter check (sync)
@@ -168,7 +231,7 @@ async fn report_handler(
                         );
                     },
                 };
-                let rl = rate_limiters.entry(*rule_id).or_insert_with(|| {
+                let rl = rate_limiters.entry(*profile_id).or_insert_with(|| {
                     RateLimiter::new(profile.max_retry as u32, profile.find_time_seconds)
                 });
                 rl.record(ip)
@@ -176,10 +239,19 @@ async fn report_handler(
             // rate_limiter lock released
 
             if should_ban {
-                debug!(
-                    "Report: BANNED {} via rule #{} (profile: {})",
-                    ip, rule_id, profile.name
-                );
+                if should_log(&log_all_requests, "report_ban") {
+                    audit_log!("report_ban",
+                        "pipeline": "jail",
+                        "rule_id": rule_id,
+                        "rule_name": rule_name,
+                        "ip": payload.ip_address,
+                        "country": "",
+                        "path": payload.path,
+                        "method": payload.method,
+                        "ua": "",
+                        "profile": profile.name,
+                    );
+                }
 
                 // Ban in memory (sync, releases lock before await)
                 let ban_info = {

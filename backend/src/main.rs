@@ -33,11 +33,12 @@ use http::{
 use maxminddb::Reader;
 use models::CacheRule;
 use models::{
-    AppState, BanManager, Error, JwtValidator, OidcMetadata, RateLimiter, Settings, StatsCollector,
+    AppState, BanManager, Error, GeoIpService, JwtValidator, OidcMetadata, RateLimiter, Settings,
+    StatsCollector,
 };
 use sqlx::{
     migrate::{MigrateDatabase, Migrator},
-    sqlite::{SqlitePool, SqlitePoolOptions},
+    sqlite::SqlitePoolOptions,
 };
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
@@ -174,8 +175,10 @@ async fn main() -> Result<(), Error> {
     let app_state = Arc::new(AppState {
         pool,
         secret,
-        maxmind_db: Reader::open_readfile(&maxmind_db_path)
-            .map_err(|e| Error::Other(format!("Failed to open MaxMind DB: {e}")))?,
+        geoip: GeoIpService::new(
+            Reader::open_readfile(&maxmind_db_path)
+                .map_err(|e| Error::Other(format!("Failed to open MaxMind DB: {e}")))?,
+        ),
         static_dir: STATIC_DIR.to_string(),
         rules,
         stats,

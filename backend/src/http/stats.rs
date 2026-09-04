@@ -43,7 +43,7 @@ pub async fn read_evolution(
     Query(params): Query<EvolutionParams>,
 ) -> Result<impl IntoResponse, AppError> {
     debug!("Evolution params: {:?}", params);
-    let unit = params.unit.clone().unwrap_or_else(|| "day".to_string());
+    let unit = params.unit.as_deref().unwrap_or("day").to_string();
     let evolution = app_state.stats.get_evolution(&unit);
 
     // Convert buckets into frontend-friendly series format:

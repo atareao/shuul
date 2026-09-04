@@ -24,7 +24,7 @@ mod user;
 pub use ban_manager::BanManager;
 pub use data::Data;
 pub use error::AppError as Error;
-pub use ipdata::IPData;
+pub use ipdata::GeoIpService;
 pub use new_request::NewRequest;
 pub use oidc::{JwtValidator, OidcMetadata};
 pub use rate_limit_profile::{
@@ -41,7 +41,6 @@ pub use settings::Settings;
 pub use stats::StatsCollector;
 pub use user::TokenClaims;
 
-use maxminddb::Reader;
 use sqlx::SqlitePool;
 use std::collections::HashMap;
 use std::sync::Mutex;
@@ -50,13 +49,13 @@ use std::time::Instant;
 pub struct AppState {
     pub pool: SqlitePool,
     pub secret: String,
-    pub maxmind_db: Reader<Vec<u8>>,
+    pub geoip: GeoIpService,
     pub rules: Mutex<Vec<CacheRule>>,
     pub stats: StatsCollector,
     #[allow(dead_code)]
     pub static_dir: String,
     pub ban_manager: Mutex<BanManager>,
-    pub rate_limiter: Mutex<HashMap<i32, RateLimiter>>, // rule_id → RateLimiter
+    pub rate_limiter: Mutex<HashMap<i32, RateLimiter>>, // profile_id → RateLimiter
     pub settings: Mutex<Settings>,
     // SSO / OIDC fields
     pub oidc_metadata: tokio::sync::RwLock<Option<OidcMetadata>>,
