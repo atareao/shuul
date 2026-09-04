@@ -114,6 +114,9 @@ pub async fn shuul(
                         "path": path,
                         "method": request.method,
                         "ua": request.user_agent,
+                        "fqdn": request.fqdn,
+                        "query": request.query,
+                        "referer": request.referer,
                     );
                 }
                 app_state
@@ -140,6 +143,9 @@ pub async fn shuul(
                         "path": request.path,
                         "method": request.method,
                         "ua": request.user_agent,
+                        "fqdn": request.fqdn,
+                        "query": request.query,
+                        "referer": request.referer,
                     );
                 }
                 app_state
@@ -164,6 +170,9 @@ pub async fn shuul(
                         "path": request.path,
                         "method": request.method,
                         "ua": request.user_agent,
+                        "fqdn": request.fqdn,
+                        "query": request.query,
+                        "referer": request.referer,
                     );
                 }
                 app_state
@@ -202,6 +211,9 @@ pub async fn shuul(
                     "path": request.path,
                     "method": request.method,
                     "ua": request.user_agent,
+                    "fqdn": request.fqdn,
+                    "query": request.query,
+                    "referer": request.referer,
                     "reason": reason,
                 );
             }
@@ -256,7 +268,10 @@ pub async fn shuul(
                             "path": request.path,
                             "method": request.method,
                             "ua": request.user_agent,
-                        );
+                        "fqdn": request.fqdn,
+                        "query": request.query,
+                        "referer": request.referer,
+                    );
                     }
                     matched = Some(RuleMatch {
                         rule_id: cache_rule.rule.id,
@@ -297,6 +312,9 @@ pub async fn shuul(
                 "path": request.path,
                 "method": request.method,
                 "ua": request.user_agent,
+            "fqdn": request.fqdn,
+            "query": request.query,
+            "referer": request.referer,
             );
         }
         true
@@ -323,6 +341,9 @@ pub async fn shuul(
                     "path": path,
                     "method": method,
                     "ua": user_agent,
+                    "fqdn": request.fqdn,
+                    "query": request.query,
+                    "referer": request.referer,
                 );
             }
         } else {
@@ -343,6 +364,9 @@ pub async fn shuul(
                     "path": path,
                     "method": method,
                     "ua": user_agent,
+                    "fqdn": request.fqdn,
+                    "query": request.query,
+                    "referer": request.referer,
                 );
             }
         }
