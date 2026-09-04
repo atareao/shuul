@@ -19,6 +19,7 @@ use tracing::debug;
 pub fn stats_router() -> Router<Arc<AppState>> {
     Router::new()
         .route("/", routing::get(read_info_handler))
+        .route("/info", routing::get(read_info_handler))
         .route("/top_countries", routing::get(read_top_countries))
         .route("/top_rules", routing::get(read_top_rules))
         .route("/top_methods", routing::get(read_top_methods))
