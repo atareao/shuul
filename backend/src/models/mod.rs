@@ -55,7 +55,7 @@ pub struct AppState {
     #[allow(dead_code)]
     pub static_dir: String,
     pub ban_manager: Mutex<BanManager>,
-    pub rate_limiter: Mutex<HashMap<i32, RateLimiter>>, // rule_id → RateLimiter
+    pub rate_limiter: Mutex<HashMap<i32, RateLimiter>>, // profile_id → RateLimiter
     pub settings: Mutex<Settings>,
     // SSO / OIDC fields
     pub oidc_metadata: tokio::sync::RwLock<Option<OidcMetadata>>,
