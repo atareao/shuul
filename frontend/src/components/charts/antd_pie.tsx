@@ -1,1 +1,1 @@
-export { Pie as default } from '@ant-design/charts';
+export { Pie as default } from "@ant-design/charts";

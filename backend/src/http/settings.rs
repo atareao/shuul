@@ -19,6 +19,7 @@ pub struct SettingsResponse {
     pub trusted_user_agents: Vec<String>,
     pub default_rule_mode: String,
     pub log_retention_days: i32,
+    pub log_all_requests: String,
 }
 
 /// DTO for updating settings (all fields optional).
@@ -29,6 +30,7 @@ pub struct UpdateSettingsPayload {
     pub trusted_user_agents: Option<Vec<String>>,
     pub default_rule_mode: Option<String>,
     pub log_retention_days: Option<i32>,
+    pub log_all_requests: Option<String>,
 }
 
 pub fn settings_router() -> Router<Arc<AppState>> {
@@ -57,6 +59,7 @@ pub async fn get_settings(
         trusted_user_agents: settings.trusted_user_agents,
         default_rule_mode: settings.default_rule_mode,
         log_retention_days: settings.log_retention_days,
+        log_all_requests: settings.log_all_requests,
     };
 
     Ok(ApiResponse::new(
@@ -92,6 +95,18 @@ pub async fn update_settings(
         }
     }
 
+    // Validate log_all_requests
+    if let Some(ref val) = update.log_all_requests {
+        match val.as_str() {
+            "all" | "pass" | "audit" => {},
+            _ => {
+                return Err(AppError::InvalidInput(
+                    "log_all_requests must be 'all', 'pass', or 'audit'".to_string(),
+                ));
+            },
+        }
+    }
+
     // Build new settings from existing + overrides
     let mut settings = app_state
         .settings
@@ -118,6 +133,9 @@ pub async fn update_settings(
     }
     if let Some(days) = update.log_retention_days {
         settings.log_retention_days = days;
+    }
+    if let Some(val) = update.log_all_requests {
+        settings.log_all_requests = val;
     }
 
     // Recompile regex patterns before persisting

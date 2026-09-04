@@ -29,6 +29,7 @@ pub struct Settings {
     pub trusted_user_agents: Vec<String>,
     pub default_rule_mode: String,
     pub log_retention_days: i32,
+    pub log_all_requests: String,
     /// Precompiled regex patterns for safe paths (rebuilt on load/update).
     pub safe_paths_re: Vec<Regex>,
     /// Precompiled regex patterns for trusted user agents (rebuilt on load/update).
@@ -43,6 +44,7 @@ impl Default for Settings {
             trusted_user_agents: Vec::new(),
             default_rule_mode: "log_only".to_string(),
             log_retention_days: 30,
+            log_all_requests: "all".to_string(),
             safe_paths_re: Vec::new(),
             trusted_user_agents_re: Vec::new(),
         }
@@ -178,12 +180,17 @@ impl Settings {
         let log_retention_days_raw = map.remove("log_retention_days").unwrap_or_default();
         let log_retention_days: i32 = log_retention_days_raw.parse().unwrap_or(30);
 
+        let log_all_requests = map
+            .remove("log_all_requests")
+            .unwrap_or_else(|| "all".to_string());
+
         let mut s = Self {
             safe_paths,
             trusted_ips,
             trusted_user_agents,
             default_rule_mode,
             log_retention_days,
+            log_all_requests,
             safe_paths_re: Vec::new(),
             trusted_user_agents_re: Vec::new(),
         };
@@ -239,6 +246,7 @@ impl Settings {
                 "log_retention_days",
                 settings.log_retention_days.to_string(),
             ),
+            ("log_all_requests", settings.log_all_requests.clone()),
         ];
 
         for (key, value) in pairs {
