@@ -21,7 +21,13 @@ pub fn stats_router() -> Router<Arc<AppState>> {
         .route("/", routing::get(read_info_handler))
         .route("/top_countries", routing::get(read_top_countries))
         .route("/top_rules", routing::get(read_top_rules))
+        .route("/top_methods", routing::get(read_top_methods))
+        .route("/top_paths", routing::get(read_top_paths))
         .route("/evolution", routing::get(read_evolution))
+        .route(
+            "/evolution_by_method",
+            routing::get(read_evolution_by_method),
+        )
 }
 
 #[derive(Debug, Deserialize)]
@@ -140,6 +146,66 @@ pub async fn read_top_countries(
     ))
 }
 
+/// Returns the top HTTP methods based on request count.
+///
+/// * **Parameters**
+///   - `app_state`: Shared state (DB pool, cache, etc.).
+/// * **Returns**
+///   - `Result<impl IntoResponse, AppError>` – JSON with the top methods or an error.
+pub async fn read_top_methods(
+    State(app_state): State<Arc<AppState>>,
+) -> Result<impl IntoResponse, AppError> {
+    let top_methods = app_state.stats.get_top_methods();
+    let total_blocked = app_state.stats.get_total_blocked();
+    let result: Vec<(String, i32, f32)> = top_methods
+        .into_iter()
+        .map(|(method, count)| {
+            let percentage = if total_blocked > 0 {
+                (count as f32 / total_blocked as f32) * 100.0
+            } else {
+                0.0
+            };
+            (method, count as i32, percentage)
+        })
+        .collect();
+    debug!("Top methods: {:?}", result);
+    Ok(ApiResponse::new(
+        StatusCode::OK,
+        "Top methods",
+        Data::Some(serde_json::to_value(result)?),
+    ))
+}
+
+/// Returns the top paths based on request count.
+///
+/// * **Parameters**
+///   - `app_state`: Shared state (DB pool, cache, etc.).
+/// * **Returns**
+///   - `Result<impl IntoResponse, AppError>` – JSON with the top paths or an error.
+pub async fn read_top_paths(
+    State(app_state): State<Arc<AppState>>,
+) -> Result<impl IntoResponse, AppError> {
+    let top_paths = app_state.stats.get_top_paths();
+    let total_blocked = app_state.stats.get_total_blocked();
+    let result: Vec<(String, i32, f32)> = top_paths
+        .into_iter()
+        .map(|(path, count)| {
+            let percentage = if total_blocked > 0 {
+                (count as f32 / total_blocked as f32) * 100.0
+            } else {
+                0.0
+            };
+            (path, count as i32, percentage)
+        })
+        .collect();
+    debug!("Top paths: {:?}", result);
+    Ok(ApiResponse::new(
+        StatusCode::OK,
+        "Top paths",
+        Data::Some(serde_json::to_value(result)?),
+    ))
+}
+
 #[derive(Debug, Deserialize)]
 pub struct ReadInfoParams {
     pub option: Option<String>,
@@ -187,4 +253,35 @@ pub async fn read_info_handler(
         )
         .into_response()),
     }
+}
+
+/// Returns time-series evolution data per HTTP method.
+pub async fn read_evolution_by_method(
+    State(app_state): State<Arc<AppState>>,
+    Query(params): Query<EvolutionParams>,
+) -> Result<impl IntoResponse, AppError> {
+    let unit = params.unit.as_deref().unwrap_or("day").to_string();
+    let method_evolution = app_state.stats.get_method_evolution(&unit);
+
+    let result: Vec<serde_json::Value> = method_evolution
+        .into_iter()
+        .map(|(method, series)| {
+            let data: Vec<serde_json::Value> = series
+                .iter()
+                .map(|bucket| {
+                    let chrono_dt =
+                        chrono::DateTime::from_timestamp(bucket.timestamp, 0).unwrap_or_default();
+                    serde_json::json!({"x": chrono_dt.to_rfc3339(), "y": bucket.count})
+                })
+                .collect();
+            serde_json::json!({"id": method, "data": data})
+        })
+        .collect();
+
+    debug!("Evolution by method: {:?}", result);
+    Ok(ApiResponse::new(
+        StatusCode::OK,
+        "Evolution by method",
+        Data::Some(serde_json::to_value(result)?),
+    ))
 }

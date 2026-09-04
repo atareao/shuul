@@ -203,7 +203,12 @@ async fn report_handler(
         );
 
         // ── Record stats and audit log for this match + fail_code ──
-        app_state.stats.record_blocked(Some(*rule_id), None);
+        app_state.stats.record_blocked(
+            Some(*rule_id),
+            None,
+            payload.method.as_deref(),
+            payload.path.as_deref(),
+        );
         if should_log(&log_all_requests, "report_block") {
             audit_log!("report_block",
                 "pipeline": "jail",
