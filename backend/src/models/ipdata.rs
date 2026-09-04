@@ -10,7 +10,7 @@ use maxminddb::{Reader, geoip2};
 use moka::sync::Cache;
 use serde::{Deserialize, Serialize};
 use std::time::Duration;
-use tracing::{debug, error};
+use tracing::{error, trace};
 
 /// Tiempo de vida de las entradas del cache GeoIP.
 const GEOIP_CACHE_TTL: Duration = Duration::from_secs(3600); // 1 hora
@@ -77,12 +77,11 @@ impl GeoIpService {
 
 impl IPData {
     pub fn complete(maxmind_db: &Reader<Vec<u8>>, ip_address: &str) -> Self {
-        debug!("Look data for ip address: {}", ip_address);
         match ip_address.parse() {
             Ok(ip) => match maxmind_db.lookup(ip) {
                 Ok(result) if result.has_data() => match result.decode::<geoip2::City>() {
                     Ok(Some(city)) => {
-                        debug!("result: {:?}", city);
+                        trace!("result: {:?}", city);
                         Self {
                             ip_address: ip_address.to_string(),
                             city_name: if city.city.is_empty() {
