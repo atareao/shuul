@@ -277,7 +277,9 @@ export class InnerPage extends react.Component<Props, State> {
       <Flex vertical gap="large" style={{ padding: 24 }}>
         <Title level={2}>Charts</Title>
 
-        <ConfigProvider theme={{ type: isDarkMode ? "dark" : "classic" }}>
+        <ConfigProvider
+          common={{ theme: { type: isDarkMode ? "dark" : "classic" } }}
+        >
           <Tabs
             defaultActiveKey="evolution"
             items={[

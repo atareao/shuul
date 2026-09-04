@@ -68,36 +68,42 @@ async fn report_handler(
         .map(|g| g.log_all_requests.clone())
         .unwrap_or_else(|_| "all".to_string());
 
+    // ── GeoIP lookup (needed for matching and all audit logs) ──
+    let ip_data = app_state.geoip.lookup(&payload.ip_address);
+
     if should_log(&log_all_requests, "report_received") {
         audit_log!("report_received",
             "pipeline": "jail",
             "rule_id": null,
             "rule_name": null,
             "ip": payload.ip_address,
-            "country": null,
+            "country": ip_data.country_code,
             "path": payload.path,
             "method": payload.method,
-            "ua": null,
+            "fqdn": payload.fqdn,
+            "query": payload.query,
+            "referer": payload.referer,
+            "ua": payload.user_agent,
             "status_code": payload.status_code,
         );
     }
 
-    // ── Step 1: Build a minimal NewRequest for matching ──
+    // ── Step 1: Build NewRequest for matching ──
     let request = NewRequest {
         ip_address: Some(payload.ip_address.clone()),
-        protocol: None,
-        fqdn: None,
+        protocol: payload.protocol.clone(),
+        fqdn: payload.fqdn.clone(),
         path: payload.path.clone(),
-        query: None,
-        city_name: None,
-        country_name: None,
-        country_code: None,
-        user_agent: None,
+        query: payload.query.clone(),
+        city_name: ip_data.city_name.as_ref().filter(|s| !s.is_empty()).cloned(),
+        country_name: ip_data.country_name.as_ref().filter(|s| !s.is_empty()).cloned(),
+        country_code: ip_data.country_code.as_ref().filter(|s| !s.is_empty()).cloned(),
+        user_agent: payload.user_agent.clone(),
         method: payload.method.clone(),
-        referer: None,
-        content_type: None,
-        accept_language: None,
-        x_request_id: None,
+        referer: payload.referer.clone(),
+        content_type: payload.content_type.clone(),
+        accept_language: payload.accept_language.clone(),
+        x_request_id: payload.x_request_id.clone(),
         rule_id: None,
         created_at: chrono::Utc::now(),
     };
@@ -139,10 +145,13 @@ async fn report_handler(
                 "rule_id": null,
                 "rule_name": null,
                 "ip": payload.ip_address,
-                "country": null,
+                "country": ip_data.country_code,
                 "path": payload.path,
                 "method": payload.method,
-                "ua": null,
+                "fqdn": payload.fqdn,
+                "query": payload.query,
+                "referer": payload.referer,
+                "ua": payload.user_agent,
             );
         }
         return EmptyResponse::create(StatusCode::OK, "Ok");
@@ -158,10 +167,13 @@ async fn report_handler(
                 "rule_id": rule_id,
                 "rule_name": rule_name,
                 "ip": payload.ip_address,
-                "country": null,
+                "country": ip_data.country_code,
                 "path": payload.path,
                 "method": payload.method,
-                "ua": null,
+                "fqdn": payload.fqdn,
+                "query": payload.query,
+                "referer": payload.referer,
+                "ua": payload.user_agent,
                 "status_code": payload.status_code,
                 "profile_id": profile_id,
             );
@@ -185,10 +197,13 @@ async fn report_handler(
                     "rule_id": rule_id,
                     "rule_name": rule_name,
                     "ip": payload.ip_address,
-                    "country": null,
+                    "country": ip_data.country_code,
                     "path": payload.path,
                     "method": payload.method,
-                    "ua": null,
+                    "fqdn": payload.fqdn,
+                    "query": payload.query,
+                    "referer": payload.referer,
+                    "ua": payload.user_agent,
                     "status_code": status_i32,
                     "fail_codes": profile.fail_codes,
                     "profile": profile.name,
@@ -215,10 +230,13 @@ async fn report_handler(
                 "rule_id": rule_id,
                 "rule_name": rule_name,
                 "ip": payload.ip_address,
-                "country": "",
+                "country": ip_data.country_code,
                 "path": payload.path,
                 "method": payload.method,
-                "ua": "",
+                "fqdn": payload.fqdn,
+                "query": payload.query,
+                "referer": payload.referer,
+                "ua": payload.user_agent,
                 "profile": profile.name,
             );
         }
@@ -250,10 +268,13 @@ async fn report_handler(
                         "rule_id": rule_id,
                         "rule_name": rule_name,
                         "ip": payload.ip_address,
-                        "country": "",
+                        "country": ip_data.country_code,
                         "path": payload.path,
                         "method": payload.method,
-                        "ua": "",
+                        "fqdn": payload.fqdn,
+                        "query": payload.query,
+                        "referer": payload.referer,
+                        "ua": payload.user_agent,
                         "profile": profile.name,
                     );
                 }
