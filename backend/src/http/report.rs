@@ -291,6 +291,11 @@ async fn report_handler(
                             );
                         },
                     };
+
+                    // Skip if IP is already serving a ban
+                    if ban_manager.is_banned(&ip).is_some() {
+                        continue;
+                    }
                     let ban_duration = if profile.bantime_increment {
                         None
                     } else {
