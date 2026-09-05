@@ -13,4 +13,12 @@ pub struct ReportPayload {
     pub status_code: u16,
     pub path: Option<String>,
     pub method: Option<String>,
+    pub user_agent: Option<String>,
+    pub referer: Option<String>,
+    pub fqdn: Option<String>,
+    pub query: Option<String>,
+    pub content_type: Option<String>,
+    pub accept_language: Option<String>,
+    pub x_request_id: Option<String>,
+    pub protocol: Option<String>,
 }

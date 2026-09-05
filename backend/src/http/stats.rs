@@ -19,15 +19,22 @@ use tracing::debug;
 pub fn stats_router() -> Router<Arc<AppState>> {
     Router::new()
         .route("/", routing::get(read_info_handler))
+        .route("/info", routing::get(read_info_handler))
         .route("/top_countries", routing::get(read_top_countries))
         .route("/top_rules", routing::get(read_top_rules))
+        .route("/top_methods", routing::get(read_top_methods))
+        .route("/top_paths", routing::get(read_top_paths))
+        .route("/top_fqdns", routing::get(read_top_fqdns))
         .route("/evolution", routing::get(read_evolution))
+        .route(
+            "/evolution_by_method",
+            routing::get(read_evolution_by_method),
+        )
 }
 
 #[derive(Debug, Deserialize)]
 pub struct EvolutionParams {
     pub unit: Option<String>,
-    #[allow(dead_code)]
     pub last: Option<i32>,
 }
 
@@ -44,7 +51,15 @@ pub async fn read_evolution(
 ) -> Result<impl IntoResponse, AppError> {
     debug!("Evolution params: {:?}", params);
     let unit = params.unit.as_deref().unwrap_or("day").to_string();
-    let evolution = app_state.stats.get_evolution(&unit);
+    let mut evolution = app_state.stats.get_evolution(&unit);
+
+    // Apply `last` limit: keep only the last N buckets
+    if let Some(last) = params.last.filter(|n| *n > 0) {
+        let last = last as usize;
+        if evolution.len() > last {
+            evolution.drain(..evolution.len() - last);
+        }
+    }
 
     // Convert buckets into frontend-friendly series format:
     //   [{"id": "blocked", "data": [{"x": "2024-01-01T00:00:00Z", "y": 5}, ...]},
@@ -140,6 +155,91 @@ pub async fn read_top_countries(
     ))
 }
 
+/// Returns the top HTTP methods based on request count.
+///
+/// * **Parameters**
+///   - `app_state`: Shared state (DB pool, cache, etc.).
+/// * **Returns**
+///   - `Result<impl IntoResponse, AppError>` – JSON with the top methods or an error.
+pub async fn read_top_methods(
+    State(app_state): State<Arc<AppState>>,
+) -> Result<impl IntoResponse, AppError> {
+    let top_methods = app_state.stats.get_top_methods();
+    let total_blocked = app_state.stats.get_total_blocked();
+    let result: Vec<(String, i32, f32)> = top_methods
+        .into_iter()
+        .map(|(method, count)| {
+            let percentage = if total_blocked > 0 {
+                (count as f32 / total_blocked as f32) * 100.0
+            } else {
+                0.0
+            };
+            (method, count as i32, percentage)
+        })
+        .collect();
+    debug!("Top methods: {:?}", result);
+    Ok(ApiResponse::new(
+        StatusCode::OK,
+        "Top methods",
+        Data::Some(serde_json::to_value(result)?),
+    ))
+}
+
+/// Returns the top paths based on request count.
+///
+/// * **Parameters**
+///   - `app_state`: Shared state (DB pool, cache, etc.).
+/// * **Returns**
+///   - `Result<impl IntoResponse, AppError>` – JSON with the top paths or an error.
+pub async fn read_top_paths(
+    State(app_state): State<Arc<AppState>>,
+) -> Result<impl IntoResponse, AppError> {
+    let top_paths = app_state.stats.get_top_paths();
+    let total_blocked = app_state.stats.get_total_blocked();
+    let result: Vec<(String, i32, f32)> = top_paths
+        .into_iter()
+        .map(|(path, count)| {
+            let percentage = if total_blocked > 0 {
+                (count as f32 / total_blocked as f32) * 100.0
+            } else {
+                0.0
+            };
+            (path, count as i32, percentage)
+        })
+        .collect();
+    debug!("Top paths: {:?}", result);
+    Ok(ApiResponse::new(
+        StatusCode::OK,
+        "Top paths",
+        Data::Some(serde_json::to_value(result)?),
+    ))
+}
+
+/// Returns the top FQDNs based on request count.
+pub async fn read_top_fqdns(
+    State(app_state): State<Arc<AppState>>,
+) -> Result<impl IntoResponse, AppError> {
+    let top_fqdns = app_state.stats.get_top_fqdns();
+    let total_blocked = app_state.stats.get_total_blocked();
+    let result: Vec<(String, i32, f32)> = top_fqdns
+        .into_iter()
+        .map(|(fqdn, count)| {
+            let percentage = if total_blocked > 0 {
+                (count as f32 / total_blocked as f32) * 100.0
+            } else {
+                0.0
+            };
+            (fqdn, count as i32, percentage)
+        })
+        .collect();
+    debug!("Top FQDNs: {:?}", result);
+    Ok(ApiResponse::new(
+        StatusCode::OK,
+        "Top FQDNs",
+        Data::Some(serde_json::to_value(result)?),
+    ))
+}
+
 #[derive(Debug, Deserialize)]
 pub struct ReadInfoParams {
     pub option: Option<String>,
@@ -187,4 +287,45 @@ pub async fn read_info_handler(
         )
         .into_response()),
     }
+}
+
+/// Returns time-series evolution data per HTTP method.
+pub async fn read_evolution_by_method(
+    State(app_state): State<Arc<AppState>>,
+    Query(params): Query<EvolutionParams>,
+) -> Result<impl IntoResponse, AppError> {
+    let unit = params.unit.as_deref().unwrap_or("day").to_string();
+    let mut method_evolution = app_state.stats.get_method_evolution(&unit);
+
+    // Apply `last` limit to each method's series
+    if let Some(last) = params.last.filter(|n| *n > 0) {
+        let last = last as usize;
+        for (_, series) in &mut method_evolution {
+            if series.len() > last {
+                series.drain(..series.len() - last);
+            }
+        }
+    }
+
+    let result: Vec<serde_json::Value> = method_evolution
+        .into_iter()
+        .map(|(method, series)| {
+            let data: Vec<serde_json::Value> = series
+                .iter()
+                .map(|bucket| {
+                    let chrono_dt =
+                        chrono::DateTime::from_timestamp(bucket.timestamp, 0).unwrap_or_default();
+                    serde_json::json!({"x": chrono_dt.to_rfc3339(), "y": bucket.count})
+                })
+                .collect();
+            serde_json::json!({"id": method, "data": data})
+        })
+        .collect();
+
+    debug!("Evolution by method: {:?}", result);
+    Ok(ApiResponse::new(
+        StatusCode::OK,
+        "Evolution by method",
+        Data::Some(serde_json::to_value(result)?),
+    ))
 }

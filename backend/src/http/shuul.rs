@@ -114,9 +114,16 @@ pub async fn shuul(
                         "path": path,
                         "method": request.method,
                         "ua": request.user_agent,
+                        "fqdn": request.fqdn,
+                        "query": request.query,
+                        "referer": request.referer,
                     );
                 }
-                app_state.stats.record_allowed();
+                app_state.stats.record_allowed(
+                    request.method.as_deref(),
+                    request.path.as_deref(),
+                    request.fqdn.as_deref(),
+                );
                 return EmptyResponse::create(StatusCode::OK, "Ok");
             }
         }
@@ -138,9 +145,16 @@ pub async fn shuul(
                         "path": request.path,
                         "method": request.method,
                         "ua": request.user_agent,
+                        "fqdn": request.fqdn,
+                        "query": request.query,
+                        "referer": request.referer,
                     );
                 }
-                app_state.stats.record_allowed();
+                app_state.stats.record_allowed(
+                    request.method.as_deref(),
+                    request.path.as_deref(),
+                    request.fqdn.as_deref(),
+                );
                 return EmptyResponse::create(StatusCode::OK, "Ok");
             }
         }
@@ -160,9 +174,16 @@ pub async fn shuul(
                         "path": request.path,
                         "method": request.method,
                         "ua": request.user_agent,
+                        "fqdn": request.fqdn,
+                        "query": request.query,
+                        "referer": request.referer,
                     );
                 }
-                app_state.stats.record_allowed();
+                app_state.stats.record_allowed(
+                    request.method.as_deref(),
+                    request.path.as_deref(),
+                    request.fqdn.as_deref(),
+                );
                 return EmptyResponse::create(StatusCode::OK, "Ok");
             }
         }
@@ -196,12 +217,19 @@ pub async fn shuul(
                     "path": request.path,
                     "method": request.method,
                     "ua": request.user_agent,
+                    "fqdn": request.fqdn,
+                    "query": request.query,
+                    "referer": request.referer,
                     "reason": reason,
                 );
             }
-            app_state
-                .stats
-                .record_blocked(None, request.country_code.as_deref());
+            app_state.stats.record_blocked(
+                None,
+                request.country_code.as_deref(),
+                request.method.as_deref(),
+                request.path.as_deref(),
+                request.fqdn.as_deref(),
+            );
             return EmptyResponse::create(StatusCode::FORBIDDEN, &format!("Banned: {reason}"));
         }
     }
@@ -239,14 +267,17 @@ pub async fn shuul(
                 "log_only" => {
                     if should_log(&log_all_requests, "log_only") {
                         audit_log!("log_only",
-                            "pipeline": "waf",
-                            "rule_id": cache_rule.rule.id,
-                            "rule_name": cache_rule.rule.name,
-                            "ip": request.ip_address,
-                            "country": request.country_code,
-                            "path": request.path,
-                            "method": request.method,
-                            "ua": request.user_agent,
+                                "pipeline": "waf",
+                                "rule_id": cache_rule.rule.id,
+                                "rule_name": cache_rule.rule.name,
+                                "ip": request.ip_address,
+                                "country": request.country_code,
+                                "path": request.path,
+                                "method": request.method,
+                                "ua": request.user_agent,
+                            "fqdn": request.fqdn,
+                            "query": request.query,
+                            "referer": request.referer,
                         );
                     }
                     matched = Some(RuleMatch {
@@ -288,6 +319,9 @@ pub async fn shuul(
                 "path": request.path,
                 "method": request.method,
                 "ua": request.user_agent,
+            "fqdn": request.fqdn,
+            "query": request.query,
+            "referer": request.referer,
             );
         }
         true
@@ -303,7 +337,9 @@ pub async fn shuul(
     if let Some(rm) = &matched {
         if allow {
             // Allowed (log_only mode or allow = true)
-            app_state.stats.record_allowed();
+            app_state
+                .stats
+                .record_allowed(Some(&method), Some(&path), request.fqdn.as_deref());
             if should_log(&log_all_requests, "allow") {
                 audit_log!("allow",
                     "pipeline": "waf",
@@ -314,13 +350,20 @@ pub async fn shuul(
                     "path": path,
                     "method": method,
                     "ua": user_agent,
+                    "fqdn": request.fqdn,
+                    "query": request.query,
+                    "referer": request.referer,
                 );
             }
         } else {
             // Blocked
-            app_state
-                .stats
-                .record_blocked(Some(rm.rule_id), Some(&country_code));
+            app_state.stats.record_blocked(
+                Some(rm.rule_id),
+                Some(&country_code),
+                Some(&method),
+                Some(&path),
+                request.fqdn.as_deref(),
+            );
             if should_log(&log_all_requests, "block") {
                 audit_log!("block",
                     "pipeline": "waf",
@@ -331,11 +374,16 @@ pub async fn shuul(
                     "path": path,
                     "method": method,
                     "ua": user_agent,
+                    "fqdn": request.fqdn,
+                    "query": request.query,
+                    "referer": request.referer,
                 );
             }
         }
     } else {
-        app_state.stats.record_allowed();
+        app_state
+            .stats
+            .record_allowed(Some(&method), Some(&path), request.fqdn.as_deref());
     }
 
     if allow {

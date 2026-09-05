@@ -513,10 +513,8 @@ export default class CustomTable<
 
     const headerUI =
       hasActions && renderHeaderAction ? (
-        <Flex vertical gap="small">
-          <Flex align="center" gap="small">
-            {renderHeaderAction(this.handleCreate)}
-          </Flex>
+        <Flex align="center" gap="small">
+          {renderHeaderAction(this.handleCreate)}
           {this.props.extraHeaderContent}
         </Flex>
       ) : (

@@ -40,6 +40,13 @@ impl Bucket {
     }
 }
 
+/// Un bucket temporal con conteo de requests para un método HTTP.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct MethodBucket {
+    pub timestamp: i64,
+    pub count: u64,
+}
+
 /// Snapshot completo para persistir/recuperar.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 struct StatsSnapshot {
@@ -47,7 +54,16 @@ struct StatsSnapshot {
     total_blocked: u64,
     top_rules: HashMap<i32, u64>,
     top_countries: HashMap<String, u64>,
+    top_methods: HashMap<String, u64>,
+    top_paths: HashMap<String, u64>,
+    top_fqdns: HashMap<String, u64>,
     day_series: Vec<Bucket>,
+    #[serde(default)]
+    hour_series: Vec<Bucket>,
+    #[serde(default)]
+    minute_series: Vec<Bucket>,
+    #[serde(default)]
+    method_series: HashMap<String, Vec<MethodBucket>>,
 }
 
 /// Colector de estadísticas en memoria.
@@ -56,9 +72,13 @@ pub struct StatsCollector {
     total_blocked: AtomicU64,
     top_rules: Mutex<HashMap<i32, u64>>,
     top_countries: Mutex<HashMap<String, u64>>,
+    top_methods: Mutex<HashMap<String, u64>>,
+    top_paths: Mutex<HashMap<String, u64>>,
+    top_fqdns: Mutex<HashMap<String, u64>>,
     minute_series: Mutex<Vec<Bucket>>,
     hour_series: Mutex<Vec<Bucket>>,
     day_series: Mutex<Vec<Bucket>>,
+    method_series: Mutex<HashMap<String, Vec<MethodBucket>>>,
     last_persist: AtomicI64,
 }
 
@@ -70,9 +90,13 @@ impl StatsCollector {
             total_blocked: AtomicU64::new(0),
             top_rules: Mutex::new(HashMap::new()),
             top_countries: Mutex::new(HashMap::new()),
+            top_methods: Mutex::new(HashMap::new()),
+            top_paths: Mutex::new(HashMap::new()),
+            top_fqdns: Mutex::new(HashMap::new()),
             minute_series: Mutex::new(Vec::with_capacity(60)),
             hour_series: Mutex::new(Vec::with_capacity(24)),
             day_series: Mutex::new(Vec::with_capacity(31)),
+            method_series: Mutex::new(HashMap::new()),
             last_persist: AtomicI64::new(Utc::now().timestamp()),
         }
     }
@@ -100,8 +124,26 @@ impl StatsCollector {
                         if let Ok(mut map) = stats.top_countries.lock() {
                             *map = snapshot.top_countries;
                         }
+                        if let Ok(mut map) = stats.top_methods.lock() {
+                            *map = snapshot.top_methods;
+                        }
+                        if let Ok(mut map) = stats.top_paths.lock() {
+                            *map = snapshot.top_paths;
+                        }
+                        if let Ok(mut map) = stats.top_fqdns.lock() {
+                            *map = snapshot.top_fqdns;
+                        }
                         if let Ok(mut series) = stats.day_series.lock() {
                             *series = snapshot.day_series;
+                        }
+                        if let Ok(mut series) = stats.hour_series.lock() {
+                            *series = snapshot.hour_series;
+                        }
+                        if let Ok(mut series) = stats.minute_series.lock() {
+                            *series = snapshot.minute_series;
+                        }
+                        if let Ok(mut map) = stats.method_series.lock() {
+                            *map = snapshot.method_series;
                         }
                         info!(
                             "StatsCollector: loaded snapshot (blocked={}, allowed={})",
@@ -141,8 +183,38 @@ impl StatsCollector {
                 .lock()
                 .unwrap_or_else(|e| e.into_inner())
                 .clone(),
+            top_methods: self
+                .top_methods
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .clone(),
+            top_paths: self
+                .top_paths
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .clone(),
+            top_fqdns: self
+                .top_fqdns
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .clone(),
             day_series: self
                 .day_series
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .clone(),
+            hour_series: self
+                .hour_series
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .clone(),
+            minute_series: self
+                .minute_series
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .clone(),
+            method_series: self
+                .method_series
                 .lock()
                 .unwrap_or_else(|e| e.into_inner())
                 .clone(),
@@ -172,7 +244,15 @@ impl StatsCollector {
     }
 
     /// Registra un bloqueo (WAF deny o Jail match).
-    pub fn record_blocked(&self, rule_id: Option<i32>, country_code: Option<&str>) {
+    pub fn record_blocked(
+        &self,
+        rule_id: Option<i32>,
+        country_code: Option<&str>,
+        method: Option<&str>,
+        path: Option<&str>,
+        fqdn: Option<&str>,
+    ) {
+        let now = Utc::now().timestamp();
         self.total_blocked.fetch_add(1, Ordering::Relaxed);
 
         if let Some(rid) = rule_id {
@@ -189,18 +269,67 @@ impl StatsCollector {
             }
         }
 
-        self.add_to_bucket(false);
+        if let Some(m) = method {
+            if !m.is_empty() {
+                if let Ok(mut map) = self.top_methods.lock() {
+                    *map.entry(m.to_string()).or_insert(0) += 1;
+                }
+            }
+        }
+        if let Some(p) = path {
+            if !p.is_empty() {
+                if let Ok(mut map) = self.top_paths.lock() {
+                    *map.entry(p.to_string()).or_insert(0) += 1;
+                }
+            }
+        }
+
+        if let Some(f) = fqdn {
+            if !f.is_empty() {
+                if let Ok(mut map) = self.top_fqdns.lock() {
+                    *map.entry(f.to_string()).or_insert(0) += 1;
+                }
+            }
+        }
+
+        self.add_to_bucket(false, now);
+        self.add_method_to_bucket(method, now);
     }
 
     /// Registra una request permitida (no match o allow=true).
-    pub fn record_allowed(&self) {
+    pub fn record_allowed(&self, method: Option<&str>, path: Option<&str>, fqdn: Option<&str>) {
+        let now = Utc::now().timestamp();
         self.total_allowed.fetch_add(1, Ordering::Relaxed);
-        self.add_to_bucket(true);
+
+        if let Some(m) = method {
+            if !m.is_empty() {
+                if let Ok(mut map) = self.top_methods.lock() {
+                    *map.entry(m.to_string()).or_insert(0) += 1;
+                }
+            }
+        }
+        if let Some(p) = path {
+            if !p.is_empty() {
+                if let Ok(mut map) = self.top_paths.lock() {
+                    *map.entry(p.to_string()).or_insert(0) += 1;
+                }
+            }
+        }
+
+        if let Some(f) = fqdn {
+            if !f.is_empty() {
+                if let Ok(mut map) = self.top_fqdns.lock() {
+                    *map.entry(f.to_string()).or_insert(0) += 1;
+                }
+            }
+        }
+
+        self.add_to_bucket(true, now);
+        self.add_method_to_bucket(method, now);
     }
 
     /// Añade un evento al bucket temporal correspondiente.
-    fn add_to_bucket(&self, allowed: bool) {
-        let now = Utc::now().timestamp();
+    fn add_to_bucket(&self, allowed: bool, now: i64) {
         let minute_ts = now - (now % 60);
 
         // Minute series
@@ -244,6 +373,41 @@ impl StatsCollector {
         }
     }
 
+    /// Añade un evento al bucket temporal correspondiente del método HTTP.
+    fn add_method_to_bucket(&self, method: Option<&str>, now: i64) {
+        let Some(m) = method else { return };
+        if m.is_empty() {
+            return;
+        }
+        let m = m.to_string();
+        let minute_ts = now - (now % 60);
+        let hour_ts = now - (now % 3600);
+        let day_ts = now - (now % 86400);
+        if let Ok(mut map) = self.method_series.lock() {
+            let series = map.entry(m.clone()).or_default();
+            Self::bump_method_bucket(series, minute_ts, 60);
+            let series = map.entry(m.clone()).or_default();
+            Self::bump_method_bucket(series, hour_ts, 24);
+            let series = map.entry(m).or_default();
+            Self::bump_method_bucket(series, day_ts, 31);
+        }
+    }
+
+    /// Incrementa un bucket existente o crea uno nuevo, manteniendo el tamaño máximo.
+    fn bump_method_bucket(series: &mut Vec<MethodBucket>, ts: i64, max_size: usize) {
+        if let Some(bucket) = series.iter_mut().rev().find(|b| b.timestamp == ts) {
+            bucket.count += 1;
+        } else {
+            series.push(MethodBucket {
+                timestamp: ts,
+                count: 1,
+            });
+            if series.len() > max_size {
+                series.remove(0);
+            }
+        }
+    }
+
     // ── Getters para los endpoints del dashboard ──
 
     pub fn get_total_allowed(&self) -> u64 {
@@ -264,6 +428,30 @@ impl StatsCollector {
 
     pub fn get_top_countries(&self) -> Vec<(String, u64)> {
         let map = self.top_countries.lock().unwrap_or_else(|e| e.into_inner());
+        let mut vec: Vec<(String, u64)> = map.iter().map(|(k, v)| (k.clone(), *v)).collect();
+        vec.sort_by(|a, b| b.1.cmp(&a.1));
+        vec.truncate(10);
+        vec
+    }
+
+    pub fn get_top_methods(&self) -> Vec<(String, u64)> {
+        let map = self.top_methods.lock().unwrap_or_else(|e| e.into_inner());
+        let mut vec: Vec<(String, u64)> = map.iter().map(|(k, v)| (k.clone(), *v)).collect();
+        vec.sort_by(|a, b| b.1.cmp(&a.1));
+        vec.truncate(10);
+        vec
+    }
+
+    pub fn get_top_paths(&self) -> Vec<(String, u64)> {
+        let map = self.top_paths.lock().unwrap_or_else(|e| e.into_inner());
+        let mut vec: Vec<(String, u64)> = map.iter().map(|(k, v)| (k.clone(), *v)).collect();
+        vec.sort_by(|a, b| b.1.cmp(&a.1));
+        vec.truncate(10);
+        vec
+    }
+
+    pub fn get_top_fqdns(&self) -> Vec<(String, u64)> {
+        let map = self.top_fqdns.lock().unwrap_or_else(|e| e.into_inner());
         let mut vec: Vec<(String, u64)> = map.iter().map(|(k, v)| (k.clone(), *v)).collect();
         vec.sort_by(|a, b| b.1.cmp(&a.1));
         vec.truncate(10);
@@ -294,6 +482,32 @@ impl StatsCollector {
                 .unwrap_or_else(|e| e.into_inner())
                 .clone(),
         }
+    }
+
+    /// Devuelve la evolución desglosada por método HTTP para la unidad solicitada.
+    pub fn get_method_evolution(&self, unit: &str) -> Vec<(String, Vec<MethodBucket>)> {
+        let map = self.method_series.lock().unwrap_or_else(|e| e.into_inner());
+        let max_size = match unit {
+            "minute" => 60,
+            "hour" => 24,
+            _ => 31,
+        };
+        let mut result: Vec<(String, Vec<MethodBucket>)> = map
+            .iter()
+            .map(|(method, series)| {
+                let mut s = series.clone();
+                if s.len() > max_size {
+                    s.drain(..s.len() - max_size);
+                }
+                (method.clone(), s)
+            })
+            .collect();
+        result.sort_by(|a, b| {
+            let a_total: u64 = a.1.iter().map(|b| b.count).sum();
+            let b_total: u64 = b.1.iter().map(|b| b.count).sum();
+            b_total.cmp(&a_total)
+        });
+        result
     }
 }
 
