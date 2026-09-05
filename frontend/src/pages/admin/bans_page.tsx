@@ -12,13 +12,12 @@ const ENDPOINT = "bans";
 
 const FIELDS: FieldDefinition<Ban>[] = [
   {
-    key: "id",
+    key: "ip_address",
     label: "IP",
     type: "string",
     value: "",
     width: 140,
     visible: true,
-    filterKey: "ip_address",
     sortKey: "ip_address",
   },
   {
@@ -28,6 +27,7 @@ const FIELDS: FieldDefinition<Ban>[] = [
     value: "",
     width: 250,
     visible: true,
+    sortKey: "reason",
   },
   {
     key: "ban_duration_seconds",
@@ -36,6 +36,7 @@ const FIELDS: FieldDefinition<Ban>[] = [
     value: 0,
     width: 100,
     visible: true,
+    sortKey: "ban_duration_seconds",
   },
   {
     key: "time_remaining_seconds",
@@ -44,6 +45,7 @@ const FIELDS: FieldDefinition<Ban>[] = [
     value: 0,
     width: 100,
     visible: true,
+    sortKey: "time_remaining_seconds",
   },
   {
     key: "escalation_level",
@@ -52,6 +54,7 @@ const FIELDS: FieldDefinition<Ban>[] = [
     value: 0,
     width: 60,
     visible: true,
+    sortKey: "escalation_level",
   },
 ];
 

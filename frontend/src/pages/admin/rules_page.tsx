@@ -25,6 +25,7 @@ const FIELDS: FieldDefinition<Item>[] = [
     width: 60,
     visible: true,
     fixed: "left",
+    sortKey: "id",
   },
   {
     key: "active",
@@ -51,6 +52,7 @@ const FIELDS: FieldDefinition<Item>[] = [
     value: 100,
     width: 60,
     visible: true,
+    sortKey: "weight",
     render: (_, record) =>
       record.pipeline === "jail" ? "-" : String(record.weight ?? 100),
   },
@@ -62,6 +64,7 @@ const FIELDS: FieldDefinition<Item>[] = [
     width: 150,
     editable: true,
     visible: true,
+    sortKey: "name",
   },
   {
     key: "description",
@@ -70,6 +73,7 @@ const FIELDS: FieldDefinition<Item>[] = [
     value: "",
     width: 200,
     visible: true,
+    sortKey: "description",
   },
   {
     key: "mode",
@@ -78,6 +82,7 @@ const FIELDS: FieldDefinition<Item>[] = [
     value: "",
     width: 70,
     visible: true,
+    sortKey: "mode",
     render: (_, record) => (record.pipeline === "jail" ? "-" : record.mode),
   },
   {
@@ -87,6 +92,7 @@ const FIELDS: FieldDefinition<Item>[] = [
     value: "",
     width: 140,
     visible: true,
+    sortKey: "rate_limit_profile_name",
   },
   {
     key: "pipeline",
@@ -95,6 +101,7 @@ const FIELDS: FieldDefinition<Item>[] = [
     value: "waf",
     width: 80,
     visible: true,
+    sortKey: "pipeline",
     options: [
       { value: "waf", label: "WAF", color: "blue" },
       { value: "jail", label: "Jail", color: "green" },
@@ -165,13 +172,18 @@ export class InnerPage extends React.Component<
 
   // 5. El método render ahora solo devuelve el CustomTable
   render = () => {
-    // La clase ya no tiene this.state, this.columns, fetchData, etc.
-    // Toda la complejidad se delega a CustomTable.
+    // Construir parámetros para el filtro de pipeline (server-side)
+    const params = new Map<string, string>();
+    if (this.state.pipelineFilter !== "all") {
+      params.set("pipeline", this.state.pipelineFilter);
+    }
+
     return (
       <CustomTable<Item>
         title={TITLE}
         endpoint={ENDPOINT}
         fields={FIELDS}
+        params={params}
         dialogMessages={RULE_DIALOG_MESSAGES}
         t={this.props.t}
         hasActions={true}
@@ -193,12 +205,7 @@ export class InnerPage extends React.Component<
             />
           </Flex>
         }
-        clientFilter={(items) => {
-          if (this.state.pipelineFilter === "all") return items;
-          return items.filter(
-            (item) => item.pipeline === this.state.pipelineFilter,
-          );
-        }}
+        // El filtro de pipeline ahora es server-side vía params
         dialogRenderer={(params) => (
           <RuleDialog
             dialogMode={params.dialogMode}
