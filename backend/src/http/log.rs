@@ -20,10 +20,7 @@ use axum::{
 use serde::Deserialize;
 use std::sync::Arc;
 
-use crate::models::{
-    AppState, EmptyResponse,
-    log_collector::LOG_COLLECTOR,
-};
+use crate::models::{AppState, EmptyResponse, log_collector::LOG_COLLECTOR};
 
 pub fn log_router() -> Router<Arc<AppState>> {
     Router::new()
