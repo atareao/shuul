@@ -25,7 +25,8 @@ export default class EvolutionStacked extends react.Component<Props> {
           xField="time"
           yField="requests"
           seriesField="category"
-          style={{ maxWidth: "100%" }}
+          barWidthRatio={0.9}
+          height={350}
           legend={{
             color: { position: "top", layout: { justifyContent: "center" } },
           }}

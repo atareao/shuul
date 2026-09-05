@@ -1,7 +1,7 @@
 import react, { lazy, Suspense } from "react";
 import { Flex, Spin } from "antd";
 
-const Bar = lazy(() => import("@/components/charts/antd_bar"));
+const Pie = lazy(() => import("@/components/charts/antd_pie"));
 
 const COLORS = [
   "#fa541c",
@@ -33,19 +33,14 @@ export default class TopPaths extends react.Component<Props> {
     }
     return (
       <Suspense fallback={<Spin />}>
-        <Bar
+        <Pie
           data={data}
-          xField="value"
-          yField="name"
-          seriesField="name"
+          angleField="value"
+          colorField="name"
           color={COLORS}
-          legend={false}
-          axis={{
-            x: { title: "Requests" },
-            y: { title: "Path", labelAutoRotate: false },
-          }}
-          barWidthRatio={0.6}
-          style={{ maxWidth: "100%" }}
+          innerRadius={0.5}
+          label={{ text: "name", style: { fontWeight: "bold" } }}
+          legend={{ color: { position: "right", rowPadding: 4 } }}
         />
       </Suspense>
     );
