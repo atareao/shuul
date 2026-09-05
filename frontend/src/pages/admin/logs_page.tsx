@@ -13,10 +13,7 @@ import {
   Card,
   message,
 } from "antd";
-import {
-  EyeOutlined,
-  ReloadOutlined,
-} from "@ant-design/icons";
+import { EyeOutlined, ReloadOutlined } from "@ant-design/icons";
 import type { ColumnsType } from "antd/es/table";
 import { loadData } from "@/common/utils";
 import { BASE_URL } from "@/constants";
