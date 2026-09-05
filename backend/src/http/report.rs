@@ -95,9 +95,21 @@ async fn report_handler(
         fqdn: payload.fqdn.clone(),
         path: payload.path.clone(),
         query: payload.query.clone(),
-        city_name: ip_data.city_name.as_ref().filter(|s| !s.is_empty()).cloned(),
-        country_name: ip_data.country_name.as_ref().filter(|s| !s.is_empty()).cloned(),
-        country_code: ip_data.country_code.as_ref().filter(|s| !s.is_empty()).cloned(),
+        city_name: ip_data
+            .city_name
+            .as_ref()
+            .filter(|s| !s.is_empty())
+            .cloned(),
+        country_name: ip_data
+            .country_name
+            .as_ref()
+            .filter(|s| !s.is_empty())
+            .cloned(),
+        country_code: ip_data
+            .country_code
+            .as_ref()
+            .filter(|s| !s.is_empty())
+            .cloned(),
         user_agent: payload.user_agent.clone(),
         method: payload.method.clone(),
         referer: payload.referer.clone(),
@@ -223,6 +235,7 @@ async fn report_handler(
             None,
             payload.method.as_deref(),
             payload.path.as_deref(),
+            payload.fqdn.as_deref(),
         );
         if should_log(&log_all_requests, "report_block") {
             audit_log!("report_block",

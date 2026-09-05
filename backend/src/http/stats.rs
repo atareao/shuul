@@ -24,6 +24,7 @@ pub fn stats_router() -> Router<Arc<AppState>> {
         .route("/top_rules", routing::get(read_top_rules))
         .route("/top_methods", routing::get(read_top_methods))
         .route("/top_paths", routing::get(read_top_paths))
+        .route("/top_fqdns", routing::get(read_top_fqdns))
         .route("/evolution", routing::get(read_evolution))
         .route(
             "/evolution_by_method",
@@ -34,7 +35,6 @@ pub fn stats_router() -> Router<Arc<AppState>> {
 #[derive(Debug, Deserialize)]
 pub struct EvolutionParams {
     pub unit: Option<String>,
-    #[allow(dead_code)]
     pub last: Option<i32>,
 }
 
@@ -51,7 +51,15 @@ pub async fn read_evolution(
 ) -> Result<impl IntoResponse, AppError> {
     debug!("Evolution params: {:?}", params);
     let unit = params.unit.as_deref().unwrap_or("day").to_string();
-    let evolution = app_state.stats.get_evolution(&unit);
+    let mut evolution = app_state.stats.get_evolution(&unit);
+
+    // Apply `last` limit: keep only the last N buckets
+    if let Some(last) = params.last.filter(|n| *n > 0) {
+        let last = last as usize;
+        if evolution.len() > last {
+            evolution.drain(..evolution.len() - last);
+        }
+    }
 
     // Convert buckets into frontend-friendly series format:
     //   [{"id": "blocked", "data": [{"x": "2024-01-01T00:00:00Z", "y": 5}, ...]},
@@ -207,6 +215,31 @@ pub async fn read_top_paths(
     ))
 }
 
+/// Returns the top FQDNs based on request count.
+pub async fn read_top_fqdns(
+    State(app_state): State<Arc<AppState>>,
+) -> Result<impl IntoResponse, AppError> {
+    let top_fqdns = app_state.stats.get_top_fqdns();
+    let total_blocked = app_state.stats.get_total_blocked();
+    let result: Vec<(String, i32, f32)> = top_fqdns
+        .into_iter()
+        .map(|(fqdn, count)| {
+            let percentage = if total_blocked > 0 {
+                (count as f32 / total_blocked as f32) * 100.0
+            } else {
+                0.0
+            };
+            (fqdn, count as i32, percentage)
+        })
+        .collect();
+    debug!("Top FQDNs: {:?}", result);
+    Ok(ApiResponse::new(
+        StatusCode::OK,
+        "Top FQDNs",
+        Data::Some(serde_json::to_value(result)?),
+    ))
+}
+
 #[derive(Debug, Deserialize)]
 pub struct ReadInfoParams {
     pub option: Option<String>,
@@ -262,7 +295,17 @@ pub async fn read_evolution_by_method(
     Query(params): Query<EvolutionParams>,
 ) -> Result<impl IntoResponse, AppError> {
     let unit = params.unit.as_deref().unwrap_or("day").to_string();
-    let method_evolution = app_state.stats.get_method_evolution(&unit);
+    let mut method_evolution = app_state.stats.get_method_evolution(&unit);
+
+    // Apply `last` limit to each method's series
+    if let Some(last) = params.last.filter(|n| *n > 0) {
+        let last = last as usize;
+        for (_, series) in &mut method_evolution {
+            if series.len() > last {
+                series.drain(..series.len() - last);
+            }
+        }
+    }
 
     let result: Vec<serde_json::Value> = method_evolution
         .into_iter()
