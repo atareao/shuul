@@ -1,12 +1,15 @@
+## [0.10.0] - 2026-09-05
+
+### 💼 Other
+
+- V0.9.0
+- V0.9.0 (#22)
+- V0.10.0 (#24)
 ## [0.8.0] - 2026-09-03
 
-### 🚀 Features
+### 💼 Other
 
-- Production deployment config with Traefik reverse proxy
-- Env-based migrations path (executable-relative in production)
-- Compose.yml with Traefik labels, external geo volume, proxy network
-- Fix justfile push recipe (remove redundant docker.io/ prefix)
-
+- V0.7.0 — SQLite migration
 ## [0.6.0] - 2026-09-02
 
 ### 💼 Other
