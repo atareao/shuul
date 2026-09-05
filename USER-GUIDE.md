@@ -314,6 +314,94 @@ Use the **Show last N** dropdown to change the time window:
 
 ---
 
+## Logs
+
+The Logs page gives you a real-time view of every WAF and Jail event processed by shuul. Events are stored in an in-memory ring buffer — no SSH or terminal access is needed.
+
+> **Note:** Logs are **not persisted**. The buffer is lost on container restart. Use this page for live debugging and monitoring, not for auditing.
+
+### Access
+
+Go to **Logs** in the sidebar menu (between Charts and Settings).
+
+### Columns
+
+All timestamps are in your local browser time (dd/mm/yyyy hh:mm:ss format).
+
+| Column | Description |
+|---|---|
+| **Timestamp** | When the event occurred (local time) |
+| **Event** | Event type with coloured tag (see below) |
+| **Pipeline** | WAF or Jail — which pipeline processed the request |
+| **IP** | Source IP address |
+| **Country** | Country code from GeoIP (if available) |
+| **Rule** | Rule name that matched |
+| **Path** | Request path |
+| **Method** | HTTP method |
+| **Status** | HTTP status code returned or reported |
+
+### Event Types
+
+Each event type has a distinct colour for quick identification:
+
+| Event | Colour | When it occurs |
+|---|---|---|
+| `safe_path` | 🟢 Green | Request matched a safe path → ALLOWED |
+| `trusted_ip` | 🟢 Green | Request from a trusted IP → ALLOWED |
+| `trusted_ua` | 🟢 Green | Request from a trusted User-Agent → ALLOWED |
+| `allow` | 🔵 Blue | WAF rule matched with `allow=true` → ALLOWED |
+| `block` | 🔴 Red | WAF rule matched with `allow=false` → BLOCKED |
+| `banned` | 🟠 Orange | Request from a banned IP → 403 FORBIDDEN |
+| `no_match` | ⚪ Grey | No WAF rule matched → request passes |
+| `report_block` | 🟡 Yellow | Jail pipeline counted a failure |
+| `report_ban` | 🟠 Orange | Jail pipeline banned the IP |
+
+### Filtering
+
+Use the **event filter buttons** at the top of the page to show only specific event types. Buttons are dynamically generated based on the events currently in the buffer. Click a button to toggle that event type on/off.
+
+### Auto-Refresh
+
+Toggle the **Auto-refresh** switch to poll for new events every 3 seconds. The switch is off by default for performance — turn it on when monitoring an active event.
+
+### Buffer Capacity
+
+Use the **Capacity** dropdown to change the ring buffer size at runtime: 1000, 5000, 10000, or 20000 entries.
+
+- **1000**: minimal memory usage, good for short debugging sessions
+- **5000**: balanced (default on fresh start)
+- **10000**: recommended for active monitoring
+- **20000**: maximum, for extended observation
+
+When the buffer is full, the oldest entries are automatically discarded as new ones arrive.
+
+### Viewing Details
+
+Click any row to expand it and see the full event payload as JSON. This includes all fields sent by the WAF or Jail pipeline, such as full request headers, GeoIP data, and rule matching details.
+
+### Common Use Cases
+
+**"Is my new WAF rule working?"**
+1. Create the rule in `log_only` mode
+2. Go to **Logs** and enable auto-refresh
+3. Make a matching request
+4. Look for a `block` event — if you see it, the rule matches correctly
+5. Switch the rule to `enforce` mode
+
+**"Is rate limiting triggering?"**
+1. Go to **Logs** and filter by `report_block` and `report_ban` events
+2. Trigger the rate limit (e.g., multiple failed login attempts)
+3. You'll see `report_block` events for each failure, then a `report_ban` when the threshold is exceeded
+4. Switch to **Bans** to confirm the IP is banned
+
+**"Why is a legitimate request being blocked?"**
+1. Find the IP in **Logs**
+2. Expand the row to see which rule matched
+3. Adjust the rule's regex pattern or weight
+4. Consider adding the IP to **Trusted IPs** in Settings
+
+---
+
 ## Settings
 
 The Settings page configures global behaviour.

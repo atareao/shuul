@@ -98,6 +98,7 @@ Shuul is a ForwardAuth service for Traefik that evaluates incoming requests agai
 - **Templates**: 80+ preconfigured rule templates in 3 categories (WAF, Jail, Rate Limit Profiles)
 - **Charts**: time-series evolution (stacked bar, line, by-method), rankings (countries, rules, methods, paths, FQDNs) as donut charts
 - **Settings**: global configuration (safe paths, trusted IPs, trusted UAs, log level)
+- **Logs**: real-time event viewer with WAF/Jail audit trail, configurable ring buffer (1K–20K entries), event type filtering, auto-refresh
 - **Dark/light mode** with persisted preference
 - **i18n**: Spanish, Valencian, English
 - SSO/OIDC authentication via PocketID
@@ -271,6 +272,8 @@ All endpoints are prefixed with `/api/v1`. Protected endpoints require a Bearer 
 | `GET` | `/stats/top_fqdns` | Top 10 FQDNs |
 | `GET` | `/stats/evolution?unit=&last=` | Time-series blocked/allowed |
 | `GET` | `/stats/evolution_by_method?unit=&last=` | Time-series per HTTP method |
+| `GET` | `/logs` | List log entries from in-memory ring buffer |
+| `PUT` | `/logs/capacity` | Change log buffer capacity (`1000`, `5000`, `10000`, `20000`) |
 
 ### WAF Endpoint (`ANY /api/v1/shuul`)
 
