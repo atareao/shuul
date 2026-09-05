@@ -2,7 +2,6 @@ import react, { lazy, Suspense } from "react";
 import { useNavigate } from "react-router";
 import { useTranslation } from "react-i18next";
 import { Flex, Typography, Spin, InputNumber, Select, Card, Tabs } from "antd";
-const { Title } = Typography;
 import { loadData } from "@/common/utils";
 import ModeContext from "@/components/mode_context";
 import { ConfigProvider } from "@ant-design/charts";
@@ -28,6 +27,7 @@ interface State {
   top_rules: Array<[string, number, number]>;
   top_methods: Array<[string, number, number]>;
   top_paths: Array<[string, number, number]>;
+  top_fqdns: Array<[string, number, number]>;
   evolution_data: Array<{ id: string; data: Array<{ x: string; y: number }> }>;
   evolution_by_method: Array<{
     id: string;
@@ -63,10 +63,11 @@ export class InnerPage extends react.Component<Props, State> {
       top_rules: [],
       top_methods: [],
       top_paths: [],
+      top_fqdns: [],
       evolution_data: [],
       evolution_by_method: [],
-      unit: "day",
-      last: 7,
+      unit: "hour",
+      last: 24,
       total: 0,
       allowed: 0,
       blocked: 0,
@@ -86,6 +87,7 @@ export class InnerPage extends react.Component<Props, State> {
           evolution_data_res,
           top_methods_res,
           top_paths_res,
+          top_fqdns_res,
           evolution_by_method_res,
           stats_total_res,
           stats_blocked_res,
@@ -101,6 +103,7 @@ export class InnerPage extends react.Component<Props, State> {
           ),
           loadData("stats/top_methods"),
           loadData("stats/top_paths"),
+          loadData("stats/top_fqdns"),
           loadData(
             "stats/evolution_by_method",
             new Map([
@@ -137,6 +140,10 @@ export class InnerPage extends react.Component<Props, State> {
           top_paths:
             top_paths_res.status === 200
               ? (top_paths_res.data as Array<[string, number, number]>)
+              : [],
+          top_fqdns:
+            top_fqdns_res.status === 200
+              ? (top_fqdns_res.data as Array<[string, number, number]>)
               : [],
           evolution_data:
             evolution_data_res.status === 200
@@ -197,6 +204,7 @@ export class InnerPage extends react.Component<Props, State> {
       top_rules,
       top_methods,
       top_paths,
+      top_fqdns,
       evolution_data,
       evolution_by_method,
       loading,
@@ -219,10 +227,24 @@ export class InnerPage extends react.Component<Props, State> {
       name,
       value: count,
     }));
+    const topFqdnsData = top_fqdns.map(([name, count]) => ({
+      name,
+      value: count,
+    }));
+
+    // Format ISO timestamps as short labels según la unidad
+    const fmtTime = (iso: string) => {
+      const d = new Date(iso);
+      if (this.state.unit === "hour" || this.state.unit === "minute") {
+        return `${String(d.getHours()).padStart(2, "0")}:${String(d.getMinutes()).padStart(2, "0")}`;
+      }
+      return `${String(d.getDate()).padStart(2, "0")}/${String(d.getMonth() + 1).padStart(2, "0")}`;
+    };
+
     const evolutionFlatData = evolution_data.flatMap((series) =>
       series.data.map((point) => ({
         category: series.id,
-        time: point.x,
+        time: fmtTime(point.x),
         requests: point.y,
       })),
     );
@@ -235,7 +257,7 @@ export class InnerPage extends react.Component<Props, State> {
           const allowedPoint = allowedSeries?.data.find((p) => p.x === point.x);
           const total = point.y + (allowedPoint?.y ?? 0);
           return {
-            time: point.x,
+            time: fmtTime(point.x),
             rate: total > 0 ? (point.y / total) * 100 : 0,
           };
         }),
@@ -266,8 +288,44 @@ export class InnerPage extends react.Component<Props, State> {
             <Typography.Text type="danger" style={{ fontSize: 16 }}>
               Failed to load charts data
             </Typography.Text>
-          </Card>
-        </Flex>
+</Card>
+                    <Card
+                      title="Top FQDNs"
+                      size="small"
+                      style={{ flex: 1, minWidth: 350 }}
+                    >
+                      <div style={{ height: 300 }}>
+                        {topFqdnsData.length > 0 ? (
+                          <Suspense fallback={<Spin />}>
+                            <Pie
+                              data={topFqdnsData}
+                              angleField="value"
+                              colorField="name"
+                              color={COLORS}
+                              innerRadius={0.5}
+                              label={{
+                                text: "name",
+                                style: { fontWeight: "bold" },
+                              }}
+                              legend={{
+                                color: { position: "right", rowPadding: 4 },
+                              }}
+                            />
+                          </Suspense>
+                        ) : (
+                          <Flex
+                            justify="center"
+                            align="center"
+                            style={{ height: "100%" }}
+                          >
+                            <Typography.Text type="secondary">
+                              No FQDN data available
+                            </Typography.Text>
+                          </Flex>
+                        )}
+                      </div>
+                    </Card>
+                  </Flex>
       );
     }
 
@@ -275,8 +333,6 @@ export class InnerPage extends react.Component<Props, State> {
 
     return (
       <Flex vertical gap="large" style={{ padding: 24 }}>
-        <Title level={2}>Charts</Title>
-
         <ConfigProvider
           common={{ theme: { type: isDarkMode ? "dark" : "classic" } }}
         >
@@ -371,7 +427,7 @@ export class InnerPage extends react.Component<Props, State> {
                             data={evolution_by_method.flatMap((series) =>
                               series.data.map((point) => ({
                                 category: series.id,
-                                time: point.x,
+                                time: fmtTime(point.x),
                                 requests: point.y,
                               })),
                             )}
@@ -401,7 +457,7 @@ export class InnerPage extends react.Component<Props, State> {
                     <Card
                       title="Top Countries"
                       size="small"
-                      style={{ flex: 1, minWidth: 350 }}
+                      style={{ width: 'calc(50% - 12px)' }}
                     >
                       <div style={{ height: 300 }}>
                         {topCountriesData.length > 0 ? (
@@ -437,7 +493,7 @@ export class InnerPage extends react.Component<Props, State> {
                     <Card
                       title="Top Rules"
                       size="small"
-                      style={{ flex: 1, minWidth: 350 }}
+                      style={{ width: 'calc(50% - 12px)' }}
                     >
                       <div style={{ height: 300 }}>
                         {topRulesData.length > 0 ? (
@@ -473,7 +529,7 @@ export class InnerPage extends react.Component<Props, State> {
                     <Card
                       title="Top Methods"
                       size="small"
-                      style={{ flex: 1, minWidth: 350 }}
+                      style={{ width: 'calc(50% - 12px)' }}
                     >
                       <div style={{ height: 300 }}>
                         {topMethodsData.length > 0 ? (
@@ -497,7 +553,7 @@ export class InnerPage extends react.Component<Props, State> {
                     <Card
                       title="Top Paths"
                       size="small"
-                      style={{ flex: 1, minWidth: 350 }}
+                      style={{ width: 'calc(50% - 12px)' }}
                     >
                       <div style={{ height: 300 }}>
                         {topPathsData.length > 0 ? (
@@ -513,6 +569,42 @@ export class InnerPage extends react.Component<Props, State> {
                           >
                             <Typography.Text type="secondary">
                               No path data available
+                            </Typography.Text>
+                          </Flex>
+                        )}
+                      </div>
+                    </Card>
+                    <Card
+                      title="Top FQDNs"
+                      size="small"
+                      style={{ width: 'calc(50% - 12px)' }}
+                    >
+                      <div style={{ height: 300 }}>
+                        {topFqdnsData.length > 0 ? (
+                          <Suspense fallback={<Spin />}>
+                            <Pie
+                              data={topFqdnsData}
+                              angleField="value"
+                              colorField="name"
+                              color={COLORS}
+                              innerRadius={0.5}
+                              label={{
+                                text: "name",
+                                style: { fontWeight: "bold" },
+                              }}
+                              legend={{
+                                color: { position: "right", rowPadding: 4 },
+                              }}
+                            />
+                          </Suspense>
+                        ) : (
+                          <Flex
+                            justify="center"
+                            align="center"
+                            style={{ height: "100%" }}
+                          >
+                            <Typography.Text type="secondary">
+                              No FQDN data available
                             </Typography.Text>
                           </Flex>
                         )}

@@ -56,7 +56,12 @@ struct StatsSnapshot {
     top_countries: HashMap<String, u64>,
     top_methods: HashMap<String, u64>,
     top_paths: HashMap<String, u64>,
+    top_fqdns: HashMap<String, u64>,
     day_series: Vec<Bucket>,
+    #[serde(default)]
+    hour_series: Vec<Bucket>,
+    #[serde(default)]
+    minute_series: Vec<Bucket>,
     #[serde(default)]
     method_series: HashMap<String, Vec<MethodBucket>>,
 }
@@ -69,6 +74,7 @@ pub struct StatsCollector {
     top_countries: Mutex<HashMap<String, u64>>,
     top_methods: Mutex<HashMap<String, u64>>,
     top_paths: Mutex<HashMap<String, u64>>,
+    top_fqdns: Mutex<HashMap<String, u64>>,
     minute_series: Mutex<Vec<Bucket>>,
     hour_series: Mutex<Vec<Bucket>>,
     day_series: Mutex<Vec<Bucket>>,
@@ -86,6 +92,7 @@ impl StatsCollector {
             top_countries: Mutex::new(HashMap::new()),
             top_methods: Mutex::new(HashMap::new()),
             top_paths: Mutex::new(HashMap::new()),
+            top_fqdns: Mutex::new(HashMap::new()),
             minute_series: Mutex::new(Vec::with_capacity(60)),
             hour_series: Mutex::new(Vec::with_capacity(24)),
             day_series: Mutex::new(Vec::with_capacity(31)),
@@ -123,8 +130,17 @@ impl StatsCollector {
                         if let Ok(mut map) = stats.top_paths.lock() {
                             *map = snapshot.top_paths;
                         }
+                        if let Ok(mut map) = stats.top_fqdns.lock() {
+                            *map = snapshot.top_fqdns;
+                        }
                         if let Ok(mut series) = stats.day_series.lock() {
                             *series = snapshot.day_series;
+                        }
+                        if let Ok(mut series) = stats.hour_series.lock() {
+                            *series = snapshot.hour_series;
+                        }
+                        if let Ok(mut series) = stats.minute_series.lock() {
+                            *series = snapshot.minute_series;
                         }
                         if let Ok(mut map) = stats.method_series.lock() {
                             *map = snapshot.method_series;
@@ -177,8 +193,23 @@ impl StatsCollector {
                 .lock()
                 .unwrap_or_else(|e| e.into_inner())
                 .clone(),
+            top_fqdns: self
+                .top_fqdns
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .clone(),
             day_series: self
                 .day_series
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .clone(),
+            hour_series: self
+                .hour_series
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .clone(),
+            minute_series: self
+                .minute_series
                 .lock()
                 .unwrap_or_else(|e| e.into_inner())
                 .clone(),
@@ -219,6 +250,7 @@ impl StatsCollector {
         country_code: Option<&str>,
         method: Option<&str>,
         path: Option<&str>,
+        fqdn: Option<&str>,
     ) {
         let now = Utc::now().timestamp();
         self.total_blocked.fetch_add(1, Ordering::Relaxed);
@@ -252,12 +284,20 @@ impl StatsCollector {
             }
         }
 
+        if let Some(f) = fqdn {
+            if !f.is_empty() {
+                if let Ok(mut map) = self.top_fqdns.lock() {
+                    *map.entry(f.to_string()).or_insert(0) += 1;
+                }
+            }
+        }
+
         self.add_to_bucket(false, now);
         self.add_method_to_bucket(method, now);
     }
 
     /// Registra una request permitida (no match o allow=true).
-    pub fn record_allowed(&self, method: Option<&str>, path: Option<&str>) {
+    pub fn record_allowed(&self, method: Option<&str>, path: Option<&str>, fqdn: Option<&str>) {
         let now = Utc::now().timestamp();
         self.total_allowed.fetch_add(1, Ordering::Relaxed);
 
@@ -272,6 +312,14 @@ impl StatsCollector {
             if !p.is_empty() {
                 if let Ok(mut map) = self.top_paths.lock() {
                     *map.entry(p.to_string()).or_insert(0) += 1;
+                }
+            }
+        }
+
+        if let Some(f) = fqdn {
+            if !f.is_empty() {
+                if let Ok(mut map) = self.top_fqdns.lock() {
+                    *map.entry(f.to_string()).or_insert(0) += 1;
                 }
             }
         }
@@ -396,6 +444,14 @@ impl StatsCollector {
 
     pub fn get_top_paths(&self) -> Vec<(String, u64)> {
         let map = self.top_paths.lock().unwrap_or_else(|e| e.into_inner());
+        let mut vec: Vec<(String, u64)> = map.iter().map(|(k, v)| (k.clone(), *v)).collect();
+        vec.sort_by(|a, b| b.1.cmp(&a.1));
+        vec.truncate(10);
+        vec
+    }
+
+    pub fn get_top_fqdns(&self) -> Vec<(String, u64)> {
+        let map = self.top_fqdns.lock().unwrap_or_else(|e| e.into_inner());
         let mut vec: Vec<(String, u64)> = map.iter().map(|(k, v)| (k.clone(), *v)).collect();
         vec.sort_by(|a, b| b.1.cmp(&a.1));
         vec.truncate(10);

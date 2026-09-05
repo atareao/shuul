@@ -179,7 +179,7 @@ export class InnerPage extends React.Component<
         renderHeaderAction={this.renderHeaderAction}
         renderActionColumn={this.renderActionColumn}
         extraHeaderContent={
-          <Flex align="center" gap="small" style={{ paddingLeft: 8 }}>
+          <Flex align="center" gap="small">
             <Select
               value={this.state.pipelineFilter}
               onChange={(value) => this.setState({ pipelineFilter: value })}

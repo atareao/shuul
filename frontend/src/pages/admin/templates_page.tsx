@@ -40,7 +40,7 @@ import type {
 import { loadData } from "@/common/utils";
 import { BASE_URL } from "@/constants";
 
-const { Text, Title } = Typography;
+const { Text } = Typography;
 
 const SEVERITY_COLORS: Record<string, string> = {
   "🔥 Crítico": "red",
@@ -717,9 +717,6 @@ export default class TemplatesPage extends React.Component<{}, State> {
     return (
       <Flex vertical gap="middle" style={{ padding: 24 }}>
         <Flex justify="space-between" align="center">
-          <Title level={3} style={{ margin: 0 }}>
-            Templates
-          </Title>
           <Input
             prefix={<SearchOutlined />}
             placeholder="Search templates..."
