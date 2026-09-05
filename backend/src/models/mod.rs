@@ -10,6 +10,7 @@ mod ban_manager;
 mod data;
 pub mod error;
 mod ipdata;
+pub mod log_collector;
 mod new_request;
 mod oidc;
 mod rate_limit_profile;

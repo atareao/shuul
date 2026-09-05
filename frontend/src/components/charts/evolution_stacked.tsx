@@ -27,6 +27,9 @@ export default class EvolutionStacked extends react.Component<Props> {
           seriesField="category"
           barWidthRatio={0.9}
           height={350}
+          scale={{
+            color: { range: ["#ff4d4f", "#52c41a"] },
+          }}
           legend={{
             color: { position: "top", layout: { justifyContent: "center" } },
           }}
@@ -34,7 +37,7 @@ export default class EvolutionStacked extends react.Component<Props> {
             x: { title: "Time", labelAutoRotate: true },
             y: { title: "Requests" },
           }}
-          transform={[{ type: "stackY" }]}
+          transform={[{ type: "dodgeX" }]}
         />
       </Suspense>
     );

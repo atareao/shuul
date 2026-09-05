@@ -18,6 +18,7 @@
 //! Todos los `MutexGuard` se liberan antes de cualquier `.await` para
 //! garantizar que el future sea `Send` (requerido por axum/tokio).
 
+use crate::audit_log;
 use crate::models::{AppState, EmptyResponse};
 use axum::{Router, extract::State, http::StatusCode, response::IntoResponse, routing};
 use std::sync::Arc;
@@ -31,21 +32,6 @@ fn should_log(mode: &str, category: &str) -> bool {
         "audit" => matches!(category, "banned" | "block" | "report_block" | "report_ban"),
         _ => false,
     }
-}
-
-/// Macro for structured audit logging with visible category tag.
-macro_rules! audit_log {
-    ($category:expr, $($arg:tt)*) => {
-        tracing::info!(
-            "[{}] {}",
-            $category.to_uppercase(),
-            serde_json::json!({
-                "event": $category,
-                "ts": chrono::Utc::now().to_rfc3339(),
-                $($arg)*
-            })
-        )
-    };
 }
 
 pub fn shuul_router() -> Router<Arc<AppState>> {

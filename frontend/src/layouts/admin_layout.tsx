@@ -11,6 +11,7 @@ import {
   AppstoreOutlined,
   SettingOutlined,
   RocketOutlined,
+  EyeOutlined,
 } from "@ant-design/icons";
 
 import ModeSwitcher from "@/components/mode_switcher";
@@ -45,7 +46,8 @@ const navigations: { [key: string]: string } = {
   4: "/admin/bans",
   5: "/admin/templates",
   6: "/admin/charts",
-  7: "/admin/settings",
+  7: "/admin/logs",
+  8: "/admin/settings",
 };
 
 const items: MenuItem[] = [
@@ -55,7 +57,8 @@ const items: MenuItem[] = [
   getItem("Bans", "4", <StopOutlined />),
   getItem("Templates", "5", <AppstoreOutlined />),
   getItem("Charts", "6", <PieChartOutlined />),
-  getItem("Settings", "7", <SettingOutlined />),
+  getItem("Logs", "7", <EyeOutlined />),
+  getItem("Settings", "8", <SettingOutlined />),
 ];
 
 // Componente AuthGuard: solo verifica login y redirige si no está autenticado

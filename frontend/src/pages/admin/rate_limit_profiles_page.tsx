@@ -25,6 +25,7 @@ const FIELDS: FieldDefinition<Item>[] = [
     editable: false,
     fixed: "left",
     width: 80,
+    sortKey: "id",
   },
   {
     key: "name",
@@ -34,6 +35,7 @@ const FIELDS: FieldDefinition<Item>[] = [
     width: 150,
     filterKey: "name",
     visible: true,
+    sortKey: "name",
   },
   {
     key: "description",
@@ -43,6 +45,7 @@ const FIELDS: FieldDefinition<Item>[] = [
     width: 200,
     filterKey: "description",
     visible: true,
+    sortKey: "description",
   },
   {
     key: "max_retry",
@@ -51,6 +54,7 @@ const FIELDS: FieldDefinition<Item>[] = [
     value: 5,
     width: 100,
     visible: true,
+    sortKey: "max_retry",
   },
   {
     key: "find_time_seconds",
@@ -59,6 +63,7 @@ const FIELDS: FieldDefinition<Item>[] = [
     value: 600,
     width: 120,
     visible: true,
+    sortKey: "find_time_seconds",
   },
   {
     key: "ban_time_seconds",
@@ -67,6 +72,7 @@ const FIELDS: FieldDefinition<Item>[] = [
     value: 3600,
     width: 120,
     visible: true,
+    sortKey: "ban_time_seconds",
   },
   {
     key: "fail_codes",
