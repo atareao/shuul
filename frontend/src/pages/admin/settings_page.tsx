@@ -385,7 +385,6 @@ export default class SettingsPage extends React.Component<{}, State> {
 
     return (
       <Flex vertical gap="middle" style={{ maxWidth: 800, margin: "0 auto" }}>
-        <Title level={3}>Settings</Title>
         <Tabs defaultActiveKey="general" items={tabItems} size="large" />
       </Flex>
     );
