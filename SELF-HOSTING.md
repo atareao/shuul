@@ -333,6 +333,18 @@ docker compose up -d
 curl -f http://localhost:3000/api/v1/health/
 ```
 
+### Log Viewer (Dashboard)
+
+Access the **Logs** page at `/admin/logs` for a real-time view of WAF and Jail events. The log viewer requires no SSH access — all events are captured in an in-memory ring buffer and served through the API.
+
+Features:
+- **9-column table**: timestamp, event type, pipeline, IP, country, rule, path, method, status code
+- **Auto-refresh**: polls every 3 seconds for near real-time updates
+- **Event filter buttons**: dynamically generated based on event types present (block, allow, safe_path, report_ban, etc.)
+- **Expandable rows**: click any row to see the full JSON event payload
+- **Configurable capacity**: change the buffer size at runtime (1000, 5000, 10000, 20000 entries)
+- **No persistence**: buffer is lost on container restart
+
 ### Log Levels
 
 | Level | Use Case |

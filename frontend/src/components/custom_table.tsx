@@ -94,7 +94,7 @@ export default class CustomTable<
   columns: TableColumnsType<T>;
   private debouncedSetFilter: DebouncedFn<(key: string, value: string) => void>;
   private autoRefreshTimer: ReturnType<typeof setInterval> | null = null;
-  private _fetching: boolean = false;
+  private fetchSeq: number = 0;
 
   constructor(props: Props<T>) {
     super(props);
@@ -121,21 +121,26 @@ export default class CustomTable<
     this.columns = this.getColumns();
     const updateFilterState = (key: string, value: string) => {
       const cleanValue = value.trim().replaceAll("*", "%");
-      this.setState((prevState) => {
-        // Si el valor no ha cambiado, no hacemos nada
-        if (prevState.filters.get(key) === cleanValue) {
-          return prevState;
-        }
-        const newFilters = new Map(prevState.filters);
-        newFilters.set(key, cleanValue);
-        return {
-          ...prevState,
-          filters: newFilters,
-          pagination: { ...prevState.pagination, current: 1 },
-          items: [],
-          loading: true,
-        };
-      });
+      this.setState(
+        (prevState) => {
+          // Si el valor no ha cambiado, no hacemos nada
+          if (prevState.filters.get(key) === cleanValue) {
+            return prevState;
+          }
+          const newFilters = new Map(prevState.filters);
+          newFilters.set(key, cleanValue);
+          return {
+            ...prevState,
+            filters: newFilters,
+            pagination: { ...prevState.pagination, current: 1 },
+          };
+        },
+        () => {
+          // Callback: filters are already updated, fetch directly
+          this.columns = this.getColumns();
+          this.fetchData();
+        },
+      );
     };
 
     this.debouncedSetFilter = debounce(updateFilterState, 500);
@@ -153,34 +158,12 @@ export default class CustomTable<
     this.setState({ dialogMode: DialogModes.CREATE, selectedItem: undefined });
   };
 
-  // handleCloseDialog ahora acepta T | Diptych | undefined
-  private handleCloseDialog = (item?: T | undefined) => {
-    if (item) {
-      this.setState((prevState) => {
-        let newItems = [...prevState.items];
-        // Asumiendo que el item tiene una propiedad 'id' compatible
-        if (prevState.dialogMode === DialogModes.DELETE) {
-          newItems = newItems.filter((r) => r.id !== (item as T).id);
-        } else if (prevState.dialogMode === DialogModes.UPDATE) {
-          newItems = newItems.map((r) =>
-            r.id === (item as T).id ? { ...r, ...(item as T) } : r,
-          );
-        } else if (prevState.dialogMode === DialogModes.CREATE) {
-          newItems = [...newItems, item as T];
-        }
-        return {
-          ...prevState,
-          items: newItems,
-          dialogMode: DialogModes.NONE,
-          selectedItem: undefined,
-        };
-      });
-    } else {
-      this.setState({
-        dialogMode: DialogModes.NONE,
-        selectedItem: undefined,
-      });
-    }
+  // handleCloseDialog ahora solo cierra el diálogo, no muta items localmente
+  private handleCloseDialog = (_item?: T | undefined) => {
+    this.setState({
+      dialogMode: DialogModes.NONE,
+      selectedItem: undefined,
+    });
   };
 
   private toggleAutoRefresh = () => {
@@ -284,7 +267,8 @@ export default class CustomTable<
           ),
           dataIndex: field.key.toString(),
           key: field.key.toString(),
-          sorter: !field.virtual && field.type !== "boolean",
+          // Solo permitir sort si el backend lo soporta (sortKey definido)
+          sorter: !field.virtual && field.type !== "boolean" && !!field.sortKey,
           ellipsis: { showTitle: true },
           width: field.width || 100,
           render: (content: any, record: T) =>
@@ -326,15 +310,26 @@ export default class CustomTable<
     const newSortField = fieldDefinition?.sortKey || rawSortField;
     const newSortOrder = effectiveSorter.order;
 
+    // Al cambiar de orden, resetear página a 1
+    const newPagination = {
+      current:
+        effectiveSorter.order !== undefined &&
+        effectiveSorter.field !== this.state.sortField
+          ? 1
+          : pagination.current || 1,
+      pageSize: pagination.pageSize || this.state.pagination.pageSize || 10,
+      total: this.state.pagination.total || 0,
+    };
+
     this.setState((prevState) => ({
-      pagination: { ...prevState.pagination, ...pagination },
+      pagination: { ...prevState.pagination, ...newPagination },
       sortOrder: newSortOrder,
       sortField: newSortField,
-      loading: true,
     }));
+    // Usar el estado actualizado directamente (sin depender de setState callback)
     this.fetchData(
-      pagination.current,
-      pagination.pageSize,
+      newPagination.current,
+      newPagination.pageSize,
       newSortField as string | undefined,
       newSortOrder,
     );
@@ -346,10 +341,8 @@ export default class CustomTable<
     sortField?: string,
     sortOrder?: string | null,
   ) => {
-    if (this._fetching) return; // evitar llamadas concurrentes
-    this._fetching = true;
+    const seq = ++this.fetchSeq;
     if (this.state.dialogMode !== DialogModes.NONE) {
-      this._fetching = false;
       return;
     }
     this.setState({ loading: true });
@@ -382,6 +375,10 @@ export default class CustomTable<
         }
       });
       const responseJson = await loadData<T[]>(this.props.endpoint, params);
+      // Verificar que esta respuesta no está obsoleta
+      if (this.fetchSeq !== seq) {
+        return;
+      }
       if (responseJson.status === 200) {
         this.setState((prevState) => ({
           ...prevState,
@@ -396,6 +393,7 @@ export default class CustomTable<
           },
         }));
       } else {
+        if (this.fetchSeq !== seq) return;
         this.setState((prevState) => ({
           ...prevState,
           items: [],
@@ -403,14 +401,13 @@ export default class CustomTable<
         }));
       }
     } catch (error) {
+      if (this.fetchSeq !== seq) return;
       console.error("Error fetching data:", error);
       this.setState((prevState) => ({
         ...prevState,
         items: [],
         loading: false,
       }));
-    } finally {
-      this._fetching = false;
     }
   };
 
@@ -427,20 +424,7 @@ export default class CustomTable<
   };
 
   componentDidUpdate = async (prevProps: Props<T>, prevState: State<T>) => {
-    // Early return: ignorar cambios solo en loading o items (son resultado de fetch)
-    if (
-      prevState.loading !== this.state.loading ||
-      prevState.items !== this.state.items
-    ) {
-      return;
-    }
-
-    // Reconstruir columnas si los fields cambiaron
-    if (prevProps.fields !== this.props.fields) {
-      this.columns = this.getColumns();
-    }
-
-    // Si el diálogo se cerró, recargar datos
+    // Si el diálogo se cerró, recargar datos (check ANTES del early return)
     const dialogHasClosed =
       prevState.dialogMode !== DialogModes.NONE &&
       this.state.dialogMode === DialogModes.NONE;
@@ -449,8 +433,24 @@ export default class CustomTable<
       return;
     }
 
+    // Only early return on loading changes to prevent loops
+    if (prevState.loading !== this.state.loading) {
+      return;
+    }
+
+    // Reconstruir columnas si los fields cambiaron
+    if (prevProps.fields !== this.props.fields) {
+      this.columns = this.getColumns();
+    }
+
     // Si hay un diálogo abierto, no hacer nada más
     if (this.state.dialogMode !== DialogModes.NONE) {
+      return;
+    }
+
+    // Detectar cambios en params (ej. pipeline filter en rules)
+    if (prevProps.params !== this.props.params) {
+      await this.fetchData();
       return;
     }
 

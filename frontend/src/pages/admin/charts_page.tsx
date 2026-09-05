@@ -288,44 +288,44 @@ export class InnerPage extends react.Component<Props, State> {
             <Typography.Text type="danger" style={{ fontSize: 16 }}>
               Failed to load charts data
             </Typography.Text>
-</Card>
-                    <Card
-                      title="Top FQDNs"
-                      size="small"
-                      style={{ flex: 1, minWidth: 350 }}
-                    >
-                      <div style={{ height: 300 }}>
-                        {topFqdnsData.length > 0 ? (
-                          <Suspense fallback={<Spin />}>
-                            <Pie
-                              data={topFqdnsData}
-                              angleField="value"
-                              colorField="name"
-                              color={COLORS}
-                              innerRadius={0.5}
-                              label={{
-                                text: "name",
-                                style: { fontWeight: "bold" },
-                              }}
-                              legend={{
-                                color: { position: "right", rowPadding: 4 },
-                              }}
-                            />
-                          </Suspense>
-                        ) : (
-                          <Flex
-                            justify="center"
-                            align="center"
-                            style={{ height: "100%" }}
-                          >
-                            <Typography.Text type="secondary">
-                              No FQDN data available
-                            </Typography.Text>
-                          </Flex>
-                        )}
-                      </div>
-                    </Card>
-                  </Flex>
+          </Card>
+          <Card
+            title="Top FQDNs"
+            size="small"
+            style={{ flex: 1, minWidth: 350 }}
+          >
+            <div style={{ height: 300 }}>
+              {topFqdnsData.length > 0 ? (
+                <Suspense fallback={<Spin />}>
+                  <Pie
+                    data={topFqdnsData}
+                    angleField="value"
+                    colorField="name"
+                    color={COLORS}
+                    innerRadius={0.5}
+                    label={{
+                      text: "name",
+                      style: { fontWeight: "bold" },
+                    }}
+                    legend={{
+                      color: { position: "right", rowPadding: 4 },
+                    }}
+                  />
+                </Suspense>
+              ) : (
+                <Flex
+                  justify="center"
+                  align="center"
+                  style={{ height: "100%" }}
+                >
+                  <Typography.Text type="secondary">
+                    No FQDN data available
+                  </Typography.Text>
+                </Flex>
+              )}
+            </div>
+          </Card>
+        </Flex>
       );
     }
 
@@ -457,7 +457,7 @@ export class InnerPage extends react.Component<Props, State> {
                     <Card
                       title="Top Countries"
                       size="small"
-                      style={{ width: 'calc(50% - 12px)' }}
+                      style={{ width: "calc(50% - 12px)" }}
                     >
                       <div style={{ height: 300 }}>
                         {topCountriesData.length > 0 ? (
@@ -493,7 +493,7 @@ export class InnerPage extends react.Component<Props, State> {
                     <Card
                       title="Top Rules"
                       size="small"
-                      style={{ width: 'calc(50% - 12px)' }}
+                      style={{ width: "calc(50% - 12px)" }}
                     >
                       <div style={{ height: 300 }}>
                         {topRulesData.length > 0 ? (
@@ -529,7 +529,7 @@ export class InnerPage extends react.Component<Props, State> {
                     <Card
                       title="Top Methods"
                       size="small"
-                      style={{ width: 'calc(50% - 12px)' }}
+                      style={{ width: "calc(50% - 12px)" }}
                     >
                       <div style={{ height: 300 }}>
                         {topMethodsData.length > 0 ? (
@@ -553,7 +553,7 @@ export class InnerPage extends react.Component<Props, State> {
                     <Card
                       title="Top Paths"
                       size="small"
-                      style={{ width: 'calc(50% - 12px)' }}
+                      style={{ width: "calc(50% - 12px)" }}
                     >
                       <div style={{ height: 300 }}>
                         {topPathsData.length > 0 ? (
@@ -577,7 +577,7 @@ export class InnerPage extends react.Component<Props, State> {
                     <Card
                       title="Top FQDNs"
                       size="small"
-                      style={{ width: 'calc(50% - 12px)' }}
+                      style={{ width: "calc(50% - 12px)" }}
                     >
                       <div style={{ height: 300 }}>
                         {topFqdnsData.length > 0 ? (

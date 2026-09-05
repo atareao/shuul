@@ -424,7 +424,7 @@ const EVENT_COLORS: Record<string, string> = {
   report_block: "volcano",
   report_ban: "red",
   report_ok: "default",
-  report_warn: "gold",
+  report_skip: "gold",
 };
 const DEFAULT_EVENT_COLOR = "default";
 

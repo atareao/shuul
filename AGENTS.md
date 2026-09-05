@@ -159,6 +159,18 @@ Nunca se adquiere un lock en orden inverso para evitar deadlocks. Este patrón s
 | Ban cleanup | Cada 60s | Eliminar bans expirados, limpiar rate limiters |
 | Stats persist | Cada 1800s (30 min) | Guardar snapshot de StatsCollector en SQLite |
 
+## LogCollector
+
+Colector de logs de auditoría en memoria, implementado como `VecDeque` ring buffer con capacidad configurable en runtime (1000, 5000, 10000, 20000).
+
+- **Global singleton:** `LazyLock<Mutex<LogCollector>>` (`LOG_COLLECTOR`)
+- **LogEntry:** timestamp, event type, pipeline, IP, country, rule, path, method, query, user-agent, FQDN, referer, status code, profile, reason
+- **Macro compartida:** `audit_log!()` definida con `#[macro_export]` en `log_collector.rs`, importada en `shuul.rs` y `report.rs`
+- **Dual output:** el macro escribe a stdout (via `tracing::info!`) Y al ring buffer simultáneamente
+- **Sin persistencia:** el buffer se pierde al reiniciar el servidor
+- **API:** `GET /api/v1/logs` (listar, filtro `?event=`), `PUT /api/v1/logs/capacity` (cambiar capacidad)
+- **Frontend:** `LogsPage` con Table de Ant Design, paginación cliente, filtros por tipo de evento, auto-refresh (3s polling), expandable rows con JSON completo
+
 ## StatsCollector
 
 Colector de estadísticas en memoria con:
@@ -202,6 +214,8 @@ Colector de estadísticas en memoria con:
 | GET | `/api/v1/bans/info` | Conteo de baneos |
 | GET/PUT | `/api/v1/settings` | Leer / Actualizar settings |
 | GET | `/api/v1/stats/*` | Estadísticas (info, evolution, top_*) |
+| GET | `/api/v1/logs` | Listar entradas del LogCollector (buffer en memoria) |
+| PUT | `/api/v1/logs/capacity` | Cambiar capacidad del buffer (1000/5000/10000/20000) |
 
 ## Frontend — React Class Components
 
@@ -217,6 +231,7 @@ Colector de estadísticas en memoria con:
 | `/admin/bans` | BansPage | Baneos activos |
 | `/admin/templates` | TemplatesPage | Biblioteca de templates |
 | `/admin/charts` | ChartsPage | Analíticas y gráficos |
+| `/admin/logs` | LogsPage | Visor de eventos en tiempo real (buffer en memoria) |
 | `/admin/settings` | SettingsPage | Configuración global |
 | `/admin/logout` | LogoutPage | Cerrar sesión |
 

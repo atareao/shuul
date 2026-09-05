@@ -13,10 +13,7 @@ import {
   Card,
   message,
 } from "antd";
-import {
-  EyeOutlined,
-  ReloadOutlined,
-} from "@ant-design/icons";
+import { EyeOutlined, ReloadOutlined } from "@ant-design/icons";
 import type { ColumnsType } from "antd/es/table";
 import { loadData } from "@/common/utils";
 import { BASE_URL } from "@/constants";
@@ -47,11 +44,6 @@ interface LogsResponse {
   capacity: number;
 }
 
-interface CapacityResponse {
-  capacity: number;
-  entries: number;
-}
-
 const EVENT_COLORS: Record<string, string> = {
   safe_path: "green",
   trusted_ip: "cyan",
@@ -66,7 +58,7 @@ const EVENT_COLORS: Record<string, string> = {
   report_block: "volcano",
   report_ban: "red",
   report_ok: "default",
-  report_warn: "gold",
+  report_skip: "gold",
 };
 
 const CAPACITY_OPTIONS = [1000, 5000, 10000, 20000];
@@ -83,7 +75,7 @@ interface State {
   entries: LogEntry[];
   total: number;
   capacity: number;
-  eventFilter: string | null;
+  hiddenEvents: string[];
   autoRefresh: boolean;
 }
 
@@ -108,24 +100,19 @@ export class InnerPage extends React.Component<Props, State> {
       entries: [],
       total: 0,
       capacity: 1000,
-      eventFilter: null,
+      hiddenEvents: [],
       autoRefresh: false,
     };
   }
 
   refreshData = async () => {
-    const { eventFilter } = this.state;
     try {
       this.setState({ loading: true, error: false });
-      const params = new Map<string, string>();
-      if (eventFilter) {
-        params.set("event", eventFilter);
-      }
-      const res = await loadData<LogsResponse>("logs", params);
+      const res = await loadData<LogsResponse>("logs");
       if (res.status === 200 && res.data) {
         this.setState({
           loading: false,
-          entries: res.data.entries,
+          entries: (res.data.entries || []).reverse(),
           total: res.data.total,
           capacity: res.data.capacity,
         });
@@ -168,10 +155,17 @@ export class InnerPage extends React.Component<Props, State> {
     }
   };
 
-  setEventFilter = (event: string | null) => {
-    this.setState({ eventFilter: event }, () => {
-      this.refreshData();
+  toggleEventFilter = (event: string) => {
+    this.setState((prevState) => {
+      const hiddenEvents = prevState.hiddenEvents.includes(event)
+        ? prevState.hiddenEvents.filter((e) => e !== event)
+        : [...prevState.hiddenEvents, event];
+      return { hiddenEvents };
     });
+  };
+
+  showAllEvents = () => {
+    this.setState({ hiddenEvents: [] });
   };
 
   toggleAutoRefresh = (checked: boolean) => {
@@ -215,7 +209,15 @@ export class InnerPage extends React.Component<Props, State> {
   };
 
   render = () => {
-    const { loading, error, entries, total, capacity, eventFilter, autoRefresh } = this.state;
+    const {
+      loading,
+      error,
+      entries,
+      total,
+      capacity,
+      hiddenEvents,
+      autoRefresh,
+    } = this.state;
 
     const columns: ColumnsType<LogEntry> = [
       {
@@ -302,6 +304,13 @@ export class InnerPage extends React.Component<Props, State> {
 
     const uniqueEvents = this.getUniqueEvents();
 
+    const filteredEntries =
+      hiddenEvents.length === 0
+        ? entries
+        : entries.filter(
+            (entry) => entry.event && !hiddenEvents.includes(entry.event),
+          );
+
     if (loading && entries.length === 0) {
       return (
         <Flex
@@ -377,12 +386,12 @@ export class InnerPage extends React.Component<Props, State> {
           </Flex>
         </Flex>
 
-        {/* Event filter buttons */}
+        {/* Event filter toggles */}
         <Flex wrap gap="small">
           <Button
             size="small"
-            type={eventFilter === null ? "primary" : "default"}
-            onClick={() => this.setEventFilter(null)}
+            type={hiddenEvents.length === 0 ? "primary" : "default"}
+            onClick={this.showAllEvents}
           >
             All
           </Button>
@@ -390,8 +399,8 @@ export class InnerPage extends React.Component<Props, State> {
             <Button
               key={event}
               size="small"
-              type={eventFilter === event ? "primary" : "default"}
-              onClick={() => this.setEventFilter(event)}
+              type={hiddenEvents.includes(event) ? "default" : "primary"}
+              onClick={() => this.toggleEventFilter(event)}
             >
               {event}
             </Button>
@@ -401,7 +410,7 @@ export class InnerPage extends React.Component<Props, State> {
         {/* Table */}
         <Table<LogEntry>
           size="small"
-          dataSource={entries}
+          dataSource={filteredEntries}
           columns={columns}
           rowKey={(record, index) => `${record.ts}-${index}`}
           scroll={{ x: 1200 }}
@@ -430,7 +439,8 @@ export class InnerPage extends React.Component<Props, State> {
             ),
           }}
           locale={{
-            emptyText: "No log entries yet. Logs appear when traffic flows through the WAF/Jail pipelines.",
+            emptyText:
+              "No log entries yet. Logs appear when traffic flows through the WAF/Jail pipelines.",
           }}
         />
       </Flex>

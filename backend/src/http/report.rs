@@ -189,8 +189,8 @@ async fn report_handler(
         // Check if the reported status_code is in the profile's fail_codes
         let status_i32 = i32::from(payload.status_code);
         if !profile.fail_codes.contains(&status_i32) {
-            if should_log(&log_all_requests, "report_warn") {
-                audit_log!("report_warn",
+            if should_log(&log_all_requests, "report_skip") {
+                audit_log!("report_skip",
                     "pipeline": "jail",
                     "rule_id": rule_id,
                     "rule_name": rule_name,
