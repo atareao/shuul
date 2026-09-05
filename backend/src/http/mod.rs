@@ -16,6 +16,7 @@
 mod auth;
 mod ban;
 mod health;
+pub mod log;
 mod middleware;
 mod rate_limit_profile;
 mod report;
@@ -29,6 +30,7 @@ mod util;
 pub use auth::auth_router;
 pub use ban::ban_router;
 pub use health::health_router;
+pub use log::log_router;
 pub use middleware::require_auth;
 pub use rate_limit_profile::rate_limit_profile_router;
 pub use report::report_router;

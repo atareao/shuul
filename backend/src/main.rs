@@ -27,8 +27,9 @@ use axum::{
 };
 use dotenv::dotenv;
 use http::{
-    auth_router, ban_router, health_router, rate_limit_profile_router, report_router, require_auth,
-    rule_router, settings_router, shuul_router, stats_router, template_router, util_router,
+    auth_router, ban_router, health_router, log_router, rate_limit_profile_router, report_router,
+    require_auth, rule_router, settings_router, shuul_router, stats_router, template_router,
+    util_router,
 };
 use maxminddb::Reader;
 use models::CacheRule;
@@ -277,6 +278,7 @@ async fn main() -> Result<(), Error> {
         .nest("/rules", rule_router())
         .nest("/bans", ban_router())
         .nest("/templates", template_router())
+        .nest("/logs", log_router())
         .nest("/settings", settings_router())
         .nest("/rate-limit-profiles", rate_limit_profile_router())
         .route_layer(axum_middleware::from_fn_with_state(

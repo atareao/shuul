@@ -1,535 +1,854 @@
-# Charts Revamp — Implementation Plan
+# Log Viewer Implementation Plan
 
-## Objetivo
+> **Goal:** Add an in-memory log viewer to the Shuul frontend so the user can see real-time WAF/Jail events without SSH/terminal access.
 
-Reemplazar la página de charts actual (1 Line + 2 Pie) por una página con 2 tabs, cada uno con 4 charts, añadiendo top_methods y top_paths tanto en backend como frontend.
+**Architecture:** Ring buffer (VecDeque) in the backend with configurable capacity (1000/5000/10000/20000). A shared `audit_log!` macro pushes to both stdout (existing tracing) and the ring buffer. Frontend polls `GET /api/v1/logs` and renders a paginated table with expandable JSON detail rows and event-type filter buttons.
 
-## Arquitectura
+**Tech Stack:** Rust/Axum, React 19/Ant Design 6, TypeScript, no DB/persistence.
 
-Dos pipelines independientes:
-- **WAF** (`POST /api/v1/shuul`) — ForwardAuth, intercept/match/allow/deny
-- **Jail** (`POST /api/v1/report`) — Rate limiter post-factum
+---
 
-Los nuevos datos (`top_methods`, `top_paths`) se recolectan en `StatsCollector` desde los puntos de llamada existentes (`record_blocked`, `record_allowed`) y se sirven vía dos nuevos endpoints HTTP. El frontend consume todos los endpoints en paralelo y organiza los charts en dos tabs: "Evolution" y "Rankings".
+## Files to Modify
 
-## Tareas
+| File | Action | Responsibility |
+|---|---|---|
+| `backend/src/models/log_collector.rs` | Create | LogEntry, LogCollector, shared audit_log! macro, global push_log() |
+| `backend/src/models/mod.rs` | Modify | Export log_collector, add LogCollector to AppState |
+| `backend/src/http/log.rs` | Create | GET /api/v1/logs + PUT /api/v1/logs/capacity handlers |
+| `backend/src/http/mod.rs` | Modify | Add mod log, pub use log_router |
+| `backend/src/http/shuul.rs` | Modify | Remove local audit_log! macro, import from models |
+| `backend/src/http/report.rs` | Modify | Remove local audit_log! macro, import from models |
+| `backend/src/main.rs` | Modify | Init LogCollector, add /logs to protected_routes |
+| `frontend/src/pages/admin/logs_page.tsx` | Create | LogsPage component |
+| `frontend/src/layouts/admin_layout.tsx` | Modify | Add "Logs" menu item |
+| `frontend/src/App.tsx` | Modify | Add /admin/logs route |
 
-### Tarea 1: StatsCollector — añadir top_methods y top_paths
+---
 
-**Archivos:**
-- Modificar: `backend/src/models/stats.rs`
+### Task 1: Backend — LogCollector + shared macro
 
-- [ ] **Paso 1:** Añadir dos nuevos campos `Mutex<HashMap<String, u64>>` a la struct `StatsCollector`:
-      ```rust
-      top_methods: Mutex<HashMap<String, u64>>,
-      top_paths: Mutex<HashMap<String, u64>>,
-      ```
+**Files:**
+- Create: `backend/src/models/log_collector.rs`
+- Modify: `backend/src/models/mod.rs` (add `pub mod log_collector;`, add field to AppState)
 
-- [ ] **Paso 2:** Inicializar ambos en el constructor (`StatsCollector::new()`):
-      ```rust
-      top_methods: Mutex::new(HashMap::new()),
-      top_paths: Mutex::new(HashMap::new()),
-      ```
+**Interfaces:**
+- Produces: `LogEntry` struct, `LogCollector`, `audit_log!` macro, `push_log()` fn, `LOG_COLLECTOR` global
 
-- [ ] **Paso 3:** Actualizar `record_blocked()` para aceptar `method: Option<&str>` y `path: Option<&str>`:
-      ```rust
-      pub fn record_blocked(&self, method: Option<&str>, path: Option<&str>) {
-          // ... lógica existente ...
-          if let Some(m) = method {
-              let mut methods = self.top_methods.lock().unwrap();
-              *methods.entry(m.to_string()).or_insert(0) += 1;
-          }
-          if let Some(p) = path {
-              let mut paths = self.top_paths.lock().unwrap();
-              *paths.entry(p.to_string()).or_insert(0) += 1;
-          }
+- [ ] **Step 1: Create `backend/src/models/log_collector.rs`**
+
+```rust
+//! # Log Collector — In-memory ring buffer for frontend log viewer
+//!
+//! Provides a global ring buffer (`LOG_COLLECTOR`) that captures WAF/Jail events
+//! emitted by the `audit_log!` macro. Capacity is configurable at runtime.
+//!
+//! The macro both logs to `tracing::info!` (stdout, existing behavior) and pushes
+//! a `LogEntry` to the ring buffer for the frontend.
+
+use chrono::{DateTime, Utc};
+use serde::Serialize;
+use std::collections::VecDeque;
+use std::sync::Mutex;
+
+/// A single log entry captured from the WAF/Jail pipelines.
+#[derive(Debug, Clone, Serialize)]
+pub struct LogEntry {
+    pub ts: String,
+    pub event: String,
+    pub pipeline: String,
+    pub ip: Option<String>,
+    pub country: Option<String>,
+    pub rule_id: Option<i32>,
+    pub rule_name: Option<String>,
+    pub path: Option<String>,
+    pub method: Option<String>,
+    pub query: Option<String>,
+    pub ua: Option<String>,
+    pub fqdn: Option<String>,
+    pub referer: Option<String>,
+    pub status_code: Option<i32>,
+    pub profile: Option<String>,
+    pub reason: Option<String>,
+}
+
+/// Ring buffer collector with configurable capacity.
+pub struct LogCollector {
+    buffer: VecDeque<LogEntry>,
+    capacity: usize,
+}
+
+impl LogCollector {
+    pub fn new(capacity: usize) -> Self {
+        Self {
+            buffer: VecDeque::with_capacity(capacity),
+            capacity,
+        }
+    }
+
+    pub fn push(&mut self, entry: LogEntry) {
+        if self.buffer.len() >= self.capacity {
+            self.buffer.pop_front();
+        }
+        self.buffer.push_back(entry);
+    }
+
+    /// Returns all entries (front-to-back, oldest first).
+    pub fn all(&self) -> Vec<LogEntry> {
+        self.buffer.iter().cloned().collect()
+    }
+
+    pub fn set_capacity(&mut self, new_cap: usize) {
+        self.capacity = new_cap;
+        while self.buffer.len() > self.capacity {
+            self.buffer.pop_front();
+        }
+    }
+
+    pub fn capacity(&self) -> usize {
+        self.capacity
+    }
+
+    pub fn len(&self) -> usize {
+        self.buffer.len()
+    }
+}
+
+// ── Global singleton ──
+
+use std::sync::LazyLock;
+
+pub static LOG_COLLECTOR: LazyLock<Mutex<LogCollector>> =
+    LazyLock::new(|| Mutex::new(LogCollector::new(1000)));
+
+/// Push a log entry into the global ring buffer (fire-and-forget).
+pub fn push_log(entry: LogEntry) {
+    if let Ok(mut collector) = LOG_COLLECTOR.lock() {
+        collector.push(entry);
+    }
+}
+
+/// Build a LogEntry from raw fields (used by the macro).
+#[macro_export]
+macro_rules! audit_log {
+    ($category:expr, $($key:ident : $value:expr),* $(,)?) => {{
+        // 1. Build JSON for tracing (existing behavior)
+        let json_value = serde_json::json!({
+            "event": $category,
+            "ts": chrono::Utc::now().to_rfc3339(),
+            $($key: $value,)*
+        });
+        tracing::info!("[{}] {}", stringify!($category).to_uppercase(), json_value);
+
+        // 2. Push to frontend ring buffer
+        let entry = $crate::models::log_collector::LogEntry {
+            ts: chrono::Utc::now().to_rfc3339(),
+            event: stringify!($category).to_lowercase(),
+            pipeline: json_value.get("pipeline").and_then(|v| v.as_str()).unwrap_or("").to_string(),
+            ip: json_value.get("ip").and_then(|v| v.as_str()).map(|s| s.to_string()),
+            country: json_value.get("country").and_then(|v| v.as_str()).map(|s| s.to_string()),
+            rule_id: json_value.get("rule_id").and_then(|v| v.as_i64()).map(|n| n as i32),
+            rule_name: json_value.get("rule_name").and_then(|v| v.as_str()).map(|s| s.to_string()),
+            path: json_value.get("path").and_then(|v| v.as_str()).map(|s| s.to_string()),
+            method: json_value.get("method").and_then(|v| v.as_str()).map(|s| s.to_string()),
+            query: json_value.get("query").and_then(|v| v.as_str()).map(|s| s.to_string()),
+            ua: json_value.get("ua").and_then(|v| v.as_str()).map(|s| s.to_string()),
+            fqdn: json_value.get("fqdn").and_then(|v| v.as_str()).map(|s| s.to_string()),
+            referer: json_value.get("referer").and_then(|v| v.as_str()).map(|s| s.to_string()),
+            status_code: json_value.get("status_code").and_then(|v| v.as_i64()).map(|n| n as i32),
+            profile: json_value.get("profile").and_then(|v| v.as_str()).map(|s| s.to_string()),
+            reason: json_value.get("reason").and_then(|v| v.as_str()).map(|s| s.to_string()),
+        };
+        $crate::models::log_collector::push_log(entry);
+    }};
+}
+```
+
+- [ ] **Step 2: Modify `backend/src/models/mod.rs`**
+
+Add:
+```rust
+pub mod log_collector;
+```
+
+- [ ] **Step 3: Verify compilation**
+
+Run: `cd /data/rust/shuul/backend && cargo check 2>&1 | head -20`
+
+---
+
+### Task 2: Backend — HTTP handler (log.rs)
+
+**Files:**
+- Create: `backend/src/http/log.rs`
+- Modify: `backend/src/http/mod.rs` (add mod and pub use)
+
+**Interfaces:**
+- Produces: `log_router() -> Router<Arc<AppState>>`
+- Consumes: `LOG_COLLECTOR` global
+
+- [ ] **Step 1: Create `backend/src/http/log.rs`**
+
+```rust
+//! # Log viewer endpoint
+//!
+//! Provides access to the in-memory ring buffer for the frontend log viewer.
+//! No persistence — all data is lost on restart.
+//!
+//! ## Endpoints
+//!
+//! - `GET /api/v1/logs` — Returns all log entries (client-side pagination).
+//!   Optional query param `?event=block,report_ban` to filter by event type.
+//! - `PUT /api/v1/logs/capacity` — Changes ring buffer capacity at runtime.
+//!   Body: `{ "capacity": 5000 }`
+
+use axum::{
+    Json, Router,
+    extract::{Query, State},
+    http::StatusCode,
+    response::IntoResponse,
+    routing,
+};
+use serde::{Deserialize, Serialize};
+use std::sync::Arc;
+
+use crate::models::{
+    AppState, EmptyResponse,
+    log_collector::{LOG_COLLECTOR, LogEntry},
+};
+
+pub fn log_router() -> Router<Arc<AppState>> {
+    Router::new()
+        .route("/", routing::get(list_logs))
+        .route("/capacity", routing::put(set_capacity))
+}
+
+#[derive(Deserialize)]
+struct LogFilter {
+    event: Option<String>,
+}
+
+/// GET /api/v1/logs — Get all buffered log entries.
+async fn list_logs(
+    State(_app_state): State<Arc<AppState>>,
+    Query(filter): Query<LogFilter>,
+) -> impl IntoResponse {
+    let entries = match LOG_COLLECTOR.lock() {
+        Ok(collector) => {
+            let all = collector.all();
+            if let Some(event_filter) = filter.event {
+                let events: Vec<&str> = event_filter.split(',').map(|s| s.trim()).collect();
+                all.into_iter()
+                    .filter(|e| events.contains(&e.event.as_str()))
+                    .collect::<Vec<_>>()
+            } else {
+                all
+            }
+        },
+        Err(_) => return EmptyResponse::create(StatusCode::INTERNAL_SERVER_ERROR, "Log collector poisoned"),
+    };
+
+    let capacity = LOG_COLLECTOR.lock().map(|c| c.capacity()).unwrap_or(0);
+    let total = entries.len();
+
+    Json(serde_json::json!({
+        "status": 200,
+        "data": {
+            "entries": entries,
+            "total": total,
+            "capacity": capacity,
+        }
+    }))
+}
+
+#[derive(Deserialize)]
+struct CapacityRequest {
+    capacity: usize,
+}
+
+/// PUT /api/v1/logs/capacity — Update ring buffer capacity.
+async fn set_capacity(
+    State(_app_state): State<Arc<AppState>>,
+    Json(req): Json<CapacityRequest>,
+) -> impl IntoResponse {
+    let new_cap = match req.capacity {
+        1000 | 5000 | 10000 | 20000 => req.capacity,
+        other => {
+            return Json(serde_json::json!({
+                "status": 400,
+                "message": format!("Invalid capacity: {}. Valid values: 1000, 5000, 10000, 20000", other)
+            }));
+        },
+    };
+
+    match LOG_COLLECTOR.lock() {
+        Ok(mut collector) => {
+            collector.set_capacity(new_cap);
+            Json(serde_json::json!({
+                "status": 200,
+                "data": {
+                    "capacity": new_cap,
+                    "entries": collector.len(),
+                }
+            }))
+        },
+        Err(_) => Json(serde_json::json!({
+            "status": 500,
+            "message": "Log collector poisoned"
+        })),
+    }
+}
+```
+
+- [ ] **Step 2: Modify `backend/src/http/mod.rs`**
+
+Add:
+```rust
+mod log;
+// ...
+pub use log::log_router;
+```
+
+- [ ] **Step 3: Verify compilation**
+
+Run: `cd /data/rust/shuul/backend && cargo check 2>&1 | head -20`
+
+---
+
+### Task 3: Backend — Remove duplicate macros + wire up routes
+
+**Files:**
+- Modify: `backend/src/http/shuul.rs` (remove macro, import from models)
+- Modify: `backend/src/http/report.rs` (remove macro, import from models)
+- Modify: `backend/src/main.rs` (init LogCollector, add /logs route)
+
+- [ ] **Step 1: Remove macro from `shuul.rs`**
+
+In `backend/src/http/shuul.rs`:
+- Delete the `should_log()` function (it's only used by the macro)
+- Delete the `audit_log!` macro definition (lines 37-49)
+- The macro is now imported via `crate::audit_log!` automatically since it's `#[macro_export]` in `log_collector.rs`
+
+Note: `should_log()` is used by the macro itself, but also referenced directly in shuul.rs for conditions. Actually, looking at the code more carefully — `should_log` is used in `shuul.rs` at lines 107, 138, 167, 210, 268, 312, 343, 367. These are all the call sites of `audit_log!`. The `should_log` function is local to shuul.rs, so it stays.
+
+Wait — the `audit_log!` macro currently uses `should_log` and `tracing::info!`. The new macro in `log_collector.rs` uses `tracing::info!` but not `should_log` — the `should_log` check is done *before* calling the macro in the current code. So this is fine: we keep `should_log` in both files and just use the macro from the shared location. We just need to remove the `audit_log!` macro definition from both files.
+
+In `backend/src/http/shuul.rs`:
+```rust
+// DELETE these lines (37-49):
+/// Macro for structured audit logging with visible category tag.
+macro_rules! audit_log {
+    ($category:expr, $($arg:tt)*) => {
+        tracing::info!(
+            "[{}] {}",
+            $category.to_uppercase(),
+            serde_json::json!({
+                "event": $category,
+                "ts": chrono::Utc::now().to_rfc3339(),
+                $($arg)*
+            })
+        )
+    };
+}
+```
+
+The `audit_log!` calls (lines 108, 139, 168, 211, 269, 313, 344, 368) will use the shared macro from `crate::audit_log!` automatically (since `#[macro_export]` makes it available at crate root).
+
+- [ ] **Step 2: Remove macro from `report.rs`**
+
+Same deletion in `backend/src/http/report.rs`:
+- Delete the `audit_log!` macro (lines 37-49)
+
+- [ ] **Step 3: Modify `backend/src/main.rs`**
+
+Add `/logs` to protected routes:
+
+```rust
+// In protected_routes section, add:
+.nest("/logs", log_router())
+```
+
+And add `log_router` to the imports:
+```rust
+use http::{
+    auth_router, ban_router, health_router, log_router, rate_limit_profile_router,
+    report_router, require_auth, rule_router, settings_router, shuul_router,
+    stats_router, template_router, util_router,
+};
+```
+
+- [ ] **Step 4: Verify compilation**
+
+Run: `cd /data/rust/shuul/backend && cargo check 2>&1 | head -30`
+
+---
+
+### Task 4: Frontend — LogsPage
+
+**Files:**
+- Create: `frontend/src/pages/admin/logs_page.tsx`
+- Modify: `frontend/src/layouts/admin_layout.tsx` (add menu item)
+- Modify: `frontend/src/App.tsx` (add route)
+
+- [ ] **Step 1: Create `frontend/src/pages/admin/logs_page.tsx`**
+
+The logs page follows the same class-component pattern as charts_page.tsx:
+
+```tsx
+import React from "react";
+import { useNavigate } from "react-router";
+import { useTranslation } from "react-i18next";
+import {
+  Table, Tag, Button, Flex, Typography, Select, Switch, message, Card, Spin,
+} from "antd";
+import {
+  EyeOutlined, ReloadOutlined, FilterOutlined,
+} from "@ant-design/icons";
+import { loadData } from "@/common/utils";
+import { BASE_URL } from "@/constants";
+import type { DebouncedFn } from "@/common/utils";
+
+const { Text } = Typography;
+
+// ── Event tag color map ──
+const EVENT_COLORS: Record<string, string> = {
+  safe_path: "green",
+  trusted_ip: "cyan",
+  trusted_ua: "geekblue",
+  banned: "red",
+  pass: "default",
+  allow: "success",
+  block: "error",
+  log_only: "warning",
+  report_received: "purple",
+  report_match: "orange",
+  report_block: "volcano",
+  report_ban: "red",
+  report_ok: "default",
+  report_warn: "gold",
+};
+const DEFAULT_EVENT_COLOR = "default";
+
+interface LogEntry {
+  ts: string;
+  event: string;
+  pipeline: string;
+  ip: string | null;
+  country: string | null;
+  rule_id: number | null;
+  rule_name: string | null;
+  path: string | null;
+  method: string | null;
+  query: string | null;
+  ua: string | null;
+  fqdn: string | null;
+  referer: string | null;
+  status_code: number | null;
+  profile: string | null;
+  reason: string | null;
+}
+
+interface LogResponse {
+  entries: LogEntry[];
+  total: number;
+  capacity: number;
+}
+
+interface Props {
+  navigate: any;
+  t: any;
+}
+
+interface State {
+  loading: boolean;
+  entries: LogEntry[];
+  capacity: number;
+  total: number;
+  filterEvent: string;
+  autoRefresh: boolean;
+}
+
+const CAPACITY_OPTIONS = [1000, 5000, 10000, 20000];
+
+class InnerPage extends React.Component<Props, State> {
+  private refreshTimer: ReturnType<typeof setInterval> | null = null;
+
+  constructor(props: Props) {
+    super(props);
+    this.state = {
+      loading: true,
+      entries: [],
+      capacity: 1000,
+      total: 0,
+      filterEvent: "",
+      autoRefresh: false,
+    };
+  }
+
+  loadLogs = async () => {
+    try {
+      const params = new Map<string, string>();
+      if (this.state.filterEvent) {
+        params.set("event", this.state.filterEvent);
       }
-      ```
-
-- [ ] **Paso 4:** Actualizar `record_allowed()` para aceptar `method: Option<&str>` y `path: Option<&str>`:
-      ```rust
-      pub fn record_allowed(&self, method: Option<&str>, path: Option<&str>) {
-          // ... lógica existente ...
-          if let Some(m) = method {
-              let mut methods = self.top_methods.lock().unwrap();
-              *methods.entry(m.to_string()).or_insert(0) += 1;
-          }
-          if let Some(p) = path {
-              let mut paths = self.top_paths.lock().unwrap();
-              *paths.entry(p.to_string()).or_insert(0) += 1;
-          }
+      const res = await loadData<LogResponse>("logs", params);
+      if (res.status === 200 && res.data) {
+        this.setState({
+          entries: (res.data as any).entries || [],
+          total: (res.data as any).total || 0,
+          capacity: (res.data as any).capacity || 1000,
+          loading: false,
+        });
+      } else {
+        this.setState({ loading: false });
       }
-      ```
+    } catch (e) {
+      console.error("Failed to load logs:", e);
+      this.setState({ loading: false });
+    }
+  };
 
-- [ ] **Paso 5:** Actualizar `StatsSnapshot` para incluir `top_methods: HashMap<String, u64>` y `top_paths: HashMap<String, u64>`.
+  componentDidMount = async () => {
+    await this.loadLogs();
+  };
 
-- [ ] **Paso 6:** En `snapshot()` (dentro de `StatsCollector`), incluir ambos campos en el snapshot:
-      ```rust
-      top_methods: self.top_methods.lock().unwrap().clone(),
-      top_paths: self.top_paths.lock().unwrap().clone(),
-      ```
+  componentWillUnmount = () => {
+    this.stopAutoRefresh();
+  };
 
-- [ ] **Paso 7:** En `load_snapshot()`, restaurar ambos campos:
-      ```rust
-      *self.top_methods.lock().unwrap() = snapshot.top_methods;
-      *self.top_paths.lock().unwrap() = snapshot.top_paths;
-      ```
+  startAutoRefresh = () => {
+    this.stopAutoRefresh();
+    this.refreshTimer = setInterval(() => {
+      this.loadLogs();
+    }, 3000);
+  };
 
-- [ ] **Paso 8:** Añadir getters públicos:
-      ```rust
-      pub fn get_top_methods(&self) -> Vec<(String, u64)> {
-          self.top_methods.lock().unwrap().iter().map(|(k, v)| (k.clone(), *v)).collect()
+  stopAutoRefresh = () => {
+    if (this.refreshTimer) {
+      clearInterval(this.refreshTimer);
+      this.refreshTimer = null;
+    }
+  };
+
+  handleAutoRefreshChange = (checked: boolean) => {
+    this.setState({ autoRefresh: checked });
+    if (checked) {
+      this.startAutoRefresh();
+    } else {
+      this.stopAutoRefresh();
+    }
+  };
+
+  handleCapacityChange = async (value: number) => {
+    const token = localStorage.getItem("token");
+    try {
+      const response = await fetch(`${BASE_URL}/api/v1/logs/capacity`, {
+        method: "PUT",
+        headers: {
+          "Content-Type": "application/json",
+          ...(token ? { Authorization: `Bearer ${token}` } : {}),
+        },
+        body: JSON.stringify({ capacity: value }),
+      });
+      if (response.ok) {
+        this.setState({ capacity: value });
+        message.success(`Buffer capacity set to ${value}`);
+      } else {
+        if (response.status === 401) {
+          window.location.href = "/login";
+          return;
+        }
+        const err = await response.json();
+        message.error(`Failed to set capacity: ${err.message || "Unknown"}`);
       }
-      pub fn get_top_paths(&self) -> Vec<(String, u64)> {
-          self.top_paths.lock().unwrap().iter().map(|(k, v)| (k.clone(), *v)).collect()
-      }
-      ```
-
-### Tarea 2: Stats HTTP endpoints — añadir /stats/top_methods y /stats/top_paths
-
-**Archivos:**
-- Modificar: `backend/src/http/stats.rs`
-
-- [ ] **Paso 1:** Añadir endpoint `GET /stats/top_methods`:
-      ```rust
-      async fn get_top_methods(State(state): State<AppState>) -> Result<Json<Vec<(String, i32, f32)>>, AppError> {
-          let methods = state.stats_collector.get_top_methods();
-          let total: u64 = methods.iter().map(|(_, c)| c).sum();
-          let result: Vec<(String, i32, f32)> = methods
-              .into_iter()
-              .map(|(m, c)| {
-                  let pct = if total > 0 { (c as f32 / total as f32) * 100.0 } else { 0.0 };
-                  (m, c as i32, pct)
-              })
-              .collect();
-          Ok(Json(result))
-      }
-      ```
-
-- [ ] **Paso 2:** Añadir endpoint `GET /stats/top_paths`:
-      ```rust
-      async fn get_top_paths(State(state): State<AppState>) -> Result<Json<Vec<(String, i32, f32)>>, AppError> {
-          let paths = state.stats_collector.get_top_paths();
-          let total: u64 = paths.iter().map(|(_, c)| c).sum();
-          let result: Vec<(String, i32, f32)> = paths
-              .into_iter()
-              .map(|(p, c)| {
-                  let pct = if total > 0 { (c as f32 / total as f32) * 100.0 } else { 0.0 };
-                  (p, c as i32, pct)
-              })
-              .collect();
-          Ok(Json(result))
-      }
-      ```
-
-- [ ] **Paso 3:** Registrar ambas rutas en la función de registro de rutas de stats:
-      ```rust
-      .route("/stats/top_methods", get(get_top_methods))
-      .route("/stats/top_paths", get(get_top_paths))
-      ```
-
-### Tarea 3: Callers — pasar method y path a record_blocked / record_allowed
-
-**Archivos:**
-- Modificar: `backend/src/http/shuul.rs`
-- Modificar: `backend/src/http/report.rs`
-
-- [ ] **Paso 1:** En `shuul.rs`, localizar TODAS las llamadas a `record_blocked()` y `record_allowed()`. Añadir `request.method.as_deref()` y `request.path.as_deref()` como argumentos:
-      ```rust
-      // Antes:
-      stats.record_blocked();
-      // Después:
-      stats.record_blocked(request.method.as_deref(), request.path.as_deref());
-
-      // Antes:
-      stats.record_allowed();
-      // Después:
-      stats.record_allowed(request.method.as_deref(), request.path.as_deref());
-      ```
-
-- [ ] **Paso 2:** En `report.rs`, localizar TODAS las llamadas a `record_blocked()` y `record_allowed()`. Añadir `method` y `path` desde el request:
-      ```rust
-      // Antes:
-      stats.record_blocked();
-      // Después:
-      stats.record_blocked(Some(&report.method), Some(&report.path));
-      ```
-      Nota: en report.rs el request llega como `ReportRequest` con campos `method` y `path`.
-
-### Tarea 4: Frontend — nuevo componente antd_column.tsx
-
-**Archivos:**
-- Crear: `frontend/src/components/charts/antd_column.tsx`
-
-- [ ] **Paso 1:** Crear archivo que re-exporte `Column` desde `@ant-design/charts`:
-      ```typescript
-      export { Column } from '@ant-design/charts';
-      ```
-
-### Tarea 5: Frontend — nuevo componente summary_cards.tsx
-
-**Archivos:**
-- Crear: `frontend/src/components/charts/summary_cards.tsx`
-
-- [ ] **Paso 1:** Crear componente con 4 cards en fila (Row/Col de Ant Design):
-      ```typescript
-      import React from 'react';
-      import { Card, Statistic, Row, Col } from 'antd';
-
-      interface SummaryCardsProps {
-          total: number;
-          allowed: number;
-          blocked: number;
-      }
-
-      const SummaryCards: React.FC<SummaryCardsProps> = ({ total, allowed, blocked }) => {
-          const blockRate = total > 0 ? ((blocked / total) * 100).toFixed(1) + '%' : '0.0%';
-          return (
-              <Row gutter={16} style={{ marginBottom: 24 }}>
-                  <Col span={6}>
-                      <Card><Statistic title="Total Requests" value={total} /></Card>
-                  </Col>
-                  <Col span={6}>
-                      <Card><Statistic title="Allowed" value={allowed} /></Card>
-                  </Col>
-                  <Col span={6}>
-                      <Card><Statistic title="Blocked" value={blocked} /></Card>
-                  </Col>
-                  <Col span={6}>
-                      <Card><Statistic title="Block Rate" value={blockRate} /></Card>
-                  </Col>
-              </Row>
-          );
-      };
-
-      export default SummaryCards;
-      ```
-
-### Tarea 6: Frontend — nuevo componente evolution_stacked.tsx
-
-**Archivos:**
-- Crear: `frontend/src/components/charts/evolution_stacked.tsx`
-
-- [ ] **Paso 1:** Crear stacked column chart:
-      ```typescript
-      import React, { Suspense } from 'react';
-      import { Column } from './antd_column';
-
-      interface EvolutionStackedProps {
-          data: Array<{ category: string; time: string; requests: number }>;
-          isDarkMode: boolean;
-      }
-
-      const EvolutionStacked: React.FC<EvolutionStackedProps> = ({ data, isDarkMode }) => {
-          const config = {
-              data,
-              isStack: true,
-              xField: 'time',
-              yField: 'requests',
-              seriesField: 'category',
-              color: ['#5B8FF9', '#F46649', '#30BF78', '#FF9845'],
-              theme: isDarkMode ? 'dark' : 'default',
-          };
-          return (
-              <Suspense fallback={<div>Loading chart...</div>}>
-                  <Column {...config} />
-              </Suspense>
-          );
-      };
-
-      export default EvolutionStacked;
-      ```
-
-### Tarea 7: Frontend — nuevo componente block_rate_chart.tsx
-
-**Archivos:**
-- Crear: `frontend/src/components/charts/block_rate_chart.tsx`
-
-- [ ] **Paso 1:** Crear line chart para block rate:
-      ```typescript
-      import React, { Suspense } from 'react';
-      import { Line } from '@ant-design/charts';
-
-      interface BlockRateChartProps {
-          data: Array<{ time: string; rate: number }>;
-          isDarkMode: boolean;
-      }
-
-      const BlockRateChart: React.FC<BlockRateChartProps> = ({ data, isDarkMode }) => {
-          const config = {
-              data,
-              xField: 'time',
-              yField: 'rate',
-              smooth: true,
-              theme: isDarkMode ? 'dark' : 'default',
-              yAxis: { max: 100, suffix: '%' },
-          };
-          return (
-              <Suspense fallback={<div>Loading chart...</div>}>
-                  <Line {...config} />
-              </Suspense>
-          );
-      };
-
-      export default BlockRateChart;
-      ```
-
-### Tarea 8: Frontend — nuevo componente top_methods.tsx
-
-**Archivos:**
-- Crear: `frontend/src/components/charts/top_methods.tsx`
-
-- [ ] **Paso 1:** Crear pie o column chart para métodos HTTP:
-      ```typescript
-      import React, { Suspense } from 'react';
-      import { Pie } from '@ant-design/charts';
-
-      interface TopMethodsProps {
-          data: Array<{ name: string; value: number }>;
-          isDarkMode: boolean;
-      }
-
-      const TopMethods: React.FC<TopMethodsProps> = ({ data, isDarkMode }) => {
-          const config = {
-              data,
-              angleField: 'value',
-              colorField: 'name',
-              label: { type: 'outer', content: '{name} ({percentage})' },
-              theme: isDarkMode ? 'dark' : 'default',
-          };
-          return (
-              <Suspense fallback={<div>Loading chart...</div>}>
-                  <Pie {...config} />
-              </Suspense>
-          );
-      };
-
-      export default TopMethods;
-      ```
-
-### Tarea 9: Frontend — nuevo componente top_paths.tsx
-
-**Archivos:**
-- Crear: `frontend/src/components/charts/top_paths.tsx`
-
-- [ ] **Paso 1:** Crear horizontal bar chart para paths:
-      ```typescript
-      import React, { Suspense } from 'react';
-      import { Bar } from '@ant-design/charts';
-
-      interface TopPathsProps {
-          data: Array<{ name: string; value: number }>;
-          isDarkMode: boolean;
-      }
-
-      const TopPaths: React.FC<TopPathsProps> = ({ data, isDarkMode }) => {
-          const config = {
-              data,
-              xField: 'value',
-              yField: 'name',
-              seriesField: 'name',
-              theme: isDarkMode ? 'dark' : 'default',
-              label: { position: 'right' },
-          };
-          return (
-              <Suspense fallback={<div>Loading chart...</div>}>
-                  <Bar {...config} />
-              </Suspense>
-          );
-      };
-
-      export default TopPaths;
-      ```
-
-### Tarea 10: Frontend — nuevo componente evolution_by_method.tsx
-
-**Archivos:**
-- Crear: `frontend/src/components/charts/evolution_by_method.tsx`
-
-- [ ] **Paso 1:** Crear multi-line chart para evolución por método:
-      ```typescript
-      import React, { Suspense } from 'react';
-      import { Line } from '@ant-design/charts';
-
-      interface EvolutionByMethodProps {
-          data: Array<{ category: string; time: string; requests: number }>;
-          isDarkMode: boolean;
-      }
-
-      const EvolutionByMethod: React.FC<EvolutionByMethodProps> = ({ data, isDarkMode }) => {
-          const config = {
-              data,
-              xField: 'time',
-              yField: 'requests',
-              seriesField: 'category',
-              smooth: true,
-              theme: isDarkMode ? 'dark' : 'default',
-              legend: { position: 'top' },
-          };
-          return (
-              <Suspense fallback={<div>Loading chart...</div>}>
-                  <Line {...config} />
-              </Suspense>
-          );
-      };
-
-      export default EvolutionByMethod;
-      ```
-
-### Tarea 11: Frontend — refactorizar charts_page.tsx
-
-**Archivos:**
-- Modificar: `frontend/src/pages/charts/charts_page.tsx`
-
-- [ ] **Paso 1:** Añadir imports para los nuevos componentes y Tabs:
-      ```typescript
-      import { Tabs } from 'antd';
-      import SummaryCards from '@/components/charts/summary_cards';
-      import EvolutionStacked from '@/components/charts/evolution_stacked';
-      import BlockRateChart from '@/components/charts/block_rate_chart';
-      import TopMethods from '@/components/charts/top_methods';
-      import TopPaths from '@/components/charts/top_paths';
-      import EvolutionByMethod from '@/components/charts/evolution_by_method';
-      ```
-
-- [ ] **Paso 2:** Añadir nuevos campos al estado del componente:
-      ```typescript
-      interface State {
-          // ... existing state fields ...
-          topMethods: Array<{ name: string; value: number }>;
-          topPaths: Array<{ name: string; value: number }>;
-          evolutionByMethod: Array<{ category: string; time: string; requests: number }>;
-          blockRateData: Array<{ time: string; rate: number }>;
-      }
-      ```
-
-- [ ] **Paso 3:** En `componentDidMount`, añadir fetch a los nuevos endpoints usando `Promise.all()`:
-      ```typescript
-      const [evolutionRes, countriesRes, rulesRes, methodsRes, pathsRes] = await Promise.all([
-          loadData('stats/evolution', new Map([['unit', unit], ['last', last.toString()]])),
-          loadData('stats/top_countries'),
-          loadData('stats/top_rules'),
-          loadData('stats/top_methods'),
-          loadData('stats/top_paths'),
-      ]);
-      ```
-
-- [ ] **Paso 4:** Procesar `methodsRes` y `pathsRes` al mismo formato que los otros charts:
-      ```typescript
-      const topMethods = methodsRes.map(([name, value]: [string, number, number]) => ({
-          name, value: value as number,
-      }));
-      const topPaths = pathsRes.map(([name, value]: [string, number, number]) => ({
-          name, value: value as number,
-      }));
-      ```
-
-- [ ] **Paso 5:** Calcular `blockRateData` a partir de los datos de evolución existentes:
-      ```typescript
-      const blockRateData = evolutionRes.map((bucket: any) => ({
-          time: bucket.time,
-          rate: bucket.blocked + bucket.allowed > 0
-              ? (bucket.blocked / (bucket.blocked + bucket.allowed)) * 100
-              : 0,
-      }));
-      ```
-
-- [ ] **Paso 6:** Calcular `evolutionByMethod` — si no hay datos por método desde backend, usar los datos de evolución existentes con categoría "all":
-      ```typescript
-      const evolutionByMethod = evolutionRes.map((bucket: any) => ({
-          category: 'all',
-          time: bucket.time,
-          requests: bucket.blocked + bucket.allowed,
-      }));
-      ```
-      *(Nota: si en el futuro el backend devuelve evolución segmentada por método, se reemplaza este mapeo)*
-
-- [ ] **Paso 7:** Calcular total/allowed/blocked para SummaryCards:
-      ```typescript
-      const total = evolutionRes.reduce((sum: number, b: any) => sum + b.blocked + b.allowed, 0);
-      const allowed = evolutionRes.reduce((sum: number, b: any) => sum + b.allowed, 0);
-      const blocked = evolutionRes.reduce((sum: number, b: any) => sum + b.blocked, 0);
-      ```
-
-- [ ] **Paso 8:** Preparar datos para `evolution_stacked`:
-      ```typescript
-      const evolutionStackedData = evolutionRes.flatMap((bucket: any) => [
-          { category: 'Allowed', time: bucket.time, requests: bucket.allowed },
-          { category: 'Blocked', time: bucket.time, requests: bucket.blocked },
-      ]);
-      ```
-
-- [ ] **Paso 9:** Reemplazar el render existente con Tabs:
-      ```tsx
-      <ConfigProvider theme={...}>
-          <Tabs defaultActiveKey="evolution">
-              <Tabs.TabPane tab="Evolution" key="evolution">
-                  <SummaryCards total={total} allowed={allowed} blocked={blocked} />
-                  <Row gutter={16}>
-                      <Col span={24}>
-                          <Card title="Request Evolution (Stacked)">
-                              <EvolutionStacked data={evolutionStackedData} isDarkMode={isDarkMode} />
-                          </Card>
-                      </Col>
-                  </Row>
-                  <Row gutter={16} style={{ marginTop: 16 }}>
-                      <Col span={12}>
-                          <Card title="Block Rate Over Time">
-                              <BlockRateChart data={blockRateData} isDarkMode={isDarkMode} />
-                          </Card>
-                      </Col>
-                      <Col span={12}>
-                          <Card title="Evolution by Method">
-                              <EvolutionByMethod data={evolutionByMethod} isDarkMode={isDarkMode} />
-                          </Card>
-                      </Col>
-                  </Row>
-              </Tabs.TabPane>
-              <Tabs.TabPane tab="Rankings" key="rankings">
-                  <Row gutter={16}>
-                      <Col span={12}>
-                          <Card title="Top Countries">
-                              <TopCountriesChart data={topCountries} isDarkMode={isDarkMode} />
-                          </Card>
-                      </Col>
-                      <Col span={12}>
-                          <Card title="Top Rules">
-                              <TopRulesChart data={topRules} isDarkMode={isDarkMode} />
-                          </Card>
-                      </Col>
-                  </Row>
-                  <Row gutter={16} style={{ marginTop: 16 }}>
-                      <Col span={12}>
-                          <Card title="Top Methods">
-                              <TopMethods data={topMethods} isDarkMode={isDarkMode} />
-                          </Card>
-                      </Col>
-                      <Col span={12}>
-                          <Card title="Top Paths">
-                              <TopPaths data={topPaths} isDarkMode={isDarkMode} />
-                          </Card>
-                      </Col>
-                  </Row>
-              </Tabs.TabPane>
-          </Tabs>
-      </ConfigProvider>
-      ```
-
-- [ ] **Paso 10:** Asegurar que `componentDidUpdate` tiene early return para cambios irrelevantes:
-      ```typescript
-      componentDidUpdate = async (prevProps, prevState) => {
-          if (prevState.loading !== this.state.loading || prevState.items !== this.state.items) {
-              return;
-          }
-          // ... resto de lógica ...
-      }
-      ```
-
-### Tarea 12: Verificar reglas de concurrencia
-
-**Archivos:**
-- Revisar: `backend/src/models/stats.rs`
-
-- [ ] **Paso 1:** Verificar que todos los `MutexGuard` se liberan antes de cualquier `.await` en stats.rs y en los callers (shuul.rs, report.rs).
-
-- [ ] **Paso 2:** Verificar que el orden de locks se mantiene: rules → rate_limiter → ban_manager. StatsCollector no tiene dependencias cruzadas con estos locks, pero debe confirmarse que no se adquieren en orden inverso.
+    } catch (e: any) {
+      message.error(`Error: ${e.message}`);
+    }
+  };
+
+  formatTime = (iso: string) => {
+    const d = new Date(iso);
+    return `${String(d.getDate()).padStart(2, "0")}/${String(d.getMonth() + 1).padStart(2, "0")} ${String(d.getHours()).padStart(2, "0")}:${String(d.getMinutes()).padStart(2, "0")}:${String(d.getSeconds()).padStart(2, "0")}`;
+  };
+
+  getEventColor = (event: string) => EVENT_COLORS[event] || DEFAULT_EVENT_COLOR;
+
+  setFilter = (event: string) => {
+    this.setState(
+      { filterEvent: this.state.filterEvent === event ? "" : event },
+      () => this.loadLogs(),
+    );
+  };
+
+  renderLogDetail = (record: LogEntry) => {
+    const detail = { ...record };
+    return (
+      <pre style={{ fontSize: 12, maxHeight: 300, overflow: "auto", margin: 0 }}>
+        {JSON.stringify(detail, null, 2)}
+      </pre>
+    );
+  };
+
+  render = () => {
+    const columns = [
+      {
+        title: "Timestamp",
+        dataIndex: "ts",
+        key: "ts",
+        width: 160,
+        render: (_: any, record: LogEntry) => this.formatTime(record.ts),
+      },
+      {
+        title: "Event",
+        dataIndex: "event",
+        key: "event",
+        width: 130,
+        render: (_: any, record: LogEntry) => (
+          <Tag color={this.getEventColor(record.event)}>{record.event}</Tag>
+        ),
+      },
+      {
+        title: "Pipeline",
+        dataIndex: "pipeline",
+        key: "pipeline",
+        width: 80,
+        render: (_: any, record: LogEntry) => (
+          <Tag color={record.pipeline === "jail" ? "orange" : "blue"}>
+            {record.pipeline || "-"}
+          </Tag>
+        ),
+      },
+      {
+        title: "IP",
+        dataIndex: "ip",
+        key: "ip",
+        width: 140,
+        render: (_: any, record: LogEntry) => record.ip || "-",
+      },
+      {
+        title: "Country",
+        dataIndex: "country",
+        key: "country",
+        width: 80,
+        render: (_: any, record: LogEntry) => record.country || "-",
+      },
+      {
+        title: "Rule",
+        dataIndex: "rule_name",
+        key: "rule_name",
+        width: 180,
+        ellipsis: true,
+        render: (_: any, record: LogEntry) => record.rule_name || "-",
+      },
+      {
+        title: "Path",
+        dataIndex: "path",
+        key: "path",
+        width: 250,
+        ellipsis: true,
+        render: (_: any, record: LogEntry) => record.path || "-",
+      },
+      {
+        title: "Method",
+        dataIndex: "method",
+        key: "method",
+        width: 80,
+        render: (_: any, record: LogEntry) => record.method ? (
+          <Tag color="magenta">{record.method}</Tag>
+        ) : "-",
+      },
+      {
+        title: "Status",
+        dataIndex: "status_code",
+        key: "status_code",
+        width: 70,
+        render: (_: any, record: LogEntry) =>
+          record.status_code ? (
+            <Tag color={record.status_code >= 400 ? "red" : "green"}>
+              {record.status_code}
+            </Tag>
+          ) : "-",
+      },
+    ];
+
+    // Collect unique event types for filter buttons
+    const eventTypes = Array.from(
+      new Set(this.state.entries.map((e) => e.event)),
+    ).sort();
+
+    return (
+      <Flex vertical gap="middle" style={{ padding: 24 }}>
+        {/* Header: title, capacity, auto-refresh, refresh button */}
+        <Flex justify="space-between" align="center" wrap gap="middle">
+          <Flex gap="small" align="center">
+            <EyeOutlined style={{ fontSize: 20 }} />
+            <Text strong style={{ fontSize: 18 }}>
+              Log Viewer
+            </Text>
+            <Tag>{this.state.total} entries</Tag>
+            <Tag color="blue">Buffer: {this.state.capacity}</Tag>
+          </Flex>
+          <Flex gap="small" align="center">
+            <Text>Buffer capacity:</Text>
+            <Select
+              value={this.state.capacity}
+              onChange={this.handleCapacityChange}
+              options={CAPACITY_OPTIONS.map((c) => ({
+                value: c,
+                label: c.toLocaleString(),
+              }))}
+              style={{ width: 120 }}
+            />
+            <Text>Auto-refresh:</Text>
+            <Switch
+              checked={this.state.autoRefresh}
+              onChange={this.handleAutoRefreshChange}
+            />
+            <Button
+              icon={<ReloadOutlined />}
+              onClick={() => this.loadLogs()}
+              loading={this.state.loading}
+            >
+              Refresh
+            </Button>
+          </Flex>
+        </Flex>
+
+        {/* Event type filter buttons */}
+        <Flex wrap gap="small" align="center">
+          <Text type="secondary">Filter by event:</Text>
+          <Button
+            size="small"
+            type={this.state.filterEvent === "" ? "primary" : "default"}
+            onClick={() => this.setFilter("")}
+          >
+            All
+          </Button>
+          {eventTypes.map((event) => (
+            <Button
+              key={event}
+              size="small"
+              type={this.state.filterEvent === event ? "primary" : "default"}
+              onClick={() => this.setFilter(event)}
+            >
+              {event}
+            </Button>
+          ))}
+        </Flex>
+
+        {/* Table */}
+        <Table<LogEntry>
+          dataSource={this.state.entries}
+          columns={columns}
+          rowKey={(record, index) => `${record.ts}-${index}`}
+          loading={this.state.loading}
+          size="small"
+          pagination={{
+            pageSize: 50,
+            showSizeChanger: true,
+            pageSizeOptions: ["20", "50", "100"],
+            showTotal: (total, range) =>
+              `${range[0]}-${range[1]} of ${total} entries`,
+          }}
+          expandable={{
+            expandedRowRender: this.renderLogDetail,
+          }}
+          scroll={{ x: 1200 }}
+          locale={{
+            emptyText: "No log entries yet. Logs appear when traffic flows through the WAF/Jail pipelines.",
+          }}
+        />
+      </Flex>
+    );
+  };
+}
+
+export default function LogsPage() {
+  const navigate = useNavigate();
+  const { t } = useTranslation();
+  return <InnerPage navigate={navigate} t={t} />;
+}
+```
+
+- [ ] **Step 2: Modify `frontend/src/layouts/admin_layout.tsx`**
+
+Add import:
+```tsx
+import { ..., EyeOutlined } from "@ant-design/icons";
+```
+
+Add menu item after Charts (key "6"):
+```tsx
+getItem("Logs", "7", <EyeOutlined />),
+```
+
+And shift the remaining items' keys:
+```tsx
+// Old:
+// 7 -> /admin/settings
+// New:
+// 8 -> /admin/settings
+```
+
+Update `navigations`:
+```tsx
+const navigations: { [key: string]: string } = {
+  1: "/admin/dashboard",
+  2: "/admin/rules",
+  3: "/admin/rate-limit-profiles",
+  4: "/admin/bans",
+  5: "/admin/templates",
+  6: "/admin/charts",
+  7: "/admin/logs",
+  8: "/admin/settings",
+};
+```
+
+Update `items`:
+```tsx
+const items: MenuItem[] = [
+  getItem("Dashboard", "1", <HomeOutlined />),
+  getItem("Rules", "2", <OrderedListOutlined />),
+  getItem("Rate Limit Profiles", "3", <RocketOutlined />),
+  getItem("Bans", "4", <StopOutlined />),
+  getItem("Templates", "5", <AppstoreOutlined />),
+  getItem("Charts", "6", <PieChartOutlined />),
+  getItem("Logs", "7", <EyeOutlined />),
+  getItem("Settings", "8", <SettingOutlined />),
+];
+```
+
+- [ ] **Step 3: Modify `frontend/src/App.tsx`**
+
+Add import:
+```tsx
+const LogsPage = lazy(() => import("@/pages/admin/logs_page"));
+```
+
+Add route (after `charts`):
+```tsx
+<Route path="logs" element={<LogsPage />} />
+```
+
+- [ ] **Step 4: Verify frontend compiles**
+
+Run: `cd /data/rust/shuul/frontend && npx tsc --noEmit 2>&1 | head -30`
+
+---
+
+### Task 5: Full verification
+
+- [ ] **Step 1: Build backend**
+
+Run: `cd /data/rust/shuul/backend && cargo build 2>&1 | tail -10`
+
+- [ ] **Step 2: Build frontend**
+
+Run: `cd /data/rust/shuul/frontend && npx vite build 2>&1 | tail -10`
+
+- [ ] **Step 3: End-to-end check**
+
+Start the backend, call:
+```
+curl -s http://localhost:3000/api/v1/logs | head -20
+curl -s -X PUT http://localhost:3000/api/v1/logs/capacity -H 'Content-Type: application/json' -d '{"capacity":5000}' | head -20
+```

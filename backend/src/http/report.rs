@@ -15,6 +15,7 @@
 //!       - Si excede el umbral → banea la IP
 //! 4. Devuelve 200 OK siempre (fire-and-forget)
 
+use crate::audit_log;
 use crate::models::{
     AppState, BanManager, NewRequest, RateLimitProfile, RateLimiter, ReportPayload,
 };
@@ -31,21 +32,6 @@ fn should_log(mode: &str, category: &str) -> bool {
         "audit" => matches!(category, "banned" | "block" | "report_block" | "report_ban"),
         _ => false,
     }
-}
-
-/// Macro for structured audit logging with visible category tag.
-macro_rules! audit_log {
-    ($category:expr, $($arg:tt)*) => {
-        tracing::info!(
-            "[{}] {}",
-            $category.to_uppercase(),
-            serde_json::json!({
-                "event": $category,
-                "ts": chrono::Utc::now().to_rfc3339(),
-                $($arg)*
-            })
-        )
-    };
 }
 
 pub fn report_router() -> Router<Arc<AppState>> {

@@ -18,6 +18,7 @@ const DashboardPage = lazy(() => import("@/pages/admin/dashboard_page"));
 const RulesPage = lazy(() => import("@/pages/admin/rules_page"));
 
 const ChartsPage = lazy(() => import("@/pages/admin/charts_page"));
+const LogsPage = lazy(() => import("@/pages/admin/logs_page"));
 const BansPage = lazy(() => import("@/pages/admin/bans_page"));
 const TemplatesPage = lazy(() => import("@/pages/admin/templates_page"));
 const SettingsPage = lazy(() => import("@/pages/admin/settings_page"));
@@ -74,6 +75,7 @@ export default class App extends React.Component {
                           <Route path="dashboard" element={<DashboardPage />} />
                           <Route path="rules" element={<RulesPage />} />
                           <Route path="charts" element={<ChartsPage />} />
+                          <Route path="logs" element={<LogsPage />} />
                           <Route path="bans" element={<BansPage />} />
                           <Route path="templates" element={<TemplatesPage />} />
                           <Route
