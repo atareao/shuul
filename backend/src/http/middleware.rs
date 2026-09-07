@@ -3,7 +3,7 @@
 //! Proporciona [`require_auth`], un middleware de Axum que valida el token JWT
 //! en el header `Authorization` para todas las rutas protegidas.
 //!
-//! El token es emitido por shuul durante el callback SSO (HS256 con app_state.secret).
+//! El token es emitido por shuul durante el callback SSO (HS256 con `app_state.secret`).
 //!
 //! Las rutas públicas (health, auth, shuul, util, templates) se omiten.
 
@@ -16,10 +16,11 @@ use axum::{
 use std::sync::Arc;
 
 use crate::models::AppState;
+use jsonwebtoken::{Algorithm, DecodingKey, Validation};
 
 /// Middleware que requiere un token JWT válido para acceder a rutas protegidas.
 ///
-/// Valida JWTs emitidos por shuul (HS256 firmados con app_state.secret).
+/// Valida JWTs emitidos por shuul (HS256 firmados con `app_state.secret`).
 ///
 /// Rutas públicas (sin autenticación):
 /// - `/health`
@@ -57,8 +58,7 @@ pub async fn require_auth(
         .and_then(|v| v.strip_prefix("Bearer "))
         .ok_or(StatusCode::UNAUTHORIZED)?;
 
-    // Validate as shuul's own JWT (HS256 with app_state.secret)
-    use jsonwebtoken::{Algorithm, DecodingKey, Validation};
+    // Validate as shuul's own JWT (HS256 with `app_state.secret`)
     let mut validation = Validation::new(Algorithm::HS256);
     validation.validate_exp = true;
     // Shuul's JWTs don't have iss/aud claims, so skip those checks

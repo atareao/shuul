@@ -1,6 +1,6 @@
 //! # Endpoints de autenticación SSO (Single Sign-On)
 //!
-//! Proporciona rutas para iniciar sesión mediante un proveedor OIDC (PocketID):
+//! Proporciona rutas para iniciar sesión mediante un proveedor OIDC (`PocketID`):
 //!
 //! - `GET /sso` — Redirige al usuario al proveedor OIDC para autorización.
 //! - `GET /callback` — Maneja el callback OIDC, intercambia el código por un token
@@ -39,17 +39,20 @@ pub struct CallbackParams {
     pub error: Option<String>,
 }
 
-/// GET /api/v1/auth/sso — Redirect to PocketID authorize URL.
+/// GET /api/v1/auth/sso — Redirect to `PocketID` authorize URL.
 ///
 /// Generates a random state for CSRF protection, stores it in `oidc_states`,
 /// and redirects the user to the OIDC provider's authorization endpoint.
+#[allow(clippy::significant_drop_tightening)]
 pub async fn sso_redirect(
     State(app_state): State<Arc<AppState>>,
 ) -> Result<impl IntoResponse, AppError> {
     let oidc_guard = app_state.oidc_metadata.read().await;
-    let metadata = oidc_guard
+    let authorization_endpoint = oidc_guard
         .as_ref()
+        .map(|m| m.authorization_endpoint.clone())
         .ok_or_else(|| AppError::Other("SSO not configured".to_string()))?;
+    drop(oidc_guard);
 
     let client_id = app_state
         .oidc_client_id
@@ -77,7 +80,7 @@ pub async fn sso_redirect(
     // Build authorization URL
     let auth_url = format!(
         "{}?response_type=code&client_id={}&redirect_uri={}&scope=openid+profile+email&state={}",
-        metadata.authorization_endpoint,
+        authorization_endpoint,
         urlencoding::encode(client_id),
         urlencoding::encode(redirect_url),
         urlencoding::encode(&state),
@@ -92,6 +95,7 @@ pub async fn sso_redirect(
 /// Validates the state parameter, exchanges the authorization code for tokens,
 /// fetches user info, creates a JWT, and returns an HTML page that stores the
 /// token in `sessionStorage` and redirects to the admin panel.
+#[allow(clippy::significant_drop_tightening)]
 pub async fn callback_handler(
     State(app_state): State<Arc<AppState>>,
     Query(params): Query<CallbackParams>,
@@ -126,6 +130,9 @@ pub async fn callback_handler(
     let metadata = oidc_guard
         .as_ref()
         .ok_or_else(|| AppError::Other("SSO not configured".to_string()))?;
+    let token_endpoint = metadata.token_endpoint.clone();
+    let userinfo_endpoint = metadata.userinfo_endpoint.clone();
+    drop(oidc_guard);
 
     let client_id = app_state
         .oidc_client_id
@@ -142,7 +149,7 @@ pub async fn callback_handler(
 
     // Exchange authorization code for token
     let token_response = exchange_code_for_token(
-        &metadata.token_endpoint,
+        &token_endpoint,
         client_id,
         &client_secret,
         code,
@@ -151,8 +158,7 @@ pub async fn callback_handler(
     .await?;
 
     // Fetch user info
-    let userinfo =
-        fetch_userinfo(&metadata.userinfo_endpoint, &token_response.access_token).await?;
+    let userinfo = fetch_userinfo(&userinfo_endpoint, &token_response.access_token).await?;
 
     // Extract user info claims
     let email = userinfo
@@ -198,13 +204,12 @@ pub async fn callback_handler(
 </head>
 <body>
     <script>
-        sessionStorage.setItem("sso_token", "{}");
+        sessionStorage.setItem("sso_token", "{token}");
         window.location.href = "/admin/";
     </script>
     <p>Redirecting to admin panel...</p>
 </body>
-</html>"#,
-        token
+</html>"#
     );
 
     Ok(Html(html))
@@ -220,6 +225,7 @@ pub async fn sso_status(
         .as_ref()
         .map(|m| m.issuer.clone())
         .unwrap_or_default();
+    drop(oidc_guard);
 
     let value = serde_json::json!({
         "sso_configured": sso_configured,

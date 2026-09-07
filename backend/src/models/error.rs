@@ -49,13 +49,13 @@ pub enum AppError {
 impl IntoResponse for AppError {
     fn into_response(self) -> Response {
         let (status, message) = match &self {
-            Self::Database(_) => (StatusCode::INTERNAL_SERVER_ERROR, self.to_string()),
             Self::Jwt(_) => (StatusCode::UNAUTHORIZED, self.to_string()),
-            Self::Io(_) => (StatusCode::INTERNAL_SERVER_ERROR, self.to_string()),
-            Self::SerdeJson(_) => (StatusCode::INTERNAL_SERVER_ERROR, self.to_string()),
             Self::InvalidInput(msg) => (StatusCode::BAD_REQUEST, msg.clone()),
-            Self::EnvVar(_) => (StatusCode::INTERNAL_SERVER_ERROR, self.to_string()),
-            Self::CachePoisoned => (StatusCode::INTERNAL_SERVER_ERROR, self.to_string()),
+            Self::Database(_)
+            | Self::Io(_)
+            | Self::SerdeJson(_)
+            | Self::EnvVar(_)
+            | Self::CachePoisoned => (StatusCode::INTERNAL_SERVER_ERROR, self.to_string()),
             Self::Other(msg) => (StatusCode::INTERNAL_SERVER_ERROR, msg.clone()),
         };
 

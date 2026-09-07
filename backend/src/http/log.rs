@@ -43,7 +43,7 @@ async fn list_logs(
             let capacity = collector.capacity();
             let all = collector.all();
             let entries = if let Some(ref event_filter) = filter.event {
-                let events: Vec<&str> = event_filter.split(',').map(|s| s.trim()).collect();
+                let events: Vec<&str> = event_filter.split(',').map(str::trim).collect();
                 all.into_iter()
                     .filter(|e| events.contains(&e.event.as_str()))
                     .collect::<Vec<_>>()
@@ -92,8 +92,15 @@ async fn set_capacity(
         },
     };
 
-    match LOG_COLLECTOR.lock() {
-        Ok(mut collector) => {
+    LOG_COLLECTOR.lock().map_or_else(
+        |_| {
+            Json(serde_json::json!({
+                "status": 500,
+                "message": "Log collector poisoned",
+            }))
+            .into_response()
+        },
+        |mut collector| {
             collector.set_capacity(new_cap);
             Json(serde_json::json!({
                 "status": 200,
@@ -104,10 +111,5 @@ async fn set_capacity(
             }))
             .into_response()
         },
-        Err(_) => Json(serde_json::json!({
-            "status": 500,
-            "message": "Log collector poisoned",
-        }))
-        .into_response(),
-    }
+    )
 }

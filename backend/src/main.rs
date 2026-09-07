@@ -1,14 +1,14 @@
 //! # shuul — Backend
 //!
 //! Punto de entrada de la aplicación. Configura el servidor HTTP,
-//! la conexión a PostgreSQL, las migraciones, el logging, CORS,
+//! la conexión a `PostgreSQL`, las migraciones, el logging, CORS,
 //! y monta todas las rutas de la API.
 //!
 //! ## Flujo de inicio
 //! 1. Carga variables de entorno (`.env`)
 //! 2. Inicializa el subscriber de tracing
 //! 3. Verifica/crea la base de datos
-//! 4. Ejecuta migraciones SQLx
+//! 4. Ejecuta migraciones `SQLx`
 //! 5. Carga las reglas activas en memoria
 //! 6. Carga las estadísticas desde la BD
 //! 7. Arranca el servidor Axum en `0.0.0.0:3000`
@@ -54,8 +54,11 @@ use tracing_subscriber::{EnvFilter, layer::SubscriberExt, util::SubscriberInitEx
 
 const STATIC_DIR: &str = "static";
 
+#[allow(clippy::too_many_lines, clippy::duration_suboptimal_units)]
 #[tokio::main]
 async fn main() -> Result<(), Error> {
+    // Runtime: migrations at ./migrations/ (Docker: /app/migrations, dev: project root)
+    const MIGRATIONS_DIR: &str = "migrations";
     dotenv().ok();
     // Nivel de log (por defecto "debug")
     let log_level = var("RUST_LOG").unwrap_or_else(|_| "info".to_string());
@@ -71,9 +74,10 @@ async fn main() -> Result<(), Error> {
 
     let db_url = var("DATABASE_URL").expect("DATABASE_URL environment mandatory");
     debug!("DATABASE_URL url: {}", db_url);
-    let port = var("PORT").unwrap_or("3000".to_string());
+    let port = var("PORT").unwrap_or_else(|_| "3000".to_string());
     info!("Port: {}", port);
-    let maxmind_db_path = var("MAXMIND_DB_PATH").unwrap_or("geo/GeoLite2-City.mmdb".to_string());
+    let maxmind_db_path =
+        var("MAXMIND_DB_PATH").unwrap_or_else(|_| "geo/GeoLite2-City.mmdb".to_string());
     info!("Maxmin DB Path: {}", maxmind_db_path);
     let secret = var("SECRET").expect("SECRET environment variable is mandatory");
     debug!("Secret: {}", secret);
@@ -94,13 +98,12 @@ async fn main() -> Result<(), Error> {
     debug!("Created databae pool");
 
     // Ejecutar migraciones
-    // Runtime: migrations at ./migrations/ (Docker: /app/migrations, dev: project root)
-    const MIGRATIONS_DIR: &str = "migrations";
     let migrations_path = if var("RUST_ENV").as_deref() == Ok("production") {
         // En producción: relativo al ejecutable, no al working directory
-        let exe_dir = std::env::current_exe()
-            .map(|p| p.parent().unwrap().to_path_buf())
-            .unwrap_or_else(|_| std::path::PathBuf::from("."));
+        let exe_dir = std::env::current_exe().map_or_else(
+            |_| std::path::PathBuf::from("."),
+            |p| p.parent().unwrap().to_path_buf(),
+        );
         exe_dir.join(MIGRATIONS_DIR)
     } else if std::path::Path::new(MIGRATIONS_DIR).exists() {
         std::path::PathBuf::from(MIGRATIONS_DIR)
@@ -137,24 +140,22 @@ async fn main() -> Result<(), Error> {
         .allow_headers([AUTHORIZATION, ACCEPT, CONTENT_TYPE]);
 
     let rules = Mutex::new(CacheRule::read_all_active(&pool).await.unwrap_or_default());
-    let ban_manager = Mutex::new(
-        BanManager::load_from_db(&pool)
-            .await
-            .map(|(bm, loaded)| {
-                info!("Loaded {} active bans from database", loaded.len());
-                bm
-            })
-            .unwrap_or_else(|e| {
-                warn!("Failed to load bans from DB (starting fresh): {e}");
-                BanManager::new(
-                    3600,  // default_ban_duration (1h)
-                    false, // bantime_increment (per-rule config)
-                    vec![1, 2, 4, 8],
-                    604800, // bantime_maxtime (1w)
-                    30,     // ban_count_decay_days
-                )
-            }),
-    );
+    let ban_manager = Mutex::new(BanManager::load_from_db(&pool).await.map_or_else(
+        |e| {
+            warn!("Failed to load bans from DB (starting fresh): {e}");
+            BanManager::new(
+                3600,  // default_ban_duration (1h)
+                false, // bantime_increment (per-rule config)
+                vec![1, 2, 4, 8],
+                604_800, // bantime_maxtime (1w)
+                30,      // ban_count_decay_days
+            )
+        },
+        |(bm, loaded)| {
+            info!("Loaded {} active bans from database", loaded.len());
+            bm
+        },
+    ));
     let rate_limiter: Mutex<HashMap<i32, RateLimiter>> = Mutex::new(HashMap::new());
     let settings = Mutex::new(Settings::load(&pool).await.unwrap_or_default());
     let stats = StatsCollector::load(&pool).await;
@@ -201,7 +202,7 @@ async fn main() -> Result<(), Error> {
         let mut interval = tokio::time::interval(tokio::time::Duration::from_secs(30));
         loop {
             interval.tick().await;
-            let discovery_url = format!("{}/.well-known/openid-configuration", oidc_issuer_url);
+            let discovery_url = format!("{oidc_issuer_url}/.well-known/openid-configuration");
             match reqwest::get(&discovery_url).await {
                 Ok(resp) => match resp.json::<OidcMetadata>().await {
                     Ok(metadata) => {

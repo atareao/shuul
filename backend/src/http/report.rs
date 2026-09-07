@@ -6,7 +6,7 @@
 //!
 //! ## Flujo
 //!
-//! 1. Recibe `ReportPayload` (ip, status_code, path, method)
+//! 1. Recibe `ReportPayload` (ip, `` `status_code` ``, path, method)
 //! 2. Matchea contra TODAS las reglas activas (fail2ban-style: múltiples jails)
 //! 3. Para cada regla que matchee con `rate_limit_profile_id`:
 //!    a. Carga el perfil de rate limiting
@@ -17,7 +17,7 @@
 
 use crate::audit_log;
 use crate::models::{
-    AppState, BanManager, NewRequest, RateLimitProfile, RateLimiter, ReportPayload,
+    AppState, BanManager, EmptyResponse, NewRequest, RateLimitProfile, RateLimiter, ReportPayload,
 };
 use axum::{Json, Router, extract::State, http::StatusCode, response::IntoResponse, routing};
 use std::net::IpAddr;
@@ -44,6 +44,7 @@ pub fn report_router() -> Router<Arc<AppState>> {
 ///
 /// Todos los `MutexGuard` se liberan antes de cualquier `.await` para
 /// garantizar que el future sea `Send`.
+#[allow(clippy::cast_sign_loss, clippy::too_many_lines)]
 async fn report_handler(
     State(app_state): State<Arc<AppState>>,
     Json(payload): Json<ReportPayload>,
@@ -51,8 +52,7 @@ async fn report_handler(
     let log_all_requests = app_state
         .settings
         .lock()
-        .map(|g| g.log_all_requests.clone())
-        .unwrap_or_else(|_| "all".to_string());
+        .map_or_else(|_| "all".to_string(), |g| g.log_all_requests.clone());
 
     // ── GeoIP lookup (needed for matching and all audit logs) ──
     let ip_data = app_state.geoip.lookup(&payload.ip_address);
@@ -132,6 +132,7 @@ async fn report_handler(
                 results.push((cache_rule.rule.id, profile_id, cache_rule.rule.name.clone()));
             }
         }
+        drop(rules);
         results
     };
     // rules lock is released here
@@ -256,7 +257,9 @@ async fn report_handler(
                 let rl = rate_limiters.entry(*profile_id).or_insert_with(|| {
                     RateLimiter::new(profile.max_retry as u32, profile.find_time_seconds)
                 });
-                rl.record(ip)
+                let result = rl.record(ip);
+                drop(rate_limiters);
+                result
             };
             // rate_limiter lock released
 
@@ -309,6 +312,7 @@ async fn report_handler(
                     let info = ban_manager
                         .ban(ip, Some(*rule_id), reason.clone(), ban_duration)
                         .clone();
+                    drop(ban_manager);
                     (reason, info)
                 };
                 // ban_manager lock released
@@ -331,6 +335,5 @@ async fn report_handler(
     }
 
     // Always return 200 OK (fire-and-forget semantics)
-    use crate::models::EmptyResponse;
     EmptyResponse::create(StatusCode::OK, "Ok")
 }

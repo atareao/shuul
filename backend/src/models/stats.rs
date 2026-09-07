@@ -1,4 +1,4 @@
-//! # StatsCollector — Contadores de estadísticas en memoria
+//! # `StatsCollector` — Contadores de estadísticas en memoria
 //!
 //! Almacena estadísticas agregadas de requests bloqueadas/permitidas
 //! para alimentar el dashboard sin depender de la tabla `requests`.
@@ -31,7 +31,7 @@ pub struct Bucket {
 }
 
 impl Bucket {
-    pub fn new(ts: i64) -> Self {
+    pub const fn new(ts: i64) -> Self {
         Self {
             timestamp: ts,
             blocked: 0,
@@ -84,6 +84,7 @@ pub struct StatsCollector {
 
 impl StatsCollector {
     /// Crea un nuevo `StatsCollector` con valores iniciales vacíos.
+    #[must_use]
     pub fn new() -> Self {
         Self {
             total_allowed: AtomicU64::new(0),
@@ -176,47 +177,47 @@ impl StatsCollector {
             top_rules: self
                 .top_rules
                 .lock()
-                .unwrap_or_else(|e| e.into_inner())
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
                 .clone(),
             top_countries: self
                 .top_countries
                 .lock()
-                .unwrap_or_else(|e| e.into_inner())
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
                 .clone(),
             top_methods: self
                 .top_methods
                 .lock()
-                .unwrap_or_else(|e| e.into_inner())
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
                 .clone(),
             top_paths: self
                 .top_paths
                 .lock()
-                .unwrap_or_else(|e| e.into_inner())
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
                 .clone(),
             top_fqdns: self
                 .top_fqdns
                 .lock()
-                .unwrap_or_else(|e| e.into_inner())
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
                 .clone(),
             day_series: self
                 .day_series
                 .lock()
-                .unwrap_or_else(|e| e.into_inner())
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
                 .clone(),
             hour_series: self
                 .hour_series
                 .lock()
-                .unwrap_or_else(|e| e.into_inner())
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
                 .clone(),
             minute_series: self
                 .minute_series
                 .lock()
-                .unwrap_or_else(|e| e.into_inner())
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
                 .clone(),
             method_series: self
                 .method_series
                 .lock()
-                .unwrap_or_else(|e| e.into_inner())
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
                 .clone(),
         };
 
@@ -255,41 +256,37 @@ impl StatsCollector {
         let now = Utc::now().timestamp();
         self.total_blocked.fetch_add(1, Ordering::Relaxed);
 
-        if let Some(rid) = rule_id {
-            if let Ok(mut map) = self.top_rules.lock() {
-                *map.entry(rid).or_insert(0) += 1;
-            }
+        if let Some(rid) = rule_id
+            && let Ok(mut map) = self.top_rules.lock()
+        {
+            *map.entry(rid).or_insert(0) += 1;
         }
 
-        if let Some(cc) = country_code {
-            if !cc.is_empty() {
-                if let Ok(mut map) = self.top_countries.lock() {
-                    *map.entry(cc.to_string()).or_insert(0) += 1;
-                }
-            }
+        if let Some(cc) = country_code
+            && !cc.is_empty()
+            && let Ok(mut map) = self.top_countries.lock()
+        {
+            *map.entry(cc.to_string()).or_insert(0) += 1;
         }
 
-        if let Some(m) = method {
-            if !m.is_empty() {
-                if let Ok(mut map) = self.top_methods.lock() {
-                    *map.entry(m.to_string()).or_insert(0) += 1;
-                }
-            }
+        if let Some(m) = method
+            && !m.is_empty()
+            && let Ok(mut map) = self.top_methods.lock()
+        {
+            *map.entry(m.to_string()).or_insert(0) += 1;
         }
-        if let Some(p) = path {
-            if !p.is_empty() {
-                if let Ok(mut map) = self.top_paths.lock() {
-                    *map.entry(p.to_string()).or_insert(0) += 1;
-                }
-            }
+        if let Some(p) = path
+            && !p.is_empty()
+            && let Ok(mut map) = self.top_paths.lock()
+        {
+            *map.entry(p.to_string()).or_insert(0) += 1;
         }
 
-        if let Some(f) = fqdn {
-            if !f.is_empty() {
-                if let Ok(mut map) = self.top_fqdns.lock() {
-                    *map.entry(f.to_string()).or_insert(0) += 1;
-                }
-            }
+        if let Some(f) = fqdn
+            && !f.is_empty()
+            && let Ok(mut map) = self.top_fqdns.lock()
+        {
+            *map.entry(f.to_string()).or_insert(0) += 1;
         }
 
         self.add_to_bucket(false, now);
@@ -301,27 +298,24 @@ impl StatsCollector {
         let now = Utc::now().timestamp();
         self.total_allowed.fetch_add(1, Ordering::Relaxed);
 
-        if let Some(m) = method {
-            if !m.is_empty() {
-                if let Ok(mut map) = self.top_methods.lock() {
-                    *map.entry(m.to_string()).or_insert(0) += 1;
-                }
-            }
+        if let Some(m) = method
+            && !m.is_empty()
+            && let Ok(mut map) = self.top_methods.lock()
+        {
+            *map.entry(m.to_string()).or_insert(0) += 1;
         }
-        if let Some(p) = path {
-            if !p.is_empty() {
-                if let Ok(mut map) = self.top_paths.lock() {
-                    *map.entry(p.to_string()).or_insert(0) += 1;
-                }
-            }
+        if let Some(p) = path
+            && !p.is_empty()
+            && let Ok(mut map) = self.top_paths.lock()
+        {
+            *map.entry(p.to_string()).or_insert(0) += 1;
         }
 
-        if let Some(f) = fqdn {
-            if !f.is_empty() {
-                if let Ok(mut map) = self.top_fqdns.lock() {
-                    *map.entry(f.to_string()).or_insert(0) += 1;
-                }
-            }
+        if let Some(f) = fqdn
+            && !f.is_empty()
+            && let Ok(mut map) = self.top_fqdns.lock()
+        {
+            *map.entry(f.to_string()).or_insert(0) += 1;
         }
 
         self.add_to_bucket(true, now);
@@ -419,80 +413,94 @@ impl StatsCollector {
     }
 
     pub fn get_top_rules(&self) -> Vec<(i32, u64)> {
-        let map = self.top_rules.lock().unwrap_or_else(|e| e.into_inner());
-        let mut vec: Vec<(i32, u64)> = map.iter().map(|(k, v)| (*k, *v)).collect();
-        vec.sort_by(|a, b| b.1.cmp(&a.1));
+        let mut vec: Vec<(i32, u64)> = self
+            .top_rules
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .iter()
+            .map(|(k, v)| (*k, *v))
+            .collect();
+        vec.sort_by_key(|b| std::cmp::Reverse(b.1));
         vec.truncate(10);
         vec
     }
 
     pub fn get_top_countries(&self) -> Vec<(String, u64)> {
-        let map = self.top_countries.lock().unwrap_or_else(|e| e.into_inner());
-        let mut vec: Vec<(String, u64)> = map.iter().map(|(k, v)| (k.clone(), *v)).collect();
-        vec.sort_by(|a, b| b.1.cmp(&a.1));
+        let mut vec: Vec<(String, u64)> = self
+            .top_countries
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .iter()
+            .map(|(k, v)| (k.clone(), *v))
+            .collect();
+        vec.sort_by_key(|b| std::cmp::Reverse(b.1));
         vec.truncate(10);
         vec
     }
 
     pub fn get_top_methods(&self) -> Vec<(String, u64)> {
-        let map = self.top_methods.lock().unwrap_or_else(|e| e.into_inner());
-        let mut vec: Vec<(String, u64)> = map.iter().map(|(k, v)| (k.clone(), *v)).collect();
-        vec.sort_by(|a, b| b.1.cmp(&a.1));
+        let mut vec: Vec<(String, u64)> = self
+            .top_methods
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .iter()
+            .map(|(k, v)| (k.clone(), *v))
+            .collect();
+        vec.sort_by_key(|b| std::cmp::Reverse(b.1));
         vec.truncate(10);
         vec
     }
 
     pub fn get_top_paths(&self) -> Vec<(String, u64)> {
-        let map = self.top_paths.lock().unwrap_or_else(|e| e.into_inner());
-        let mut vec: Vec<(String, u64)> = map.iter().map(|(k, v)| (k.clone(), *v)).collect();
-        vec.sort_by(|a, b| b.1.cmp(&a.1));
+        let mut vec: Vec<(String, u64)> = self
+            .top_paths
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .iter()
+            .map(|(k, v)| (k.clone(), *v))
+            .collect();
+        vec.sort_by_key(|b| std::cmp::Reverse(b.1));
         vec.truncate(10);
         vec
     }
 
     pub fn get_top_fqdns(&self) -> Vec<(String, u64)> {
-        let map = self.top_fqdns.lock().unwrap_or_else(|e| e.into_inner());
-        let mut vec: Vec<(String, u64)> = map.iter().map(|(k, v)| (k.clone(), *v)).collect();
-        vec.sort_by(|a, b| b.1.cmp(&a.1));
+        let mut vec: Vec<(String, u64)> = self
+            .top_fqdns
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .iter()
+            .map(|(k, v)| (k.clone(), *v))
+            .collect();
+        vec.sort_by_key(|b| std::cmp::Reverse(b.1));
         vec.truncate(10);
         vec
     }
 
     /// Devuelve la serie temporal según la unidad solicitada.
     pub fn get_evolution(&self, unit: &str) -> Vec<Bucket> {
-        match unit {
-            "minute" => self
-                .minute_series
-                .lock()
-                .unwrap_or_else(|e| e.into_inner())
-                .clone(),
-            "hour" => self
-                .hour_series
-                .lock()
-                .unwrap_or_else(|e| e.into_inner())
-                .clone(),
-            "day" => self
-                .day_series
-                .lock()
-                .unwrap_or_else(|e| e.into_inner())
-                .clone(),
-            _ => self
-                .day_series
-                .lock()
-                .unwrap_or_else(|e| e.into_inner())
-                .clone(),
-        }
+        let series = match unit {
+            "minute" => &self.minute_series,
+            "hour" => &self.hour_series,
+            _ => &self.day_series,
+        };
+        series
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .clone()
     }
 
     /// Devuelve la evolución desglosada por método HTTP para la unidad solicitada.
     pub fn get_method_evolution(&self, unit: &str) -> Vec<(String, Vec<MethodBucket>)> {
-        let map = self.method_series.lock().unwrap_or_else(|e| e.into_inner());
         let max_size = match unit {
             "minute" => 60,
             "hour" => 24,
             _ => 31,
         };
-        let mut result: Vec<(String, Vec<MethodBucket>)> = map
+        let mut result: Vec<(String, Vec<MethodBucket>)> = self
+            .method_series
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
             .iter()
             .map(|(method, series)| {
                 let mut s = series.clone();

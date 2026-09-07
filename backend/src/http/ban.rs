@@ -61,6 +61,14 @@ pub struct BanListParams {
     pub asc: Option<bool>,
 }
 
+#[allow(
+    clippy::too_many_lines,
+    clippy::cast_possible_wrap,
+    clippy::cast_possible_truncation,
+    clippy::cast_sign_loss,
+    clippy::cast_precision_loss,
+    clippy::cast_lossless
+)]
 pub async fn list_handler(
     State(app_state): State<Arc<AppState>>,
     Query(params): Query<BanListParams>,
@@ -129,23 +137,23 @@ pub async fn list_handler(
             },
             "ban_duration_seconds" => {
                 if asc {
-                    bans.sort_by(|a, b| a.ban_duration_seconds.cmp(&b.ban_duration_seconds));
+                    bans.sort_by_key(|a| a.ban_duration_seconds);
                 } else {
-                    bans.sort_by(|a, b| b.ban_duration_seconds.cmp(&a.ban_duration_seconds));
+                    bans.sort_by_key(|b| std::cmp::Reverse(b.ban_duration_seconds));
                 }
             },
             "escalation_level" => {
                 if asc {
-                    bans.sort_by(|a, b| a.escalation_level.cmp(&b.escalation_level));
+                    bans.sort_by_key(|a| a.escalation_level);
                 } else {
-                    bans.sort_by(|a, b| b.escalation_level.cmp(&a.escalation_level));
+                    bans.sort_by_key(|b| std::cmp::Reverse(b.escalation_level));
                 }
             },
             "time_remaining_seconds" => {
                 if asc {
-                    bans.sort_by(|a, b| a.time_remaining_seconds.cmp(&b.time_remaining_seconds));
+                    bans.sort_by_key(|a| a.time_remaining_seconds);
                 } else {
-                    bans.sort_by(|a, b| b.time_remaining_seconds.cmp(&a.time_remaining_seconds));
+                    bans.sort_by_key(|b| std::cmp::Reverse(b.time_remaining_seconds));
                 }
             },
             _ => {},
@@ -162,7 +170,7 @@ pub async fn list_handler(
     let total_pages = if records == 0 {
         0u32
     } else {
-        ((records as f64) / (limit as f64)).ceil() as u32
+        ((records as f64) / f64::from(limit)).ceil() as u32
     };
     let paged_bans: Vec<_> = bans.into_iter().skip(offset).take(limit as usize).collect();
 
