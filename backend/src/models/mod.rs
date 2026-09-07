@@ -68,6 +68,10 @@ pub struct AppState {
 
 impl AppState {
     /// Reloads the in-memory rules cache from the database.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the database query fails.
     pub async fn reload_rules(&self) -> Result<(), Error> {
         let rules = CacheRule::read_all_active(&self.pool).await.map_err(|e| {
             tracing::error!("Failed to reload rules: {e}");

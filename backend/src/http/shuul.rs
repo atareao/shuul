@@ -7,8 +7,8 @@
 //! 4. Trusted IPs: si `request.ip_address` está en `trusted_ips` → ALLOW (skipped)
 //! 5. Trusted user agents: si `request.user_agent` coincide → ALLOW (skipped)
 //! 6. Check IP baneada → 403 FORBIDDEN
-//! 7. Match contra reglas cacheadas (mode = 'enforce' | 'log_only')
-//! 8. Si rule match + mode='log_only' → log (allow = true)
+//! 7. Match contra reglas cacheadas (mode = 'enforce' | '`log_only`')
+//! 8. Si rule match + mode='`log_only`' → log (allow = true)
 //! 9. Si rule match + mode='off' → skip
 //! 10. Stats + audit log
 //! 11. 200 OK o 403 FORBIDDEN
@@ -46,6 +46,7 @@ struct RuleMatch {
 }
 
 /// Main entry point for the shuul service.
+#[allow(clippy::too_many_lines)]
 pub async fn shuul(
     State(app_state): State<Arc<AppState>>,
     headers: axum::http::HeaderMap,
@@ -221,15 +222,15 @@ pub async fn shuul(
     }
 
     // ── Step 6: Match against cached rules (sync, releases lock before any await) ──
-    let matched: Option<RuleMatch> = {
-        let rules = match app_state.rules.lock() {
-            Ok(g) => g,
-            Err(e) => {
-                error!("Rules mutex poisoned: {e}");
-                return EmptyResponse::create(StatusCode::INTERNAL_SERVER_ERROR, "Internal error");
-            },
-        };
+    let rules = match app_state.rules.lock() {
+        Ok(g) => g,
+        Err(e) => {
+            error!("Rules mutex poisoned: {e}");
+            return EmptyResponse::create(StatusCode::INTERNAL_SERVER_ERROR, "Internal error");
+        },
+    };
 
+    let matched: Option<RuleMatch> = {
         let mut matched: Option<RuleMatch> = None;
 
         for cache_rule in rules.iter() {
@@ -249,44 +250,42 @@ pub async fn shuul(
             }
 
             // First matching rule wins
-            match cache_rule.rule.mode.as_str() {
-                "log_only" => {
-                    if should_log(&log_all_requests, "log_only") {
-                        audit_log!("log_only",
-                                "pipeline": "waf",
-                                "rule_id": cache_rule.rule.id,
-                                "rule_name": cache_rule.rule.name,
-                                "ip": request.ip_address,
-                                "country": request.country_code,
-                                "path": request.path,
-                                "method": request.method,
-                                "ua": request.user_agent,
-                            "fqdn": request.fqdn,
-                            "query": request.query,
-                            "referer": request.referer,
-                        );
-                    }
-                    matched = Some(RuleMatch {
-                        rule_id: cache_rule.rule.id,
-                        rule_name: cache_rule.rule.name.clone(),
-                        allow: true,
-                    });
-                    break;
-                },
-                _ => {
-                    // 'enforce' or any other mode — normal enforcement
-                    matched = Some(RuleMatch {
-                        rule_id: cache_rule.rule.id,
-                        rule_name: cache_rule.rule.name.clone(),
-                        allow: cache_rule.rule.allow,
-                    });
-                    break;
-                },
+            if cache_rule.rule.mode.as_str() == "log_only" {
+                if should_log(&log_all_requests, "log_only") {
+                    audit_log!("log_only",
+                        "pipeline": "waf",
+                        "rule_id": cache_rule.rule.id,
+                        "rule_name": cache_rule.rule.name,
+                        "ip": request.ip_address,
+                        "country": request.country_code,
+                        "path": request.path,
+                        "method": request.method,
+                        "ua": request.user_agent,
+                        "fqdn": request.fqdn,
+                        "query": request.query,
+                        "referer": request.referer,
+                    );
+                }
+                matched = Some(RuleMatch {
+                    rule_id: cache_rule.rule.id,
+                    rule_name: cache_rule.rule.name.clone(),
+                    allow: true,
+                });
+                break;
             }
+
+            // 'enforce' or any other mode — normal enforcement
+            matched = Some(RuleMatch {
+                rule_id: cache_rule.rule.id,
+                rule_name: cache_rule.rule.name.clone(),
+                allow: cache_rule.rule.allow,
+            });
+            break;
         }
 
         matched
     };
+    drop(rules);
     // rules lock is released here
 
     // ── Step 7: Apply matched rule (async operations allowed now) ──

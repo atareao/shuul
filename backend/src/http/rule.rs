@@ -64,6 +64,11 @@ pub async fn create_handler(
 ///   - `params`: Query parameters for filtering, pagination, etc.
 /// * **Returns**
 ///   - `Result<impl IntoResponse, AppError>` – JSON with the rule(s) or an error message.
+#[allow(
+    clippy::cast_possible_truncation,
+    clippy::cast_sign_loss,
+    clippy::cast_precision_loss
+)]
 pub async fn read_handler(
     State(app_state): State<Arc<AppState>>,
     Query(params): Query<ReadRuleParams>,
@@ -269,7 +274,7 @@ pub async fn import_handler(
 
     for rule in &payload.rules {
         let now = chrono::Utc::now();
-        let sql = r#"INSERT INTO rules (
+        let sql = r"INSERT INTO rules (
             name, description, weight, mode, pipeline, allow,
             ip_address, protocol, fqdn, path, query,
             city_name, country_name, country_code,
@@ -300,7 +305,7 @@ pub async fn import_handler(
             x_request_id = EXCLUDED.x_request_id,
             rate_limit_profile_id = EXCLUDED.rate_limit_profile_id,
             active = EXCLUDED.active,
-            updated_at = EXCLUDED.updated_at"#;
+            updated_at = EXCLUDED.updated_at";
 
         sqlx::query(sql)
             .bind(&rule.name)

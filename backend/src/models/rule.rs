@@ -14,6 +14,7 @@ use chrono::{DateTime, Utc};
 use regex::Regex;
 use serde::{Deserialize, Serialize};
 use sqlx::{Error, Row, SqlitePool, query, sqlite::SqliteRow};
+use std::fmt::Write;
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
 pub struct Rule {
@@ -71,14 +72,16 @@ pub struct CacheRule {
 }
 
 impl CacheRule {
-    /// Construye un `CacheRule` desde una fila de SQLite.
+    /// Construye un `CacheRule` desde una fila de `SQLite`.
+    #[allow(clippy::needless_pass_by_value)]
     fn from_row(row: SqliteRow) -> Self {
-        let rule = Rule::from_row(row);
-        Self::from_rule(rule)
+        let rule = Rule::from_row(&row);
+        Self::from_rule(&rule)
     }
 
     /// Construye un `CacheRule` con los regex precompilados desde una [`Rule`].
-    pub fn from_rule(rule: Rule) -> Self {
+    #[must_use]
+    pub fn from_rule(rule: &Rule) -> Self {
         Self {
             rule: rule.clone(),
             ip_address: rule
@@ -155,11 +158,17 @@ impl CacheRule {
     }
 
     /// Lee todas las reglas activas desde la base de datos.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the database query fails.
     pub async fn read_all_active(pool: &SqlitePool) -> Result<Vec<Self>, Error> {
         let sql = "SELECT * FROM rules WHERE active = 1 ORDER BY weight ASC";
         query(sql).map(Self::from_row).fetch_all(pool).await
     }
 
+    /// Check if this rule matches a request.
+    #[must_use]
     pub fn matches(&self, request: &NewRequest) -> bool {
         let check_match = |rule_regex: Option<&Regex>, request_value: Option<&String>| -> bool {
             match (rule_regex, request_value) {
@@ -275,12 +284,12 @@ pub struct ReadRuleParams {
 
 impl From<Rule> for CacheRule {
     fn from(val: Rule) -> Self {
-        CacheRule::from_rule(val)
+        Self::from_rule(&val)
     }
 }
 
 impl Rule {
-    fn from_row(row: SqliteRow) -> Self {
+    fn from_row(row: &SqliteRow) -> Self {
         Self {
             id: row.get("id"),
             name: row.get("name"),
@@ -311,6 +320,11 @@ impl Rule {
         }
     }
 
+    /// Creates a new rule in the database.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the database query fails.
     pub async fn create(pool: &SqlitePool, rule: NewRule) -> Result<Self, Error> {
         let sql = "INSERT INTO rules (name, description, weight, mode, pipeline, allow,
             ip_address, protocol, fqdn, path, query, city_name, country_name,
@@ -345,11 +359,16 @@ impl Rule {
             .bind(rule.active.unwrap_or(true))
             .bind(now)
             .bind(now)
-            .map(Self::from_row)
+            .map(|row| Self::from_row(&row))
             .fetch_one(pool)
             .await
     }
 
+    /// Reads rule info (total or active count).
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the database query fails.
     pub async fn read_info(pool: &SqlitePool, info: &str) -> Result<i64, Error> {
         let sql = if info == "total" {
             "SELECT count(*) FROM rules"
@@ -364,6 +383,11 @@ impl Rule {
             .await
     }
 
+    /// Reads all rule info counts.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the database query fails.
     pub async fn read_info_all(pool: &SqlitePool) -> Result<RuleInfoCounts, Error> {
         let sql = "SELECT
             (SELECT count(*) FROM rules) as total,
@@ -377,6 +401,11 @@ impl Rule {
             .await
     }
 
+    /// Updates an existing rule.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the database query fails.
     pub async fn update(pool: &SqlitePool, rule: UpdateRule) -> Result<Self, Error> {
         let sql = "UPDATE rules SET
                 name = ?,
@@ -430,11 +459,17 @@ impl Rule {
             .bind(rule.active)
             .bind(now)
             .bind(rule.id)
-            .map(Self::from_row)
+            .map(|row| Self::from_row(&row))
             .fetch_one(pool)
             .await
     }
 
+    /// Counts rules with the given filters.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the database query fails.
+    #[allow(clippy::cast_possible_wrap)]
     pub async fn count_paged(pool: &SqlitePool, params: &ReadRuleParams) -> Result<i64, Error> {
         let like_filters = vec![
             ("ip_address", &params.ip_address),
@@ -455,7 +490,7 @@ impl Rule {
             .collect();
         let mut sql = "SELECT COUNT(*) total FROM rules LEFT JOIN rate_limit_profiles ON rules.rate_limit_profile_id = rate_limit_profiles.id WHERE 1=1".to_string();
         for (col, _) in &active_like_filters {
-            sql.push_str(&format!(" AND {col} LIKE ?"));
+            let _ = write!(sql, " AND {col} LIKE ?");
         }
         // Boolean exact-match filters
         if params.allow.is_some() {
@@ -503,6 +538,12 @@ impl Rule {
             .await
     }
 
+    /// Reads rules with pagination and filters.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the database query fails.
+    #[allow(clippy::cast_possible_wrap)]
     pub async fn read_paged(
         pool: &SqlitePool,
         params: &ReadRuleParams,
@@ -526,7 +567,7 @@ impl Rule {
             .collect();
         let mut sql = "SELECT rules.*, rate_limit_profiles.name as rate_limit_profile_name FROM rules LEFT JOIN rate_limit_profiles ON rules.rate_limit_profile_id = rate_limit_profiles.id WHERE 1=1".to_string();
         for (col, _) in &active_like_filters {
-            sql.push_str(&format!(" AND {col} LIKE ?"));
+            let _ = write!(sql, " AND {col} LIKE ?");
         }
         // Boolean exact-match filters
         if params.allow.is_some() {
@@ -568,9 +609,9 @@ impl Rule {
         .contains(&sort_by)
         {
             if params.asc.unwrap_or(true) {
-                sql.push_str(&format!(" ORDER BY {sort_by} ASC"));
+                let _ = write!(sql, " ORDER BY {sort_by} ASC");
             } else {
-                sql.push_str(&format!(" ORDER BY {sort_by} DESC"));
+                let _ = write!(sql, " ORDER BY {sort_by} DESC");
             }
         }
         sql.push_str(" LIMIT ? OFFSET ?");
@@ -599,30 +640,48 @@ impl Rule {
         query
             .bind(limit)
             .bind(offset)
-            .map(Self::from_row)
+            .map(|row| Self::from_row(&row))
             .fetch_all(pool)
             .await
     }
 
+    /// Reads all rules.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the database query fails.
     pub async fn read_all(pool: &SqlitePool) -> Result<Vec<Self>, Error> {
         let sql = "SELECT rules.*, rate_limit_profiles.name as rate_limit_profile_name FROM rules LEFT JOIN rate_limit_profiles ON rules.rate_limit_profile_id = rate_limit_profiles.id ORDER BY weight ASC";
-        query(sql).map(Self::from_row).fetch_all(pool).await
+        query(sql)
+            .map(|row| Self::from_row(&row))
+            .fetch_all(pool)
+            .await
     }
 
+    /// Reads a rule by ID.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the database query fails.
     pub async fn read(pool: &SqlitePool, id: i32) -> Result<Self, Error> {
         let sql = "SELECT rules.*, rate_limit_profiles.name as rate_limit_profile_name FROM rules LEFT JOIN rate_limit_profiles ON rules.rate_limit_profile_id = rate_limit_profiles.id WHERE rules.id = ?";
         query(sql)
             .bind(id)
-            .map(Self::from_row)
+            .map(|row| Self::from_row(&row))
             .fetch_one(pool)
             .await
     }
 
+    /// Deletes a rule by ID.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the database query fails.
     pub async fn delete(pool: &SqlitePool, id: i32) -> Result<Self, Error> {
         let sql = "DELETE FROM rules WHERE id = ? RETURNING *";
         query(sql)
             .bind(id)
-            .map(Self::from_row)
+            .map(|row| Self::from_row(&row))
             .fetch_one(pool)
             .await
     }

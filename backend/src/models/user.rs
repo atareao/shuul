@@ -1,7 +1,7 @@
 //! # Modelo de usuarios
 //!
 //! Define [`TokenClaims`] para la validación de JWT.
-//! El login/registro se delega al SSO vía OIDC (PocketID).
+//! El login/registro se delega al SSO vía OIDC (`PocketID`).
 
 use serde::{Deserialize, Serialize};
 

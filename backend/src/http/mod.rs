@@ -7,7 +7,7 @@
 //! - [`rule`] — CRUD de reglas de filtrado
 //! - [`rate_limit_profile`] — CRUD de perfiles de rate limiting
 //! - [`request`] — Consulta de peticiones HTTP capturadas
-//! - [`stats`] — Estadísticas agregadas (StatsCollector, en memoria)
+//! - [`stats`] — Estadísticas agregadas (`StatsCollector`, en memoria)
 //! - [`shuul`] — Endpoint principal de captura y filtrado
 //! - [`settings`] — Configuración global
 //! - [`template`] — Plantillas de reglas y perfiles

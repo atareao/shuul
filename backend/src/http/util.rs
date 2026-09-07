@@ -27,15 +27,16 @@ async fn complete_ip(
     Query(params): Query<IPParam>,
 ) -> impl IntoResponse {
     debug!("Complete IP: {:?}", params);
-    if let Some(ip) = params.ip {
-        let ip_data = app_state.geoip.lookup(&ip);
-        debug!("Response IP data: {:?}", ip_data);
-        ApiResponse::new(
-            StatusCode::OK,
-            "Ok",
-            Data::Some(serde_json::to_value(ip_data).unwrap_or_default()),
-        )
-    } else {
-        ApiResponse::new(StatusCode::BAD_REQUEST, "Ko", Data::None)
-    }
+    params.ip.map_or_else(
+        || ApiResponse::new(StatusCode::BAD_REQUEST, "Ko", Data::None),
+        |ip| {
+            let ip_data = app_state.geoip.lookup(&ip);
+            debug!("Response IP data: {:?}", ip_data);
+            ApiResponse::new(
+                StatusCode::OK,
+                "Ok",
+                Data::Some(serde_json::to_value(ip_data).unwrap_or_default()),
+            )
+        },
+    )
 }

@@ -60,6 +60,11 @@ pub async fn create_handler(
 ///   - `params`: Query parameters for filtering, pagination, etc.
 /// * **Returns**
 ///   - `Result<impl IntoResponse, AppError>` – JSON with the profile(s) or an error message.
+#[allow(
+    clippy::cast_possible_truncation,
+    clippy::cast_sign_loss,
+    clippy::cast_precision_loss
+)]
 pub async fn read_handler(
     State(app_state): State<Arc<AppState>>,
     Query(params): Query<ReadRateLimitProfileParams>,

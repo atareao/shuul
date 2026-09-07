@@ -44,6 +44,8 @@ pub struct RateLimitProfileTemplate {
     pub fail_codes: Vec<i32>,
 }
 
+/// Returns all rule templates.
+#[allow(clippy::too_many_lines)]
 pub fn all_rule_templates() -> Vec<RuleTemplate> {
     vec![
         // ═══════════════════════════════════════════════════════════════
@@ -2308,7 +2310,7 @@ pub fn all_rule_templates() -> Vec<RuleTemplate> {
             rate_limit_profile_name: Some("Global Shield".into()),
             requires_fqdn: false,
             must_have: false,
-            weight: 9999,
+            weight: 9_999,
         },
         // Template 81 — Scanner genérico (404 catch-all)
         RuleTemplate {
@@ -2336,11 +2338,13 @@ pub fn all_rule_templates() -> Vec<RuleTemplate> {
             rate_limit_profile_name: Some("Path Scanning".into()),
             requires_fqdn: false,
             must_have: true,
-            weight: 9998,
+            weight: 9_998,
         },
     ]
 }
 
+/// Returns all rate limit profile templates.
+#[allow(clippy::too_many_lines)]
 pub fn all_rate_limit_profile_templates() -> Vec<RateLimitProfileTemplate> {
     vec![
         RateLimitProfileTemplate {
@@ -2352,7 +2356,7 @@ pub fn all_rate_limit_profile_templates() -> Vec<RateLimitProfileTemplate> {
             ban_seconds: 900,
             escalation_enabled: true,
             escalation_multipliers: vec![1, 2, 4, 8],
-            max_ban_seconds: 604800,
+            max_ban_seconds: 604_800,
             cooldown_seconds: 30,
             fail_codes: vec![401],
         },
@@ -2365,7 +2369,7 @@ pub fn all_rate_limit_profile_templates() -> Vec<RateLimitProfileTemplate> {
             ban_seconds: 3600,
             escalation_enabled: true,
             escalation_multipliers: vec![1, 2, 4, 8],
-            max_ban_seconds: 604800,
+            max_ban_seconds: 604_800,
             cooldown_seconds: 30,
             fail_codes: vec![401, 403],
         },
@@ -2378,7 +2382,7 @@ pub fn all_rate_limit_profile_templates() -> Vec<RateLimitProfileTemplate> {
             ban_seconds: 300,
             escalation_enabled: true,
             escalation_multipliers: vec![1, 2, 4, 8],
-            max_ban_seconds: 86400,
+            max_ban_seconds: 86_400,
             cooldown_seconds: 30,
             fail_codes: vec![403, 404],
         },
@@ -2391,7 +2395,7 @@ pub fn all_rate_limit_profile_templates() -> Vec<RateLimitProfileTemplate> {
             ban_seconds: 300,
             escalation_enabled: true,
             escalation_multipliers: vec![1, 2, 4, 8],
-            max_ban_seconds: 86400,
+            max_ban_seconds: 86_400,
             cooldown_seconds: 30,
             fail_codes: vec![401, 403, 429],
         },
@@ -2404,7 +2408,7 @@ pub fn all_rate_limit_profile_templates() -> Vec<RateLimitProfileTemplate> {
             ban_seconds: 300,
             escalation_enabled: true,
             escalation_multipliers: vec![1, 2, 4, 8],
-            max_ban_seconds: 86400,
+            max_ban_seconds: 86_400,
             cooldown_seconds: 7,
             fail_codes: vec![403, 429, 500],
         },
@@ -2426,11 +2430,11 @@ pub fn all_rate_limit_profile_templates() -> Vec<RateLimitProfileTemplate> {
             name: "Recidive".into(),
             description: "3 reincidences in 48h → 7-day ban (max 30 days)".into(),
             max_requests: 3,
-            window_seconds: 172800,
-            ban_seconds: 604800,
+            window_seconds: 172_800,
+            ban_seconds: 604_800,
             escalation_enabled: true,
             escalation_multipliers: vec![1, 2, 4, 8],
-            max_ban_seconds: 2592000,
+            max_ban_seconds: 2_592_000,
             cooldown_seconds: 60,
             fail_codes: vec![403, 429],
         },
@@ -2443,7 +2447,7 @@ pub fn all_rate_limit_profile_templates() -> Vec<RateLimitProfileTemplate> {
             ban_seconds: 1800,
             escalation_enabled: true,
             escalation_multipliers: vec![1, 2, 4, 8],
-            max_ban_seconds: 604800,
+            max_ban_seconds: 604_800,
             cooldown_seconds: 30,
             fail_codes: vec![403, 404, 405, 500],
         },
@@ -2456,7 +2460,7 @@ pub fn all_rate_limit_profile_templates() -> Vec<RateLimitProfileTemplate> {
             ban_seconds: 300,
             escalation_enabled: true,
             escalation_multipliers: vec![1, 2, 4, 8],
-            max_ban_seconds: 86400,
+            max_ban_seconds: 86_400,
             cooldown_seconds: 30,
             fail_codes: vec![403, 404, 429, 500, 502, 503],
         },
