@@ -19,7 +19,9 @@ pub fn ban_router() -> Router<Arc<AppState>> {
     Router::new()
         .route("/", routing::get(list_handler))
         .route("/", routing::post(ban_handler))
+        .route("", routing::post(ban_handler))
         .route("/", routing::delete(unban_handler))
+        .route("", routing::delete(unban_handler))
         .route("/info", routing::get(info_handler))
 }
 

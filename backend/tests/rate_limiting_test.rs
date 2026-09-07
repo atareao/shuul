@@ -43,7 +43,7 @@ async fn test_ban_unban_cycle() {
     let ip: IpAddr = "10.0.0.3".parse().unwrap();
 
     assert!(bm.is_banned(&ip).is_none());
-    bm.ban(ip, Some(1), "test".to_string(), None);
+    let _ = bm.ban(ip, Some(1), "test".to_string(), None);
     assert!(bm.is_banned(&ip).is_some());
     bm.unban(&ip, Some(1));
     assert!(bm.is_banned(&ip).is_none());
