@@ -45,6 +45,7 @@ pub struct EvolutionParams {
 ///   - `params`: Query parameters containing `unit` (`day|hour|minute`) and `last` (how many periods).
 /// * **Returns**
 ///   - `Result<impl IntoResponse, AppError>` – JSON with the evolution data or an error message.
+#[allow(clippy::cast_sign_loss)]
 pub async fn read_evolution(
     State(app_state): State<Arc<AppState>>,
     Query(params): Query<EvolutionParams>,
@@ -101,6 +102,11 @@ pub async fn read_evolution(
 ///   - `app_state`: Shared application state (DB pool, cache, etc.).
 /// * **Returns**
 ///   - `Result<impl IntoResponse, AppError>` – JSON with the top rules or an error.
+#[allow(
+    clippy::cast_sign_loss,
+    clippy::cast_precision_loss,
+    clippy::cast_possible_truncation
+)]
 pub async fn read_top_rules(
     State(app_state): State<Arc<AppState>>,
 ) -> Result<impl IntoResponse, AppError> {
@@ -131,6 +137,11 @@ pub async fn read_top_rules(
 ///   - `app_state`: Shared state (DB pool, cache, etc.).
 /// * **Returns**
 ///   - `Result<impl IntoResponse, AppError>` – JSON with the top countries or an error.
+#[allow(
+    clippy::cast_sign_loss,
+    clippy::cast_precision_loss,
+    clippy::cast_possible_truncation
+)]
 pub async fn read_top_countries(
     State(app_state): State<Arc<AppState>>,
 ) -> Result<impl IntoResponse, AppError> {
@@ -161,6 +172,11 @@ pub async fn read_top_countries(
 ///   - `app_state`: Shared state (DB pool, cache, etc.).
 /// * **Returns**
 ///   - `Result<impl IntoResponse, AppError>` – JSON with the top methods or an error.
+#[allow(
+    clippy::cast_sign_loss,
+    clippy::cast_precision_loss,
+    clippy::cast_possible_truncation
+)]
 pub async fn read_top_methods(
     State(app_state): State<Arc<AppState>>,
 ) -> Result<impl IntoResponse, AppError> {
@@ -191,6 +207,11 @@ pub async fn read_top_methods(
 ///   - `app_state`: Shared state (DB pool, cache, etc.).
 /// * **Returns**
 ///   - `Result<impl IntoResponse, AppError>` – JSON with the top paths or an error.
+#[allow(
+    clippy::cast_sign_loss,
+    clippy::cast_precision_loss,
+    clippy::cast_possible_truncation
+)]
 pub async fn read_top_paths(
     State(app_state): State<Arc<AppState>>,
 ) -> Result<impl IntoResponse, AppError> {
@@ -216,6 +237,11 @@ pub async fn read_top_paths(
 }
 
 /// Returns the top FQDNs based on request count.
+#[allow(
+    clippy::cast_sign_loss,
+    clippy::cast_precision_loss,
+    clippy::cast_possible_truncation
+)]
 pub async fn read_top_fqdns(
     State(app_state): State<Arc<AppState>>,
 ) -> Result<impl IntoResponse, AppError> {
@@ -290,6 +316,7 @@ pub async fn read_info_handler(
 }
 
 /// Returns time-series evolution data per HTTP method.
+#[allow(clippy::cast_sign_loss)]
 pub async fn read_evolution_by_method(
     State(app_state): State<Arc<AppState>>,
     Query(params): Query<EvolutionParams>,

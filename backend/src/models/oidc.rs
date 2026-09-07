@@ -49,6 +49,11 @@ impl JwtValidator {
     /// Fetch JWKS from the OIDC provider's `jwks_uri`.
     ///
     /// Parses the response into `jsonwebtoken::jwk::JwkSet` and stores the keys.
+    /// Fetches JWKS from the OIDC provider.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the HTTP request fails or the JWKS cannot be parsed.
     pub async fn fetch_jwks(
         &mut self,
         jwks_uri: &str,
@@ -76,6 +81,11 @@ impl JwtValidator {
     ///
     /// Returns the decoded claims on success.
     #[allow(dead_code)]
+    /// Validates a JWT ID token against the stored JWKS.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the token is invalid, expired, or the JWKS is not loaded.
     pub fn validate_id_token(
         &self,
         id_token: &str,

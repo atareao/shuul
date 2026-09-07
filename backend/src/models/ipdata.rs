@@ -3,8 +3,8 @@
 //! [`IPData`] almacena la información de geolocalización obtenida
 //! de la base de datos `MaxMind` `GeoIP2` para una dirección IP dada.
 //!
-//! [`GeoIpService`] envuelve el `Reader` de MaxMind con un cache LRU+TTL
-//! para evitar consultas repetidas a la base de datos GeoIP.
+//! [`GeoIpService`] envuelve el `Reader` de `MaxMind` con un cache LRU+TTL
+//! para evitar consultas repetidas a la base de datos `GeoIP`.
 
 use maxminddb::{Reader, geoip2};
 use moka::sync::Cache;
@@ -12,9 +12,10 @@ use serde::{Deserialize, Serialize};
 use std::time::Duration;
 use tracing::{error, trace};
 
-/// Tiempo de vida de las entradas del cache GeoIP.
+/// Tiempo de vida de las entradas del cache `GeoIP`.
+#[allow(clippy::duration_suboptimal_units)]
 const GEOIP_CACHE_TTL: Duration = Duration::from_secs(3600); // 1 hora
-/// Número máximo de entradas en el cache GeoIP.
+/// Número máximo de entradas en el cache `GeoIP`.
 const GEOIP_CACHE_MAX_CAPACITY: u64 = 10_000;
 
 /// Información de geolocalización asociada a una IP.
@@ -28,8 +29,8 @@ pub struct IPData {
 
 /// Servicio de geolocalización con cache LRU+TTL.
 ///
-/// Encapsula el `Reader` de MaxMind y un cache concurrente (`moka`)
-/// que evita consultas repetidas a la base de datos GeoIP para IPs
+/// Encapsula el `Reader` de `MaxMind` y un cache concurrente (`moka`)
+/// que evita consultas repetidas a la base de datos `GeoIP` para IPs
 /// ya resueltas. Los hits de cache son operaciones de tabla hash
 /// (nanosegundos) frente a la búsqueda binaria en el archivo mmdb
 /// (microsegundos).
@@ -40,6 +41,7 @@ pub struct GeoIpService {
 
 impl GeoIpService {
     /// Crea un nuevo `GeoIpService` con un cache LRU+TTL.
+    #[must_use]
     pub fn new(reader: Reader<Vec<u8>>) -> Self {
         let cache = Cache::builder()
             .time_to_live(GEOIP_CACHE_TTL)
@@ -49,6 +51,7 @@ impl GeoIpService {
     }
 
     /// Resuelve la geolocalización de una IP, usando el cache si es posible.
+    #[must_use]
     pub fn lookup(&self, ip: &str) -> IPData {
         if let Some(data) = self.cache.get(ip) {
             return data;
@@ -62,14 +65,16 @@ impl GeoIpService {
         data
     }
 
-    /// Acceso directo al `Reader` de MaxMind (para consultas puntuales admin).
+    /// Acceso directo al `Reader` de `MaxMind` (para consultas puntuales admin).
     #[allow(dead_code)]
-    pub fn reader(&self) -> &Reader<Vec<u8>> {
+    #[must_use]
+    pub const fn reader(&self) -> &Reader<Vec<u8>> {
         &self.reader
     }
 
     /// Número de entradas actualmente en el cache (para diagnóstico).
     #[allow(dead_code)]
+    #[must_use]
     pub fn cache_len(&self) -> u64 {
         self.cache.weighted_size()
     }

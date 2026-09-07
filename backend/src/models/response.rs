@@ -20,6 +20,12 @@ pub struct EmptyResponse {
     pub message: String,
 }
 impl EmptyResponse {
+    /// Creates an HTTP response with the given status code and message.
+    ///
+    /// # Panics
+    ///
+    /// Panics if the response builder fails to construct the response body,
+    /// which should never happen under normal circumstances.
     #[must_use]
     pub fn create(status: StatusCode, message: &str) -> Response<Body> {
         Response::builder()

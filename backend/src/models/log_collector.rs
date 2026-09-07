@@ -38,6 +38,8 @@ pub struct LogCollector {
 }
 
 impl LogCollector {
+    /// Create a new `LogCollector` with the given capacity.
+    #[must_use]
     pub fn new(capacity: usize) -> Self {
         Self {
             buffer: VecDeque::with_capacity(capacity),
@@ -53,6 +55,7 @@ impl LogCollector {
     }
 
     /// Returns all entries (front-to-back, oldest first).
+    #[must_use]
     pub fn all(&self) -> Vec<LogEntry> {
         self.buffer.iter().cloned().collect()
     }
@@ -64,12 +67,23 @@ impl LogCollector {
         }
     }
 
-    pub fn capacity(&self) -> usize {
+    /// Returns the current capacity.
+    #[must_use]
+    pub const fn capacity(&self) -> usize {
         self.capacity
     }
 
+    /// Number of entries in the buffer.
+    #[must_use]
     pub fn len(&self) -> usize {
         self.buffer.len()
+    }
+
+    /// Whether the buffer is empty.
+    #[must_use]
+    #[allow(dead_code)]
+    pub fn is_empty(&self) -> bool {
+        self.buffer.is_empty()
     }
 }
 
@@ -129,7 +143,11 @@ macro_rules! audit_log {
             rule_id: json_value
                 .get("rule_id")
                 .and_then(|v| v.as_i64())
-                .map(|n| n as i32),
+                .map(|n| {
+                    #[allow(clippy::cast_possible_truncation)]
+                    let n = n as i32;
+                    n
+                }),
             rule_name: json_value
                 .get("rule_name")
                 .and_then(|v| v.as_str())
@@ -158,7 +176,11 @@ macro_rules! audit_log {
             status_code: json_value
                 .get("status_code")
                 .and_then(|v| v.as_i64())
-                .map(|n| n as i32),
+                .map(|n| {
+                    #[allow(clippy::cast_possible_truncation)]
+                    let n = n as i32;
+                    n
+                }),
             profile: json_value
                 .get("profile")
                 .and_then(|v| v.as_str())

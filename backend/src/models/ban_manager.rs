@@ -28,12 +28,14 @@ pub struct BanInfo {
 
 impl BanInfo {
     /// Returns true if this ban has expired.
+    #[allow(clippy::cast_sign_loss)]
     pub fn is_expired(&self) -> bool {
         let elapsed = Instant::now().duration_since(self.banned_at);
         elapsed > Duration::from_secs(self.ban_duration_seconds as u64)
     }
 
     /// Returns the remaining duration as a human-friendly string.
+    #[allow(clippy::cast_sign_loss)]
     pub fn time_remaining(&self) -> Duration {
         let elapsed = Instant::now().duration_since(self.banned_at);
         let total = Duration::from_secs(self.ban_duration_seconds as u64);
@@ -103,6 +105,13 @@ impl BanManager {
     ///
     /// NOTE: This method only operates on in-memory state. To persist the ban
     /// to the database, call [`BanManager::persist_ban`] after the mutex is released.
+    /// Bans an IP address.
+    ///
+    /// # Panics
+    ///
+    /// Panics if the IP is not found in the bans map after insertion,
+    /// which should never happen under normal circumstances.
+    #[must_use]
     pub fn ban(
         &mut self,
         ip: IpAddr,
@@ -163,6 +172,7 @@ impl BanManager {
             !ban_list.is_empty()
         });
         // Decay escalation counters
+        #[allow(clippy::cast_sign_loss)]
         let decay_duration = Duration::from_secs(self.ban_count_decay_days as u64 * 86400);
         self.escalation_counts
             .retain(|_, (_, last_ban)| Instant::now().duration_since(*last_ban) <= decay_duration);
@@ -213,7 +223,7 @@ impl BanManager {
         let entry = self
             .escalation_counts
             .entry(*ip)
-            .or_insert((0, Instant::now()));
+            .or_insert_with(|| (0, Instant::now()));
         entry.0 += 1;
         entry.1 = Instant::now();
     }
@@ -235,6 +245,17 @@ impl BanManager {
     ///
     /// This is useful on application startup to restore ban state from
     /// the previous session.
+    /// Loads bans from the database.
+    ///
+    /// # Panics
+    ///
+    /// Panics if the ban duration calculation overflows, which should
+    /// not happen with valid database values.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the database query fails.
+    #[allow(clippy::cast_sign_loss)]
     pub async fn load_from_db(
         pool: &sqlx::SqlitePool,
     ) -> Result<(Self, Vec<(IpAddr, Instant)>), sqlx::Error> {
@@ -252,7 +273,7 @@ impl BanManager {
             3600,             // default_ban_duration
             true,             // bantime_increment
             vec![1, 2, 4, 8], // bantime_multipliers
-            604800,           // bantime_maxtime (7 days)
+            604_800,          // bantime_maxtime (7 days)
             30,               // ban_count_decay_days
         );
 
@@ -292,6 +313,12 @@ impl BanManager {
     /// Persist a ban to the database.
     ///
     /// Call this AFTER `BanManager::ban()` to ensure the ban is durable.
+    /// Persists a ban to the database.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the database insert fails.
+    #[allow(clippy::cast_possible_wrap)]
     pub async fn persist_ban(
         pool: &sqlx::SqlitePool,
         ip: IpAddr,
@@ -322,6 +349,11 @@ impl BanManager {
     /// Mark a ban as expired in the database (soft-delete).
     ///
     /// Call this AFTER `BanManager::unban()` to keep the DB consistent.
+    /// Removes a ban from the database.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the database delete fails.
     pub async fn remove_from_db(
         pool: &sqlx::SqlitePool,
         ip: &IpAddr,
@@ -348,6 +380,11 @@ impl BanManager {
     ///
     /// Call this periodically (e.g. via a cron-like task) to keep the DB clean.
     #[allow(dead_code)]
+    /// Cleans up expired bans from the database.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the database delete fails.
     pub async fn cleanup_expired_db(pool: &sqlx::SqlitePool) -> Result<(), sqlx::Error> {
         sqlx::query(
             "UPDATE bans SET expired = 1 \

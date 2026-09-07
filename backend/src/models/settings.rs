@@ -134,6 +134,10 @@ impl Settings {
     ///
     /// Lee todas las claves de la tabla `settings` y construye un [`Settings`].
     /// Si una clave no existe, se usa el valor por defecto.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the database query fails or if the stored values cannot be parsed.
     pub async fn load(pool: &SqlitePool) -> Result<Self, AppError> {
         let rows = sqlx::query("SELECT key, value FROM settings")
             .fetch_all(pool)
@@ -225,6 +229,10 @@ impl Settings {
     ///
     /// Cada campo de [`Settings`] se guarda como una fila independiente
     /// en la tabla `settings`.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the database upsert fails.
     pub async fn save(pool: &SqlitePool, settings: &Self) -> Result<(), AppError> {
         let pairs = vec![
             ("safe_paths", settings.safe_paths.join(", ")),

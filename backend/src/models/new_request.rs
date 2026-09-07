@@ -35,6 +35,8 @@ impl NewRequest {
     /// Los encabezados `x-forwarded-*` son la fuente principal de datos.
     /// Para campos de encabezado HTTP estándar, se usa primero el prefijo
     /// `x-forwarded-*` y como fallback el encabezado original.
+    /// Build a `NewRequest` from HTTP headers and optional `GeoIP` data.
+    #[allow(clippy::too_many_lines, clippy::option_if_let_else)]
     pub fn from_request(headers: &http::HeaderMap, geoip: Option<&GeoIpService>) -> Self {
         let protocol = headers
             .get("x-forwarded-proto")

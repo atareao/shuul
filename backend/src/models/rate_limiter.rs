@@ -24,6 +24,7 @@ pub struct CircularTimestamps {
 
 impl CircularTimestamps {
     /// Create a new ring buffer that tracks up to `capacity` timestamps.
+    #[must_use]
     pub fn new(capacity: usize) -> Self {
         let now = Instant::now();
         Self {
@@ -47,6 +48,7 @@ impl CircularTimestamps {
     /// timestamp is within `find_time` seconds of the newest.
     ///
     /// This means the IP has exceeded `max_retry` within the sliding window.
+    #[must_use]
     pub fn threshold_reached(&self, find_time: Duration) -> bool {
         if self.count < self.capacity {
             return false;
@@ -59,12 +61,14 @@ impl CircularTimestamps {
 
     /// Number of timestamps stored.
     #[allow(dead_code)]
-    pub fn len(&self) -> usize {
+    #[must_use]
+    pub const fn len(&self) -> usize {
         self.count
     }
 
     /// Whether the buffer is empty.
-    pub fn is_empty(&self) -> bool {
+    #[must_use]
+    pub const fn is_empty(&self) -> bool {
         self.count == 0
     }
 }
@@ -82,6 +86,7 @@ pub struct RateLimiter {
 
 impl RateLimiter {
     /// Create a new rate limiter with the given threshold.
+    #[must_use]
     pub fn new(max_retry: u32, find_time_seconds: i32) -> Self {
         Self {
             ip_buffers: HashMap::new(),
@@ -92,6 +97,7 @@ impl RateLimiter {
 
     /// Record a request from `ip`. Returns `true` if the threshold is reached
     /// (IP should be banned).
+    #[allow(clippy::cast_sign_loss)]
     pub fn record(&mut self, ip: IpAddr) -> bool {
         let capacity = self.max_retry as usize;
         let buffer = self
@@ -104,6 +110,7 @@ impl RateLimiter {
 
     /// Remove expired entries to prevent memory leaks.
     /// Entries whose newest timestamp is older than `find_time` are removed.
+    #[allow(clippy::cast_sign_loss)]
     pub fn cleanup_expired(&mut self) {
         let find_time = Duration::from_secs(self.find_time_seconds as u64);
         self.ip_buffers.retain(|_, buffer| {
@@ -125,11 +132,13 @@ impl RateLimiter {
 
     /// Number of tracked IPs.
     #[allow(dead_code)]
+    #[must_use]
     pub fn len(&self) -> usize {
         self.ip_buffers.len()
     }
 
     /// Whether no IPs are tracked.
+    #[must_use]
     pub fn is_empty(&self) -> bool {
         self.ip_buffers.is_empty()
     }
