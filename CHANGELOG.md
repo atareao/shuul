@@ -1,4 +1,31 @@
 # Changelog
+## [0.11.0] - 2026-09-08
+
+### Bug Fixes
+
+- *(charts)* Use scale.color.range for evolution chart colors
+- *(charts)* Use colorField + group instead of seriesField + dodgeX for evolution chart colors
+- Add trailing-slashless routes for DELETE/POST/PATCH on bans, rules, and rate-limit-profiles
+- Add trailing-slashless routes for POST/PATCH/DELETE on bans, rules, rate-limit-profiles
+
+### Documentation
+
+- Rewrite documentation after major architecture changes
+
+### Features
+
+- Add in-memory log viewer with configurable ring buffer
+- Improve Log Viewer with toggle filters, fix CustomTable and chart colors (#23)
+
+### Other
+
+- V0.11.0
+
+### Refactor
+
+- Fix clippy warnings and improve code quality across backend
+- Fix clippy warnings and improve code quality across backend
+# Changelog
 ## [0.10.0] - 2026-09-05
 
 ### Features
