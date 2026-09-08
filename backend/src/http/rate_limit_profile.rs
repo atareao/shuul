@@ -26,10 +26,13 @@ use tracing::debug;
 pub fn rate_limit_profile_router() -> Router<Arc<AppState>> {
     Router::new()
         .route("/", routing::post(create_handler))
+        .route("", routing::post(create_handler))
         .route("/", routing::get(read_handler))
         .route("/info", routing::get(read_info_handler))
         .route("/", routing::patch(update_handler))
+        .route("", routing::patch(update_handler))
         .route("/", routing::delete(delete_handler))
+        .route("", routing::delete(delete_handler))
 }
 
 /// Creates a new rate limit profile in the database.

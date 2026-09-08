@@ -24,11 +24,14 @@ use tracing::debug;
 pub fn rule_router() -> Router<Arc<AppState>> {
     Router::new()
         .route("/", routing::post(create_handler))
+        .route("", routing::post(create_handler))
         .route("/", routing::get(read_handler))
         .route("/info", routing::get(read_info_handler))
         .route("/info/all", routing::get(read_info_all_handler))
         .route("/", routing::patch(update_handler))
+        .route("", routing::patch(update_handler))
         .route("/", routing::delete(delete_handler))
+        .route("", routing::delete(delete_handler))
         .route("/export", routing::get(export_handler))
         .route("/import", routing::post(import_handler))
 }

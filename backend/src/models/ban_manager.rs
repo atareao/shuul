@@ -408,7 +408,7 @@ mod tests {
         let ip: IpAddr = "1.2.3.4".parse().unwrap();
 
         assert!(bm.is_banned(&ip).is_none());
-        bm.ban(ip, None, "test ban".to_string(), None);
+        let _ = bm.ban(ip, None, "test ban".to_string(), None);
         assert!(bm.is_banned(&ip).is_some());
     }
 
@@ -417,7 +417,7 @@ mod tests {
         let mut bm = BanManager::new(3600, false, vec![1, 2, 4], 86400, 30);
         let ip: IpAddr = "1.2.3.4".parse().unwrap();
 
-        bm.ban(ip, Some(1), "test".to_string(), None);
+        let _ = bm.ban(ip, Some(1), "test".to_string(), None);
         assert!(bm.unban(&ip, Some(1)));
         assert!(bm.is_banned(&ip).is_none());
     }
@@ -445,7 +445,7 @@ mod tests {
         let mut bm = BanManager::new(1, false, vec![1], 86400, 30);
         let ip: IpAddr = "1.2.3.4".parse().unwrap();
 
-        bm.ban(ip, None, "short ban".to_string(), None);
+        let _ = bm.ban(ip, None, "short ban".to_string(), None);
         assert_eq!(bm.active_count(), 1);
 
         std::thread::sleep(Duration::from_millis(1100));
