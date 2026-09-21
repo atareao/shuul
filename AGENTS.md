@@ -1,22 +1,146 @@
-# Reglas específicas del proyecto Shuul — AGENTS
+# AGENT DIRECTIVES: OPENSPEC (SDD) + TDD WORKFLOW
 
-## Stack tecnológico
+## ⚠️ REGLA DE ORO — LEER ANTES DE ACTUAR
 
-| Capa | Tecnología |
-|---|---|
-| Backend | Rust + Axum 0.8 + Tokio |
-| Base de datos | **SQLite** (via sqlx 0.8, runtime-tokio-rustls) |
-| Frontend | React 19 (class components) + TypeScript + Vite 7 |
-| UI | Ant Design 6 + @ant-design/charts |
-| Contenedor | Docker (multi-stage build: rust:alpine3.23 → node:23-alpine → alpine:3.23) |
-| Proxy inverso | Traefik v3.x (ForwardAuth + plugin middleware) |
-| Plugin Traefik | [traefik-shuul-reporter](https://github.com/atareao/traefik-shuul-reporter) |
-| GeoIP | MaxMind GeoLite2 City (mmdb) + moka LRU cache |
-| Auth | OIDC (PocketID) + JWT (HS256, jsonwebtoken crate) |
-| i18n | i18next (es, ca, en) |
-| Tooling | just (task runner), vampus (version management) |
+**ANTES de escribir o editar CUALQUIER archivo de código fuente (Rust, TypeScript, JSX, CSS, etc.),
+debes ejecutar `just check-spec` para confirmar que existe un change proposal aprobado.**
 
-## Arquitectura: dos pipelines independientes
+Si `just check-spec` falla:
+1. DETENTE inmediatamente.
+2. Informa al usuario que no hay un change proposal activo.
+3. Pregunta si quiere crear uno con `openspec new change <feature>`.
+4. NO escribas código hasta recibir aprobación explícita.
+
+**SALTARSE ESTE PASO ES VIOLACIÓN DEL PROTOCOLO.**
+
+---
+
+## I. CORE PRINCIPLES & GOALS
+
+- **Phase 0 — Legacy Support:** If modifying existing code without specs or tests, establish a baseline spec and characterization tests before introducing changes.
+- **Phase 1 — SDD (OpenSpec):** No new code or tests may be written before a spec change proposal exists in `openspec/changes/<feature>/` and is approved by the user.
+- **Phase 2 — TDD (Red-Green-Refactor):** Once the spec is approved, code MUST be developed strictly test-first using terminal commands.
+- **Strict Verification:** Always run CLI test suites using terminal tools. Never assume code or tests pass/fail without CLI confirmation.
+
+---
+
+## II. EXECUTION WORKFLOW
+
+### Phase 0: Legacy Code Preparation (Conditional)
+
+*Execute this phase ONLY if modifying an existing module/file that lacks OpenSpec documentation or tests.*
+
+1. **Characterization Spec (As-Is):**
+   - Inspect the target file/module.
+   - Generate a baseline spec in `openspec/specs/<module>/spec.md` reflecting current behavior.
+2. **Characterization Tests:**
+   - Write Rust (`#[test]`) or React/TS (`vitest` / `@testing-library/react`) tests matching current behavior.
+   - Run tests via CLI (`cargo test` or `npx vitest run`) to confirm all pass in **GREEN**.
+
+### Phase 1: SDD Protocol (OpenSpec)
+
+When the user requests a new feature, bug fix, or refactor:
+
+1. **Create the Change Proposal:**
+   - Execute CLI command: `openspec new change <feature-name>`
+2. **Draft Specifications:**
+   - Populate `openspec/changes/<feature-name>/proposal.md` with intent, scope, and impact.
+   - Create spec deltas in `openspec/changes/<feature-name>/specs/<module>/spec.md`.
+   - Ensure the spec includes:
+     - **Contracts:** Rust types/structs/enums, TypeScript interfaces/props, API endpoints, or function signatures.
+     - **Scenarios (BDD style):** Detailed `Given / When / Then` clauses for happy path, error cases, and edge cases.
+   - Populate `openspec/changes/<feature-name>/tasks.md` with the TDD task checklist.
+3. **STOP & WAIT FOR APPROVAL:**
+   - Present the created specification to the user.
+   - **DO NOT** write application code or new tests until the user explicitly approves the spec.
+
+### Phase 2: TDD Protocol (Red-Green-Refactor)
+
+Once the user approves the spec (e.g., "Approved", "Looks good", "Proceed with TDD"):
+
+1. **RED (Write Failing Tests):**
+   - Read the `Given / When / Then` scenarios in `openspec/changes/<feature-name>/specs/`.
+   - Write tests in Rust or React/TypeScript corresponding to those scenarios.
+   - Execute CLI tests (`cargo test` or `npx vitest run`).
+   - **Verify:** Confirm test failure for the new functionality while any legacy tests remain **GREEN**.
+2. **GREEN (Minimal Implementation):**
+   - Write the absolute minimum code necessary to satisfy the failing tests.
+   - Execute CLI tests (`cargo test` or `npx vitest run`).
+   - Run type checks (`cargo check` or `npx tsc --noEmit`).
+   - **Verify:** Confirm all tests pass (100% green) and no compilation/type errors exist.
+3. **REFACTOR (Clean & Consolidate):**
+   - Clean up code formatting, types, and structure without altering behavior.
+   - Run linters (`cargo clippy -- -D warnings` / `npm run lint`).
+   - Re-run test suites via CLI to guarantee no regressions.
+4. **CONSOLIDATE & ARCHIVE:**
+   - Mark completed items in `tasks.md`.
+   - Once all scenarios pass, run `openspec archive <feature-name>` to merge the delta into `openspec/specs/`.
+
+### Practical Lessons Learned (SDD + TDD)
+
+#### Archive requires exact header matching
+`openspec archive` busca el header exacto del delta en la spec destino. Si el header del delta es `"### Requirement: Pipeline evaluation order (WAF first)"` pero la spec tiene `"### Requirement: Pipeline evaluation order"`, el archive falla. **Los headers del delta deben copiar EXACTAMENTE los de la spec destino.**
+
+#### Si reescribes la spec directamente, no intentes archivar
+Si modificaste `openspec/specs/<module>/spec.md` a mano (fuera del mecanismo de archive), el change proposal correspondiente queda huérfano. No se puede archivar porque los headers ya no coinciden. **Solución: eliminar el directorio del change proposal** (`rm -rf openspec/changes/<feature>/`).
+
+#### Cambios en cascada
+Eliminar una entidad (ej. Whitelist/Blacklist) puede dejar código muerto en otras partes (ej. `AppError::Conflict`, tests de Conflict). El REFACTOR phase debe incluir la limpieza de estos artefactos. **Siempre ejecutar `cargo clippy -- -D warnings` tras el GREEN phase para detectar código/ variantes no usados.**
+
+#### `openspec archive --yes` no bypassa validación de headers
+La flag `--yes` salta la comprobación de tareas incompletas, pero NO la validación de que los headers del delta existan en la spec destino. Si los headers no matchean, el archive igual falla.
+
+#### Mantén openspec artifacts sincronizados con el código
+Si implementas un cambio en código pero no actualizas los artifacts de openspec (tasks, proposal), el change proposal queda "stuck" — no se puede archivar ni continuar. **Antes de empezar un nuevo cambio, verifica que no haya cambios activos huerfanos con `openspec list`.**
+
+---
+
+## III. PROJECT CONFIGURATION & CONVENTIONS
+
+### Stack Commands
+
+#### Backend: Rust
+- **Test Runner:** `cargo test` (or `cargo nextest run` if available).
+- **Type Checking & Linting:** `cargo check` and `cargo clippy -- -D warnings` (enforce zero warnings).
+- **Formatting:** `cargo fmt --check`
+- **Conventions:**
+  - Structs and types placed in domain modules or `src/models/`.
+  - Unit tests placed in the same file under `#[cfg(test)]`.
+  - Integration and API tests placed in `tests/`.
+
+#### Frontend: React + TypeScript
+- **Test Runner:** `npx vitest run` or `npm test -- --watch=false` (single-pass execution).
+- **Type Checking:** `npx tsc --noEmit` (mandatory during GREEN/REFACTOR steps).
+- **Linting & Formatting:** `npm run lint` / `npx eslint .`
+- **Conventions:**
+  - Components in `src/components/`, hooks in `src/hooks/`.
+  - Component tests colocated as `Component.test.tsx` using `@testing-library/react`.
+  - User-centric testing behavior using `@testing-library/user-event` instead of implementation details.
+
+### Custom Repository Rules
+
+- Insert here any specific business logic, database conventions, or custom architectural rules unique to this project.
+
+---
+
+## IV. RESPONSE FORMAT & STATUS MESSAGES
+
+Always prefix your progress updates with the current status tag:
+
+```text
+[LEGACY - INSPECT] Creating baseline spec & characterization tests.
+[OPENSPEC - DRAFT] Generating change proposal in openspec/changes/...
+[OPENSPEC - WAITING] Spec generated. Awaiting user review and approval.
+[TDD - RED] Creating tests for scenario <Name> -> Running CLI tests.
+[TDD - GREEN] Implementing minimal code -> Running CLI tests & type checks.
+[TDD - REFACTOR] Refactoring code -> Running Clippy/ESLint & tests.
+[OPENSPEC - ARCHIVE] Archiving change into openspec/specs/.
+```
+
+
+## V. CURRENT PROJECT STATE
+
+### Pipelines
 
 Shuul opera **dos pipelines** sobre un mismo conjunto de reglas:
 
@@ -25,29 +149,32 @@ Shuul opera **dos pipelines** sobre un mismo conjunto de reglas:
 | **WAF** | `ANY /api/v1/shuul` | ForwardAuth — interceptar, matchear, allow/deny | Primera regla que matchea gana (break por weight ASC) |
 | **Jail** | `POST /api/v1/report` | Rate limiter post-factum (fail2ban-style) | TODAS las reglas que matchean cuentan |
 
-### Flujo completo
+#### Flujo completo
 
 ```
-Request → Safe Paths? → ALLOW
-        → Trusted IPs? → ALLOW
-        → Trusted UAs? → ALLOW
-        → Banned IP? → 403 FORBIDDEN
-        → WAF rules (first match wins) → 200 OK / 403
+Request → WAF rules (first match wins, weight ASC)
+            ├─ allow → 200 OK (pasa, sin ban check)
+            ├─ deny  → 403 FORBIDDEN
+            └─ no match → ¿IP baneada?
+                            ├─ sí → 403 FORBIDDEN
+                            └─ no → 200 OK
         → Backend responde
         → Plugin captura status_code
         → Jail rules (ALL match) → rate limit → ban si excede
 ```
 
-### WAF (`shuul.rs`)
+#### WAF (`shuul.rs`)
 
 - **No evalúa rate limits.** Solo matching + allow/deny.
+- **Pipeline:** WAF rules (first match wins) → Ban check (si no hay match).
 - Primera regla que matchea (por weight ASC) gana. `break` tras encontrar una.
 - `mode = "off"` → skip. `mode = "log_only"` → allow=true. `mode = "enforce"` → apply allow/deny.
-- IP baneada → 403 FORBIDDEN (antes del matching loop).
-- Safe paths, trusted IPs, trusted UAs → ALLOW inmediato (antes de todo).
+- Si una WAF rule matchea con `allow=true` → 200 OK inmediato (no se evalúa ban).
+- Si ninguna WAF rule matchea → se comprueba si la IP está baneada → 403 si sí, 200 si no.
 - No hay concepto de `store` — ya no persiste requests individuales.
+- **No existen** entidades Whitelist ni Blacklist separadas. Su función se cubre con WAF rules de peso bajo.
 
-### Jail (`report.rs`)
+#### Jail (`report.rs`)
 
 - **Único pipeline que evalúa rate limits.**
 - Itera TODAS las reglas (sin break). Cada regla con `rate_limit_profile_id` es un "jail" independiente.
@@ -55,11 +182,11 @@ Request → Safe Paths? → ALLOW
 - Fire-and-forget: siempre devuelve 200 OK.
 - Recibe `ReportPayload` desde el plugin de Traefik.
 
-## CacheRule
+### CacheRule
 
 `CacheRule` en `backend/src/models/rule.rs` envuelve una `Rule` con `Option<Regex>` precompilado para cada filtro. **No tiene** `CachedRateLimit` ni campo `rate_limit`.
 
-### Filtros disponibles (14)
+#### Filtros disponibles (14)
 
 ```rust
 ip_address, protocol, fqdn, path, query,
@@ -68,7 +195,7 @@ user_agent, method, referer, content_type,
 accept_language, x_request_id
 ```
 
-### Lógica de `matches()`
+#### Lógica de `matches()`
 
 Todos los filtros se evalúan con AND. Si el regex de la regla es `None` → condición se cumple. Si el valor del request es `None` → condición se cumple. Ambos deben existir para que el regex se evalúe.
 
@@ -89,7 +216,7 @@ check_match(self.ip_address.as_ref(), request.ip_address.as_ref())
     && check_match(self.x_request_id.as_ref(), request.x_request_id.as_ref())
 ```
 
-## Base de datos — SQLite
+### Base de datos — SQLite
 
 Shuul usa **SQLite** (NO PostgreSQL). Puntos clave:
 
@@ -100,7 +227,7 @@ Shuul usa **SQLite** (NO PostgreSQL). Puntos clave:
 - `PRAGMA` features: mode rwc (read-write-create).
 - NO hay tablas de requests individuales. Sólo: `rules`, `rate_limit_profiles`, `bans`, `settings`, `stats_cache`.
 
-### Migraciones
+#### Migraciones
 
 ```
 backend/migrations/
@@ -110,17 +237,17 @@ backend/migrations/
 └── 20260903000002_add_scanner_aggressive_profile.up.sql
 ```
 
-### Tablas
+#### Tablas
 
 | Tabla | Propósito |
 |---|---|
 | `rules` | Reglas WAF + Jail (14 filtros, rate_limit_profile_id FK) |
 | `rate_limit_profiles` | Perfiles de rate limiting (max_retry, find_time, fail_codes, escalado) |
 | `bans` | Baneos persistentes (IP, rule_id, duración, nivel de escalado) |
-| `settings` | Configuración clave-valor (safe_paths, trusted_ips, etc.) |
+| `settings` | Configuración clave-valor (default_rule_mode, log_retention_days, log_all_requests) |
 | `stats_cache` | Snapshot JSON de estadísticas (persistido cada 30 min) |
 
-## AppState — Estado compartido
+### AppState — Estado compartido
 
 ```rust
 pub struct AppState {
@@ -141,7 +268,7 @@ pub struct AppState {
 }
 ```
 
-## Concurrencia
+### Concurrencia
 
 Todos los `MutexGuard` se liberan antes de cualquier `.await`. El orden de adquisición de locks es siempre:
 
@@ -151,7 +278,7 @@ rules → rate_limiter → ban_manager
 
 Nunca se adquiere un lock en orden inverso para evitar deadlocks. Este patrón se ve explícitamente en `shuul.rs` y `report.rs` — todo el trabajo síncrono (lock, read, match, release) se hace dentro de un bloque `{ }` cuyo ámbito termina antes de cualquier operación async.
 
-## Background Tasks
+### Background Tasks
 
 | Tarea | Intervalo | Propósito |
 |---|---|---|
@@ -159,7 +286,7 @@ Nunca se adquiere un lock en orden inverso para evitar deadlocks. Este patrón s
 | Ban cleanup | Cada 60s | Eliminar bans expirados, limpiar rate limiters |
 | Stats persist | Cada 1800s (30 min) | Guardar snapshot de StatsCollector en SQLite |
 
-## LogCollector
+### LogCollector
 
 Colector de logs de auditoría en memoria, implementado como `VecDeque` ring buffer con capacidad configurable en runtime (1000, 5000, 10000, 20000).
 
@@ -171,7 +298,7 @@ Colector de logs de auditoría en memoria, implementado como `VecDeque` ring buf
 - **API:** `GET /api/v1/logs` (listar, filtro `?event=`), `PUT /api/v1/logs/capacity` (cambiar capacidad)
 - **Frontend:** `LogsPage` con Table de Ant Design, paginación cliente, filtros por tipo de evento, auto-refresh (3s polling), expandable rows con JSON completo
 
-## StatsCollector
+### StatsCollector
 
 Colector de estadísticas en memoria con:
 
@@ -183,9 +310,9 @@ Colector de estadísticas en memoria con:
 - Snapshot a SQLite cada 30 min (JSON en tabla `stats_cache`)
 - Carga del snapshot al arrancar
 
-## API Surface
+### API Surface
 
-### Públicos (sin auth)
+#### Públicos (sin auth)
 
 | Method | Path | Handler | Descripción |
 |---|---|---|---|
@@ -198,7 +325,7 @@ Colector de estadísticas en memoria con:
 | GET | `/api/v1/auth/sso-status` | `sso_status` | Estado de SSO |
 | GET | `/api/v1/templates` | `list_templates` | Listar templates |
 
-### Protegidos (JWT Bearer)
+#### Protegidos (JWT Bearer)
 
 | Method | Path | Descripción |
 |---|---|---|
@@ -217,9 +344,9 @@ Colector de estadísticas en memoria con:
 | GET | `/api/v1/logs` | Listar entradas del LogCollector (buffer en memoria) |
 | PUT | `/api/v1/logs/capacity` | Cambiar capacidad del buffer (1000/5000/10000/20000) |
 
-## Frontend — React Class Components
+### Frontend — React Class Components
 
-### Páginas
+#### Páginas
 
 | Ruta | Componente | Descripción |
 |---|---|---|
@@ -235,7 +362,7 @@ Colector de estadísticas en memoria con:
 | `/admin/settings` | SettingsPage | Configuración global |
 | `/admin/logout` | LogoutPage | Cerrar sesión |
 
-### Componentes clave
+#### Componentes clave
 
 - **CustomTable** — Tabla CRUD genérica con paginación servidor, sorting, filtros, auto-refresh
 - **CustomDialog** — Modal genérico que auto-genera formularios desde `FieldDefinition<T>`
@@ -244,13 +371,13 @@ Colector de estadísticas en memoria con:
 - **AuthContext** — Contexto de autenticación JWT (token, login, logout, auto-logout timer)
 - **ModeContext** — Contexto de tema (dark/light, persistido en localStorage)
 
-### Convenciones TypeScript
+#### Convenciones TypeScript
 
 Ver sección completa en AGENTS.md más abajo.
 
-## TypeScript
+### TypeScript
 
-### `debounce` siempre debe tiparse con `.cancel()`
+#### `debounce` siempre debe tiparse con `.cancel()`
 
 ```typescript
 import type { DebouncedFn } from '@/common/utils';
@@ -262,7 +389,7 @@ private debouncedSetFilter: DebouncedFn<(key: string, value: string) => void>;
 private debouncedSetFilter: (key: string, value: string) => void;
 ```
 
-### `loadData` con query params: usar `Map`, no embeker en URL
+#### `loadData` con query params: usar `Map`, no embeker en URL
 
 ```typescript
 // ❌ MAL: query params en el endpoint
@@ -288,7 +415,7 @@ const [a, b, c] = await Promise.all([
 ]);
 ```
 
-### `componentDidUpdate`: early return para cambios irrelevantes
+#### `componentDidUpdate`: early return para cambios irrelevantes
 
 ```typescript
 componentDidUpdate = async (prevProps, prevState) => {
@@ -299,7 +426,7 @@ componentDidUpdate = async (prevProps, prevState) => {
 }
 ```
 
-### `clientFilter` y `extraHeaderContent` en CustomTable
+#### `clientFilter` y `extraHeaderContent` en CustomTable
 
 ```typescript
 <CustomTable<Item>
@@ -309,7 +436,7 @@ componentDidUpdate = async (prevProps, prevState) => {
 />
 ```
 
-### `type: 'tag'` en FieldDefinition
+#### `type: 'tag'` en FieldDefinition
 
 ```typescript
 {
@@ -324,7 +451,7 @@ componentDidUpdate = async (prevProps, prevState) => {
 }
 ```
 
-### `getRuleType()` helper
+#### `getRuleType()` helper
 
 ```typescript
 import { getRuleType } from "@/models/rule";
@@ -333,7 +460,7 @@ const ruleType = getRuleType(rule); // "waf" | "jail" | "both"
 
 Lógica: si tiene `rate_limit_profile_id` → jail. Si tiene algún filtro → waf. Si ambos → both.
 
-## Docker
+### Docker
 
 ### Multi-stage build
 
@@ -341,7 +468,7 @@ Lógica: si tiene `rate_limit_profile_id` → jail. Si tiene algún filtro → w
 2. **frontend-builder**: `node:23-alpine` — build del frontend con pnpm
 3. **runtime**: `alpine:3.23` — copia binario + static + migrations, expone puerto 3000
 
-### compose.yml
+#### compose.yml
 
 - Imagen: `atareao/shuul`
 - Volúmenes: `data` (SQLite), `geo` (MaxMind, external)
@@ -349,7 +476,7 @@ Lógica: si tiene `rate_limit_profile_id` → jail. Si tiene algún filtro → w
 - Healthcheck: `curl -f http://localhost:3000/api/v1/health/` cada 60s
 - Labels Traefik: router rule, entrypoint https, loadbalancer port 3000
 
-### Variables de entorno producción
+#### Variables de entorno producción
 
 | Variable | Requerida | Descripción |
 |---|---|---|
@@ -367,15 +494,15 @@ Lógica: si tiene `rate_limit_profile_id` → jail. Si tiene algún filtro → w
 
 81 plantillas de reglas y 9 perfiles de rate limit preconfigurados.
 
-### Categorías WAF (35 templates)
+#### Categorías WAF (35 templates)
 
 WordPress, Drupal, Laravel, GraphQL, Adminer, Sensitive Files, Known Bots, Geo blocking, SSTI, SQLi, XSS, Path Traversal, Log4j, Swagger, Symfony, Docker socket, etc.
 
-### Categorías Jail (46 templates)
+#### Categorías Jail (46 templates)
 
 Auth Brute Force, Admin Guard, Path Scanning, API Abuse, Scraping, Global Shield, Scanner Aggressive - con paths específicos para cada servicio (wp-login, grafana, nextcloud, jenkins, kubernetes, portainer, etc.)
 
-### Perfiles Rate Limit (9 perfiles)
+#### Perfiles Rate Limit (9 perfiles)
 
 | ID | Nombre | max_retry | window | ban_time | fail_codes |
 |---|---|---|---|---|---|
@@ -389,11 +516,11 @@ Auth Brute Force, Admin Guard, Path Scanning, API Abuse, Scraping, Global Shield
 | 8 | Global Shield | 300 | 60s | 300s | 403,404,429,500,502,503 |
 | 9 | Scanner Aggressive | 50 | 10s | 1800s | 403,404,405,500 |
 
-## Plugin Traefik: traefik-shuul-reporter
+### Plugin Traefik: traefik-shuul-reporter
 
 Plugin externo en Go que captura el status code del backend y lo reporta a shuul vía `POST /api/v1/report`.
 
-### Middleware chain
+#### Middleware chain
 
 ```yaml
 middlewares:
@@ -414,18 +541,15 @@ routers:
       - shuul-reporter  # 2º: Report (rate limit)
 ```
 
-## Configuración de Settings
+### Configuración de Settings
 
 | Clave | Tipo | Descripción |
 |---|---|---|
-| `safe_paths` | Vec<String> | Patrones regex de paths que bypassan reglas |
-| `trusted_ips` | Vec<IpNet> | CIDR que bypassan reglas |
-| `trusted_user_agents` | Vec<String> | Patrones regex de UA que bypassan reglas |
 | `default_rule_mode` | String | Modo por defecto para nuevas reglas |
 | `log_retention_days` | i32 | Días de retención de logs (1-365) |
 | `log_all_requests` | String | Nivel de log: all, pass, audit |
 
-## Documentación
+### Documentación
 
 | Archivo | Audiencia | Contenido |
 |---|---|---|
