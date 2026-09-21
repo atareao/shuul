@@ -348,6 +348,16 @@ impl BanManager {
                 };
 
                 manager.bans.entry(ip).or_default().push(ban_info);
+
+                // Restore escalation_counts with the maximum historical level per IP
+                let entry = manager
+                    .escalation_counts
+                    .entry(ip)
+                    .or_insert_with(|| (0, Instant::now()));
+                if (escalation_level as u32) > entry.0 {
+                    entry.0 = escalation_level as u32;
+                }
+
                 loaded.push((ip, banned_at));
             }
         }
@@ -867,5 +877,179 @@ mod db_tests {
         let rule_ids: Vec<Option<i32>> = bans.iter().map(|b| b.rule_id).collect();
         assert!(rule_ids.contains(&Some(1)), "should contain rule_id=1");
         assert!(rule_ids.contains(&Some(2)), "should contain rule_id=2");
+    }
+
+    // ------------------------------------------------------------------
+    // load_from_db escalation_counts restoration tests
+    // ------------------------------------------------------------------
+
+    #[tokio::test]
+    async fn test_load_from_db_restores_escalation_counts() {
+        let pool = create_pool_and_schema().await;
+        let ip: IpAddr = "1.2.3.4".parse().unwrap();
+        let now = chrono::Utc::now();
+
+        // Insert 2 bans for the same IP with different rule_ids and escalation_levels
+        // rule_id=1 with escalation_level=5
+        sqlx::query(
+            "INSERT INTO bans (ip_address, rule_id, reason, banned_at, \
+             ban_duration_seconds, escalation_level, expired, created_at) \
+             VALUES (?, ?, ?, ?, ?, ?, 0, ?)",
+        )
+        .bind(ip.to_string())
+        .bind(Some(1i32))
+        .bind("rule1")
+        .bind(now)
+        .bind(3600i64)
+        .bind(5i32)
+        .bind(now)
+        .execute(&pool)
+        .await
+        .unwrap();
+
+        // rule_id=2 with escalation_level=3
+        sqlx::query(
+            "INSERT INTO bans (ip_address, rule_id, reason, banned_at, \
+             ban_duration_seconds, escalation_level, expired, created_at) \
+             VALUES (?, ?, ?, ?, ?, ?, 0, ?)",
+        )
+        .bind(ip.to_string())
+        .bind(Some(2i32))
+        .bind("rule2")
+        .bind(now)
+        .bind(3600i64)
+        .bind(3i32)
+        .bind(now)
+        .execute(&pool)
+        .await
+        .unwrap();
+
+        let (manager, _) = BanManager::load_from_db(&pool).await.unwrap();
+
+        let escalation = manager.escalation_counts.get(&ip);
+        assert!(
+            escalation.is_some(),
+            "escalation_counts should contain the IP"
+        );
+        assert_eq!(
+            escalation.unwrap().0,
+            5,
+            "should restore the maximum escalation_level (5 > 3)"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_load_from_db_empty_db() {
+        let pool = create_pool_and_schema().await;
+
+        let (manager, _) = BanManager::load_from_db(&pool).await.unwrap();
+
+        assert!(
+            manager.escalation_counts.is_empty(),
+            "escalation_counts should be empty when no bans exist"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_load_from_db_single_ban() {
+        let pool = create_pool_and_schema().await;
+        let ip: IpAddr = "1.2.3.4".parse().unwrap();
+        let now = chrono::Utc::now();
+
+        // Insert 1 ban with escalation_level=7
+        sqlx::query(
+            "INSERT INTO bans (ip_address, rule_id, reason, banned_at, \
+             ban_duration_seconds, escalation_level, expired, created_at) \
+             VALUES (?, ?, ?, ?, ?, ?, 0, ?)",
+        )
+        .bind(ip.to_string())
+        .bind(Some(1i32))
+        .bind("single")
+        .bind(now)
+        .bind(3600i64)
+        .bind(7i32)
+        .bind(now)
+        .execute(&pool)
+        .await
+        .unwrap();
+
+        let (manager, _) = BanManager::load_from_db(&pool).await.unwrap();
+
+        let escalation = manager.escalation_counts.get(&ip);
+        assert!(
+            escalation.is_some(),
+            "escalation_counts should contain the IP"
+        );
+        assert_eq!(
+            escalation.unwrap().0,
+            7,
+            "should restore the escalation_level for a single ban"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_load_from_db_multiple_ips() {
+        let pool = create_pool_and_schema().await;
+        let ip1: IpAddr = "1.2.3.4".parse().unwrap();
+        let ip2: IpAddr = "5.6.7.8".parse().unwrap();
+        let now = chrono::Utc::now();
+
+        // Insert ban for IP 1.2.3.4 with escalation_level=5
+        sqlx::query(
+            "INSERT INTO bans (ip_address, rule_id, reason, banned_at, \
+             ban_duration_seconds, escalation_level, expired, created_at) \
+             VALUES (?, ?, ?, ?, ?, ?, 0, ?)",
+        )
+        .bind(ip1.to_string())
+        .bind(Some(1i32))
+        .bind("first-ip")
+        .bind(now)
+        .bind(3600i64)
+        .bind(5i32)
+        .bind(now)
+        .execute(&pool)
+        .await
+        .unwrap();
+
+        // Insert ban for IP 5.6.7.8 with escalation_level=3
+        sqlx::query(
+            "INSERT INTO bans (ip_address, rule_id, reason, banned_at, \
+             ban_duration_seconds, escalation_level, expired, created_at) \
+             VALUES (?, ?, ?, ?, ?, ?, 0, ?)",
+        )
+        .bind(ip2.to_string())
+        .bind(Some(2i32))
+        .bind("second-ip")
+        .bind(now)
+        .bind(3600i64)
+        .bind(3i32)
+        .bind(now)
+        .execute(&pool)
+        .await
+        .unwrap();
+
+        let (manager, _) = BanManager::load_from_db(&pool).await.unwrap();
+
+        let escalation1 = manager.escalation_counts.get(&ip1);
+        assert!(
+            escalation1.is_some(),
+            "escalation_counts should contain IP 1.2.3.4"
+        );
+        assert_eq!(
+            escalation1.unwrap().0,
+            5,
+            "IP 1.2.3.4 should have escalation_level 5"
+        );
+
+        let escalation2 = manager.escalation_counts.get(&ip2);
+        assert!(
+            escalation2.is_some(),
+            "escalation_counts should contain IP 5.6.7.8"
+        );
+        assert_eq!(
+            escalation2.unwrap().0,
+            3,
+            "IP 5.6.7.8 should have escalation_level 3"
+        );
     }
 }
