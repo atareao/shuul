@@ -105,16 +105,6 @@ interface State {
   autoRefresh: boolean;
 }
 
-function formatTimestamp(ts: string): string {
-  const d = new Date(ts);
-  const dd = String(d.getDate()).padStart(2, "0");
-  const mm = String(d.getMonth() + 1).padStart(2, "0");
-  const hh = String(d.getHours()).padStart(2, "0");
-  const min = String(d.getMinutes()).padStart(2, "0");
-  const ss = String(d.getSeconds()).padStart(2, "0");
-  return `${dd}/${mm} ${hh}:${min}:${ss}`;
-}
-
 export class InnerPage extends React.Component<Props, State> {
   private pollTimer: ReturnType<typeof setInterval> | null = null;
 
@@ -295,13 +285,6 @@ export class InnerPage extends React.Component<Props, State> {
 
     const columns: ColumnsType<LogEntry> = [
       {
-        title: "Timestamp",
-        dataIndex: "ts",
-        key: "ts",
-        width: 160,
-        render: (ts: string) => formatTimestamp(ts),
-      },
-      {
         title: "Event",
         dataIndex: "event",
         key: "event",
@@ -335,6 +318,14 @@ export class InnerPage extends React.Component<Props, State> {
         key: "country",
         width: 80,
         render: (country: string | null) => country || "-",
+      },
+      {
+        title: "FQDN",
+        dataIndex: "fqdn",
+        key: "fqdn",
+        width: 200,
+        ellipsis: true,
+        render: (fqdn: string | null) => fqdn || "-",
       },
       {
         title: "Rule",
