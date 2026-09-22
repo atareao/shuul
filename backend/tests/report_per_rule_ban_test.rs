@@ -9,7 +9,8 @@ use axum::body::Body;
 use axum::http::{Method, Request, StatusCode};
 use backend::http::report_router;
 use backend::models::{
-    AppState, BanManager, CacheRule, GeoIpService, RateLimiter, Settings, StatsCollector,
+    AppState, BanManager, CacheRule, GeoIpService, PendingBan, RateLimiter, Settings,
+    StatsCollector, TorService,
 };
 use sqlx::SqlitePool;
 use sqlx::sqlite::{SqliteConnectOptions, SqlitePoolOptions};
@@ -64,6 +65,7 @@ async fn create_pool() -> SqlitePool {
             mode TEXT NOT NULL DEFAULT 'log_only',
             pipeline TEXT NOT NULL DEFAULT 'waf',
             allow INTEGER NOT NULL DEFAULT 1,
+            is_tor INTEGER NOT NULL DEFAULT 0,
             ip_address TEXT, protocol TEXT, fqdn TEXT, path TEXT, query TEXT,
             city_name TEXT, country_name TEXT, country_code TEXT,
             user_agent TEXT, method TEXT, referer TEXT, content_type TEXT,
@@ -146,11 +148,19 @@ async fn build_app_state(pool: SqlitePool, pre_banned_rule: Option<i32>) -> (Arc
     // Load rules into the in-memory cache exactly as main.rs does.
     let rules = CacheRule::read_all_active(&pool).await.unwrap();
 
-    // Seed a pre-existing ban if requested.
+    // Seed a pre-existing pending ban if requested.
     let mut ban_manager = BanManager::new(3600, false, vec![1], 86400, 30);
+    let mut pending_bans = Vec::new();
     if let Some(rule_id) = pre_banned_rule {
         let ip = std::net::IpAddr::from_str("1.2.3.4").unwrap();
-        let _ = ban_manager.ban(ip, Some(rule_id), "pre-ban".to_string(), None);
+        pending_bans.push(PendingBan {
+            ip,
+            rule_id,
+            reason: "pre-ban".to_string(),
+            ban_duration_seconds: None,
+            escalation_level: 0,
+            created_at: std::time::Instant::now(),
+        });
     }
 
     let app_state = AppState {
@@ -164,6 +174,8 @@ async fn build_app_state(pool: SqlitePool, pre_banned_rule: Option<i32>) -> (Arc
         static_dir: ".".to_string(),
         ban_manager: Mutex::new(ban_manager),
         rate_limiter: Mutex::new(HashMap::<i32, RateLimiter>::new()),
+        pending_bans: Mutex::new(pending_bans),
+        tor_service: TorService::new(),
         settings: Mutex::new(Settings::default()),
         oidc_metadata: tokio::sync::RwLock::new(None),
         jwt_validator: tokio::sync::RwLock::new(None),
@@ -192,13 +204,13 @@ async fn post_report(app_state: Arc<AppState>) -> StatusCode {
     response.status()
 }
 
-/// Whether the IP is currently banned for the given rule id.
-fn banned_for_rule(state: &AppState, rule_id: i32) -> bool {
+/// Whether the IP has a pending ban for the given rule id.
+fn has_pending_ban(state: &AppState, rule_id: i32) -> bool {
     let ip = std::net::IpAddr::from_str("1.2.3.4").unwrap();
     state
-        .ban_manager
+        .pending_bans
         .lock()
-        .is_ok_and(|bm| bm.is_banned_for_rule(&ip, Some(rule_id)))
+        .is_ok_and(|pb| pb.iter().any(|b| b.ip == ip && b.rule_id == rule_id))
 }
 
 // ---------------------------------------------------------------------
@@ -210,9 +222,9 @@ async fn banned_for_rule_a_does_not_block_rule_b() {
     let pool = create_pool().await;
     let (state, _profile_id) = build_app_state(pool, Some(1)).await;
 
-    // Pre-state: IP is banned for rule_a (id=1), NOT for rule_b (id=3).
-    assert!(banned_for_rule(&state, 1));
-    assert!(!banned_for_rule(&state, 3));
+    // Pre-state: IP has a pending ban for rule_a (id=1), NOT for rule_b (id=3).
+    assert!(has_pending_ban(&state, 1));
+    assert!(!has_pending_ban(&state, 3));
 
     // The report matches BOTH rule_a and rule_b. With the old `is_banned()`
     // check, the pre-existing rule_a ban would also block rule_b.
@@ -220,12 +232,12 @@ async fn banned_for_rule_a_does_not_block_rule_b() {
     assert_eq!(status, StatusCode::OK);
 
     // Rule_a stays banned (it was pre-banned). Rule_b MUST now be processed
-    // and result in its own ban. This is the core of the bug fix.
+    // and result in its own pending ban. This is the core of the bug fix.
     assert!(
-        banned_for_rule(&state, 3),
+        has_pending_ban(&state, 3),
         "rule_b should be processed despite the rule_a ban"
     );
-    assert!(banned_for_rule(&state, 1));
+    assert!(has_pending_ban(&state, 1));
 }
 
 // ---------------------------------------------------------------------
@@ -237,19 +249,19 @@ async fn banned_for_rule_skips_same_rule() {
     let pool = create_pool().await;
     let (state, _profile_id) = build_app_state(pool, Some(3)).await;
 
-    // Pre-state: IP banned for rule_b (id=3) only.
-    assert!(banned_for_rule(&state, 3));
-    assert!(!banned_for_rule(&state, 1));
+    // Pre-state: IP has a pending ban for rule_b (id=3) only.
+    assert!(has_pending_ban(&state, 3));
+    assert!(!has_pending_ban(&state, 1));
 
     let status = post_report(state.clone()).await;
     assert_eq!(status, StatusCode::OK);
 
     // `is_banned_for_rule(&ip, Some(3))` returns true → the rule is skipped,
-    // so it does not get a fresh ban / escalation triggered by this report.
-    // The ban for rule_b must still be active.
+    // so it does not get a fresh pending ban triggered by this report.
+    // The pending ban for rule_b must still be present.
     assert!(
-        banned_for_rule(&state, 3),
-        "same-rule ban should remain active"
+        has_pending_ban(&state, 3),
+        "same-rule pending ban should remain"
     );
 }
 
@@ -262,14 +274,14 @@ async fn unbanned_ip_processes_all_rules() {
     let pool = create_pool().await;
     let (state, _profile_id) = build_app_state(pool, None).await;
 
-    // Pre-state: IP is not banned at all.
-    assert!(!banned_for_rule(&state, 1));
-    assert!(!banned_for_rule(&state, 3));
+    // Pre-state: IP has no pending bans at all.
+    assert!(!has_pending_ban(&state, 1));
+    assert!(!has_pending_ban(&state, 3));
 
     let status = post_report(state.clone()).await;
     assert_eq!(status, StatusCode::OK);
 
-    // Both rules are evaluated independently → both result in a ban.
-    assert!(banned_for_rule(&state, 1), "rule_a should process normally");
-    assert!(banned_for_rule(&state, 3), "rule_b should process normally");
+    // Both rules are evaluated independently → both result in a pending ban.
+    assert!(has_pending_ban(&state, 1), "rule_a should process normally");
+    assert!(has_pending_ban(&state, 3), "rule_b should process normally");
 }

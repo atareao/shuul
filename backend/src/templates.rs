@@ -705,5 +705,4 @@ mod tests {
         assert!(!health.escalation_enabled);
         assert_eq!(health.escalation_multipliers, vec![1]);
     }
-    }
 }

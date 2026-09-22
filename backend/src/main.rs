@@ -374,8 +374,6 @@ async fn main() -> Result<(), Error> {
             }
         }
     });
-        }
-    });
 
     let api_routes = Router::new()
         .nest("/shuul", shuul_router())
