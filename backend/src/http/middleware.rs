@@ -37,7 +37,8 @@ use jsonwebtoken::{Algorithm, DecodingKey, Validation};
 ///
 /// # Errors
 ///
-/// Devuelve `StatusCode::UNAUTHORIZED` si el token JWT falta o es inválido.
+/// Devuelve `StatusCode::UNAUTHORIZED` si el header `Authorization` falta,
+/// no usa el esquema `Bearer`, o el token JWT no es válido.
 pub async fn require_auth(
     State(app_state): State<Arc<AppState>>,
     req: Request,

@@ -19,6 +19,40 @@ import { loadData } from "@/common/utils";
 import { BASE_URL } from "@/constants";
 import ModeContext from "@/components/mode_context";
 
+const LOGS_PAGE_STORAGE_KEY = "logsPage";
+
+interface PersistedLogsState {
+  hiddenEvents: string[];
+  autoRefresh: boolean;
+}
+
+function loadPersistedLogsState(): PersistedLogsState {
+  try {
+    const raw = localStorage.getItem(LOGS_PAGE_STORAGE_KEY);
+    if (raw) {
+      const parsed = JSON.parse(raw);
+      return {
+        hiddenEvents: Array.isArray(parsed.hiddenEvents) ? parsed.hiddenEvents : [],
+        autoRefresh: typeof parsed.autoRefresh === "boolean" ? parsed.autoRefresh : false,
+      };
+    }
+  } catch {
+  // ignore parse errors
+  }
+  return { hiddenEvents: [], autoRefresh: false };
+}
+
+function savePersistedLogsState(hiddenEvents: string[], autoRefresh: boolean): void {
+  try {
+    localStorage.setItem(
+      LOGS_PAGE_STORAGE_KEY,
+      JSON.stringify({ hiddenEvents, autoRefresh })
+    );
+  } catch {
+  // ignore storage errors
+  }
+}
+
 interface LogEntry {
   ts: string;
   event: string;
@@ -86,14 +120,15 @@ export class InnerPage extends React.Component<Props, State> {
 
   constructor(props: Props) {
     super(props);
+    const persisted = loadPersistedLogsState();
     this.state = {
       loading: true,
       error: false,
       entries: [],
       total: 0,
       capacity: 1000,
-      hiddenEvents: [],
-      autoRefresh: false,
+      hiddenEvents: persisted.hiddenEvents,
+      autoRefresh: persisted.autoRefresh,
     };
   }
 
@@ -155,18 +190,21 @@ export class InnerPage extends React.Component<Props, State> {
       return { hiddenEvents };
     }, () => {
       this.updateUrl();
+      savePersistedLogsState(this.state.hiddenEvents, this.state.autoRefresh);
     });
   };
 
   showAllEvents = () => {
     this.setState({ hiddenEvents: [] }, () => {
       this.updateUrl();
+      savePersistedLogsState([], this.state.autoRefresh);
     });
   };
 
   toggleAutoRefresh = (checked: boolean) => {
     this.setState({ autoRefresh: checked }, () => {
       this.updateUrl();
+      savePersistedLogsState(this.state.hiddenEvents, checked);
     });
     if (checked) {
       this.pollTimer = setInterval(() => {
@@ -215,6 +253,11 @@ export class InnerPage extends React.Component<Props, State> {
 
     try {
       await this.refreshData();
+      if (this.state.autoRefresh) {
+        this.pollTimer = setInterval(() => {
+          this.refreshData();
+        }, 3000);
+      }
     } catch (err) {
       console.error("Failed to load logs on mount:", err);
       this.setState({ loading: false, error: true });
@@ -222,6 +265,7 @@ export class InnerPage extends React.Component<Props, State> {
   };
 
   componentWillUnmount = () => {
+    savePersistedLogsState(this.state.hiddenEvents, this.state.autoRefresh);
     if (this.pollTimer) {
       clearInterval(this.pollTimer);
       this.pollTimer = null;
