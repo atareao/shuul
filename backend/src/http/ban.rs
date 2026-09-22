@@ -19,9 +19,7 @@ pub fn ban_router() -> Router<Arc<AppState>> {
     Router::new()
         .route("/", routing::get(list_handler))
         .route("/", routing::post(ban_handler))
-        .route("", routing::post(ban_handler))
         .route("/", routing::delete(unban_handler))
-        .route("", routing::delete(unban_handler))
         .route("/info", routing::get(info_handler))
 }
 
@@ -30,6 +28,7 @@ pub struct BanResponse {
     pub id: String,
     pub ip_address: String,
     pub rule_id: Option<i32>,
+    pub rule_name: Option<String>,
     pub reason: String,
     pub ban_duration_seconds: i64,
     pub escalation_level: u32,
@@ -87,6 +86,7 @@ pub async fn list_handler(
                 id: ip.to_string(),
                 ip_address: ip.to_string(),
                 rule_id: ban.rule_id,
+                rule_name: None,
                 reason: ban.reason.clone(),
                 ban_duration_seconds: ban.ban_duration_seconds,
                 escalation_level: ban.escalation_level,
@@ -94,6 +94,22 @@ pub async fn list_handler(
             })
             .collect::<Vec<_>>()
     };
+
+    // Populate rule_name from app_state.rules (lock released before this)
+    {
+        let rules = app_state
+            .rules
+            .lock()
+            .map_err(|_| AppError::CachePoisoned)?;
+        for ban in &mut bans {
+            ban.rule_name = ban.rule_id.and_then(|id| {
+                rules
+                    .iter()
+                    .find(|r| r.rule.id == id)
+                    .map(|r| r.rule.name.clone())
+            });
+        }
+    }
 
     // Apply filters
     if let Some(ref ip) = params.ip_address {
@@ -119,6 +135,7 @@ pub async fn list_handler(
         "ban_duration_seconds",
         "escalation_level",
         "time_remaining_seconds",
+        "rule_name",
     ]
     .contains(&sort_by)
     {
@@ -128,6 +145,13 @@ pub async fn list_handler(
                     bans.sort_by(|a, b| a.ip_address.cmp(&b.ip_address));
                 } else {
                     bans.sort_by(|a, b| b.ip_address.cmp(&a.ip_address));
+                }
+            },
+            "rule_name" => {
+                if asc {
+                    bans.sort_by(|a, b| a.rule_name.cmp(&b.rule_name));
+                } else {
+                    bans.sort_by(|a, b| b.rule_name.cmp(&a.rule_name));
                 }
             },
             "reason" => {
@@ -248,6 +272,7 @@ pub async fn ban_handler(
             id: ip.to_string(),
             ip_address: ip.to_string(),
             rule_id: params.rule_id,
+            rule_name: None,
             reason: ban_info.reason.clone(),
             ban_duration_seconds: ban_info.ban_duration_seconds,
             escalation_level: ban_info.escalation_level,
@@ -267,6 +292,11 @@ pub async fn unban_handler(
     let ip: IpAddr = ip_str
         .parse()
         .map_err(|_| AppError::InvalidInput("Invalid IP address".to_string()))?;
+
+    // rule_id is required to identify which specific ban to remove
+    if params.rule_id.is_none() {
+        return Err(AppError::InvalidInput("rule_id is required".to_string()));
+    }
 
     let removed = {
         let mut ban_manager = app_state

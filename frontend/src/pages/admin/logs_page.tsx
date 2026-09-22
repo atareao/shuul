@@ -19,6 +19,40 @@ import { loadData } from "@/common/utils";
 import { BASE_URL } from "@/constants";
 import ModeContext from "@/components/mode_context";
 
+const LOGS_PAGE_STORAGE_KEY = "logsPage";
+
+interface PersistedLogsState {
+  hiddenEvents: string[];
+  autoRefresh: boolean;
+}
+
+function loadPersistedLogsState(): PersistedLogsState {
+  try {
+    const raw = localStorage.getItem(LOGS_PAGE_STORAGE_KEY);
+    if (raw) {
+      const parsed = JSON.parse(raw);
+      return {
+        hiddenEvents: Array.isArray(parsed.hiddenEvents) ? parsed.hiddenEvents : [],
+        autoRefresh: typeof parsed.autoRefresh === "boolean" ? parsed.autoRefresh : false,
+      };
+    }
+  } catch {
+  // ignore parse errors
+  }
+  return { hiddenEvents: [], autoRefresh: false };
+}
+
+function savePersistedLogsState(hiddenEvents: string[], autoRefresh: boolean): void {
+  try {
+    localStorage.setItem(
+      LOGS_PAGE_STORAGE_KEY,
+      JSON.stringify({ hiddenEvents, autoRefresh })
+    );
+  } catch {
+  // ignore storage errors
+  }
+}
+
 interface LogEntry {
   ts: string;
   event: string;
@@ -45,20 +79,12 @@ interface LogsResponse {
 }
 
 const EVENT_COLORS: Record<string, string> = {
-  safe_path: "green",
-  trusted_ip: "cyan",
-  trusted_ua: "geekblue",
+  denied: "error",
   banned: "red",
-  pass: "default",
-  allow: "success",
-  block: "error",
-  log_only: "warning",
-  report_received: "purple",
-  report_match: "orange",
-  report_block: "volcano",
-  report_ban: "red",
-  report_ok: "default",
-  report_skip: "gold",
+  admitted: "success",
+  cleared: "default",
+  registered: "orange",
+  sanctioned: "volcano",
 };
 
 const CAPACITY_OPTIONS = [1000, 5000, 10000, 20000];
@@ -94,14 +120,15 @@ export class InnerPage extends React.Component<Props, State> {
 
   constructor(props: Props) {
     super(props);
+    const persisted = loadPersistedLogsState();
     this.state = {
       loading: true,
       error: false,
       entries: [],
       total: 0,
       capacity: 1000,
-      hiddenEvents: [],
-      autoRefresh: false,
+      hiddenEvents: persisted.hiddenEvents,
+      autoRefresh: persisted.autoRefresh,
     };
   }
 
@@ -161,15 +188,24 @@ export class InnerPage extends React.Component<Props, State> {
         ? prevState.hiddenEvents.filter((e) => e !== event)
         : [...prevState.hiddenEvents, event];
       return { hiddenEvents };
+    }, () => {
+      this.updateUrl();
+      savePersistedLogsState(this.state.hiddenEvents, this.state.autoRefresh);
     });
   };
 
   showAllEvents = () => {
-    this.setState({ hiddenEvents: [] });
+    this.setState({ hiddenEvents: [] }, () => {
+      this.updateUrl();
+      savePersistedLogsState([], this.state.autoRefresh);
+    });
   };
 
   toggleAutoRefresh = (checked: boolean) => {
-    this.setState({ autoRefresh: checked });
+    this.setState({ autoRefresh: checked }, () => {
+      this.updateUrl();
+      savePersistedLogsState(this.state.hiddenEvents, checked);
+    });
     if (checked) {
       this.pollTimer = setInterval(() => {
         this.refreshData();
@@ -182,9 +218,46 @@ export class InnerPage extends React.Component<Props, State> {
     }
   };
 
+  updateUrl = () => {
+    const { hiddenEvents, autoRefresh } = this.state;
+    const params = new URLSearchParams();
+    if (hiddenEvents.length > 0) {
+      params.set("hidden", hiddenEvents.join(","));
+    }
+    if (autoRefresh) {
+      params.set("autoRefresh", "true");
+    }
+    const newUrl = params.toString()
+      ? `${window.location.pathname}?${params.toString()}`
+      : window.location.pathname;
+    window.history.replaceState(null, "", newUrl);
+  };
+
   componentDidMount = async () => {
+    // Restore state from URL search params
+    const params = new URLSearchParams(window.location.search);
+    const hiddenParam = params.get("hidden");
+    const autoRefreshParam = params.get("autoRefresh");
+    const hiddenEvents = hiddenParam
+      ? hiddenParam.split(",").filter((e) => e.trim() !== "")
+      : [];
+    const autoRefresh = autoRefreshParam === "true";
+
+    this.setState({ hiddenEvents, autoRefresh }, () => {
+      if (autoRefresh) {
+        this.pollTimer = setInterval(() => {
+          this.refreshData();
+        }, 3000);
+      }
+    });
+
     try {
       await this.refreshData();
+      if (this.state.autoRefresh) {
+        this.pollTimer = setInterval(() => {
+          this.refreshData();
+        }, 3000);
+      }
     } catch (err) {
       console.error("Failed to load logs on mount:", err);
       this.setState({ loading: false, error: true });
@@ -192,6 +265,7 @@ export class InnerPage extends React.Component<Props, State> {
   };
 
   componentWillUnmount = () => {
+    savePersistedLogsState(this.state.hiddenEvents, this.state.autoRefresh);
     if (this.pollTimer) {
       clearInterval(this.pollTimer);
       this.pollTimer = null;

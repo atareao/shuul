@@ -1,7 +1,7 @@
 //! # Endpoints de configuración global
 //!
-//! Permite leer y actualizar toda la configuración global de la aplicación
-//! (`safe_paths`, `trusted_ips`, `trusted_user_agents`, `default_rule_mode`, `log_retention_days`).
+//! Permite leer y actualizar la configuración global de la aplicación
+//! (`default_rule_mode`, `log_retention_days`, `log_all_requests`).
 //!
 //! Los datos se cargan y persisten mediante las funciones del modelo [`Settings`].
 
@@ -14,9 +14,6 @@ use std::sync::Arc;
 /// DTO for reading settings (serialized to JSON).
 #[derive(Debug, Serialize, Deserialize)]
 pub struct SettingsResponse {
-    pub safe_paths: Vec<String>,
-    pub trusted_ips: Vec<String>,
-    pub trusted_user_agents: Vec<String>,
     pub default_rule_mode: String,
     pub log_retention_days: i32,
     pub log_all_requests: String,
@@ -25,9 +22,6 @@ pub struct SettingsResponse {
 /// DTO for updating settings (all fields optional).
 #[derive(Debug, Deserialize)]
 pub struct UpdateSettingsPayload {
-    pub safe_paths: Option<Vec<String>>,
-    pub trusted_ips: Option<Vec<String>>,
-    pub trusted_user_agents: Option<Vec<String>>,
     pub default_rule_mode: Option<String>,
     pub log_retention_days: Option<i32>,
     pub log_all_requests: Option<String>,
@@ -50,13 +44,6 @@ pub async fn get_settings(
         .clone();
 
     let response = SettingsResponse {
-        safe_paths: settings.safe_paths,
-        trusted_ips: settings
-            .trusted_ips
-            .iter()
-            .map(std::string::ToString::to_string)
-            .collect(),
-        trusted_user_agents: settings.trusted_user_agents,
         default_rule_mode: settings.default_rule_mode,
         log_retention_days: settings.log_retention_days,
         log_all_requests: settings.log_all_requests,
@@ -114,20 +101,6 @@ pub async fn update_settings(
         .map_err(|_| AppError::CachePoisoned)?
         .clone();
 
-    if let Some(paths) = update.safe_paths {
-        settings.safe_paths = paths;
-    }
-    if let Some(ips) = update.trusted_ips {
-        // Parse CIDR strings into IpNet
-        settings.trusted_ips = ips
-            .iter()
-            .map(|s| s.parse())
-            .collect::<Result<Vec<_>, _>>()
-            .map_err(|e: AppError| e)?;
-    }
-    if let Some(agents) = update.trusted_user_agents {
-        settings.trusted_user_agents = agents;
-    }
     if let Some(mode) = update.default_rule_mode {
         settings.default_rule_mode = mode;
     }
@@ -137,9 +110,6 @@ pub async fn update_settings(
     if let Some(val) = update.log_all_requests {
         settings.log_all_requests = val;
     }
-
-    // Recompile regex patterns before persisting
-    settings.recompile();
 
     // Persist to database
     Settings::save(&app_state.pool, &settings).await?;

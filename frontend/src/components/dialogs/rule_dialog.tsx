@@ -55,6 +55,7 @@ const DEFAULT_VALUES: Record<string, any> = {
   user_agent: "",
   method: "",
   referer: "",
+  is_tor: false,
   content_type: "",
   accept_language: "",
   x_request_id: "",
@@ -85,6 +86,7 @@ function initializeFromItem(item?: Item): Record<string, any> {
     user_agent: item.user_agent ?? "",
     method: item.method ?? "",
     referer: item.referer ?? "",
+    is_tor: item.is_tor !== undefined ? Boolean(item.is_tor) : false,
     content_type: item.content_type ?? "",
     accept_language: item.accept_language ?? "",
     x_request_id: item.x_request_id ?? "",
@@ -113,6 +115,7 @@ function formatForApi(values: Record<string, any>): Record<string, any> {
     user_agent: values.user_agent || null,
     method: values.method || null,
     referer: values.referer || null,
+    is_tor: values.is_tor,
     content_type: values.content_type || null,
     accept_language: values.accept_language || null,
     x_request_id: values.x_request_id || null,
@@ -450,6 +453,14 @@ export default function RuleDialog({
       {renderInputRow("Protocol", "protocol")}
       {renderInputRow("FQDN", "fqdn")}
       {renderInputRow("Referer", "referer")}
+      <Flex align="center" gap="small">
+        <Text style={{ width: 120, flexShrink: 0 }}>{t("Tor Exit Node")}</Text>
+        <Switch
+          checked={Boolean(formValues.is_tor)}
+          onChange={(checked) => updateField("is_tor", checked)}
+          disabled={disabled}
+        />
+      </Flex>
     </Flex>
   );
 

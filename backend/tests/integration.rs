@@ -1,5 +1,8 @@
 //! Tests de integración con base de datos `PostgreSQL` real.
 //!
+//! NOTA: Este proyecto ahora usa SQLite. Este archivo se mantiene como
+//! referencia histórica y está deshabilitado.
+//!
 //! Requisitos:
 //!   1. `PostgreSQL` corriendo (ver `docker-compose.test.yml`)
 //!   2. Variable de entorno `DATABASE_URL` configurada
@@ -11,7 +14,7 @@
 //!   DATABASE_URL=postgres://test:test@localhost:5433/test_db cargo test --test integration -- --nocapture
 //!   ```
 
-use sqlx::PgPool;
+#![cfg(any())]
 use std::env;
 
 /// Obtiene la URL de la base de datos desde la variable de entorno.

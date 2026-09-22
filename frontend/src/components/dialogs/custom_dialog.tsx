@@ -89,8 +89,13 @@ class InnerDialog<T> extends React.Component<Props<T>, State<T>> {
       method = "DELETE";
       if (dataWithId?.id !== undefined) {
         searchParams.append("id", String(dataWithId.id));
-        queryString = searchParams.toString();
       }
+      // Pasar rule_id si existe (para bans que tienen rule_id)
+      const ruleId = (dataWithId as any)?.rule_id;
+      if (ruleId !== undefined && ruleId !== null) {
+        searchParams.append("rule_id", String(ruleId));
+      }
+      queryString = searchParams.toString();
       string_body = null;
     } else if (this.props.dialogMode === DialogModes.UPDATE) {
       method = "PATCH";
@@ -341,7 +346,7 @@ class InnerDialog<T> extends React.Component<Props<T>, State<T>> {
                 this.props.fields.map(
                   (field) =>
                     // Casting de field.key a keyof T & string es seguro aquí
-                    field.visible === true && (
+                    (field.visibleInDialog ?? field.visible) === true && (
                       <Flex key={field.key}>
                         <Text style={{ width: 200 }}>{field.label}</Text>
                         {field.type === "boolean" && field.visible == true && (
@@ -398,6 +403,24 @@ class InnerDialog<T> extends React.Component<Props<T>, State<T>> {
                           />
                         )}
                         {field.type === "select" && field.visible == true && (
+                          <Select
+                            style={{ width: "100%" }}
+                            defaultValue={
+                              this.getValue(
+                                field.key as keyof T & string,
+                              ) as any
+                            }
+                            onChange={(value) =>
+                              this.onChange(
+                                field.key as keyof T & string,
+                                value,
+                              )
+                            }
+                            disabled={disabled}
+                            options={field.options}
+                          />
+                        )}
+                        {field.type === "tag" && field.visible == true && (
                           <Select
                             style={{ width: "100%" }}
                             defaultValue={

@@ -2,7 +2,7 @@ import React from "react";
 import { useNavigate } from "react-router";
 import { useTranslation } from "react-i18next";
 import { Button, Space } from "antd";
-import { DeleteFilled, PlusOutlined } from "@ant-design/icons";
+import { DeleteFilled } from "@ant-design/icons";
 import type Ban from "@/models/ban";
 import CustomTable from "@/components/custom_table";
 import type { FieldDefinition } from "@/common/types";
@@ -28,6 +28,15 @@ const FIELDS: FieldDefinition<Ban>[] = [
     width: 250,
     visible: true,
     sortKey: "reason",
+  },
+  {
+    key: "rule_name",
+    label: "Rule",
+    type: "tag",
+    value: "",
+    width: 160,
+    visible: true,
+    sortKey: "rule_name",
   },
   {
     key: "ban_duration_seconds",
@@ -68,14 +77,6 @@ const BAN_DIALOG_MESSAGES: DialogMessages = {
 };
 
 export class InnerPage extends React.Component<{ navigate: any; t: any }, {}> {
-  private renderHeaderAction = (onCreate: () => void) => {
-    return (
-      <Button type="primary" onClick={onCreate} icon={<PlusOutlined />}>
-        {this.props.t("Ban IP")}
-      </Button>
-    );
-  };
-
   private renderActionColumn = (
     item: Ban,
     _onEdit: any,
@@ -104,7 +105,6 @@ export class InnerPage extends React.Component<{ navigate: any; t: any }, {}> {
         t={this.props.t}
         hasActions={true}
         defaultSortField="ip_address"
-        renderHeaderAction={this.renderHeaderAction}
         renderActionColumn={this.renderActionColumn}
       />
     );

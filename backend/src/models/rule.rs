@@ -25,6 +25,7 @@ pub struct Rule {
     pub mode: String,
     pub pipeline: String,
     pub allow: bool,
+    pub is_tor: Option<bool>,
     pub ip_address: Option<String>,
     pub protocol: Option<String>,
     pub fqdn: Option<String>,
@@ -42,8 +43,8 @@ pub struct Rule {
     pub rate_limit_profile_id: Option<i32>,
     pub rate_limit_profile_name: Option<String>,
     pub active: bool,
-    created_at: DateTime<Utc>,
-    updated_at: DateTime<Utc>,
+    pub created_at: DateTime<Utc>,
+    pub updated_at: DateTime<Utc>,
 }
 
 #[derive(Debug, Serialize)]
@@ -55,6 +56,7 @@ pub struct RuleInfoCounts {
 #[derive(Debug, Clone)]
 pub struct CacheRule {
     pub rule: Rule,
+    pub is_tor: Option<bool>,
     pub ip_address: Option<Regex>,
     pub protocol: Option<Regex>,
     pub fqdn: Option<Regex>,
@@ -84,6 +86,7 @@ impl CacheRule {
     pub fn from_rule(rule: &Rule) -> Self {
         Self {
             rule: rule.clone(),
+            is_tor: rule.is_tor,
             ip_address: rule
                 .ip_address
                 .as_ref()
@@ -182,6 +185,15 @@ impl CacheRule {
                 _ => true,
             }
         };
+        let check_tor = |rule_tor: Option<bool>, request_tor: Option<bool>| -> bool {
+            // If rule has is_tor = Some(true), only match when request is Tor.
+            // If rule has is_tor = None or Some(false), the filter is neutral.
+            if rule_tor == Some(true) {
+                request_tor == Some(true)
+            } else {
+                true
+            }
+        };
         // Si CUALQUIERA de las comprobaciones devuelve 'false', el metodo devuelve 'false'.
         check_match(self.ip_address.as_ref(), request.ip_address.as_ref())
             && check_match(self.protocol.as_ref(), request.protocol.as_ref())
@@ -200,6 +212,7 @@ impl CacheRule {
                 request.accept_language.as_ref(),
             )
             && check_match(self.x_request_id.as_ref(), request.x_request_id.as_ref())
+            && check_tor(self.is_tor, request.is_tor)
     }
 }
 
@@ -211,6 +224,7 @@ pub struct NewRule {
     pub mode: Option<String>,
     pub pipeline: Option<String>,
     pub allow: Option<bool>,
+    pub is_tor: Option<bool>,
     pub ip_address: Option<String>,
     pub protocol: Option<String>,
     pub fqdn: Option<String>,
@@ -238,6 +252,7 @@ pub struct UpdateRule {
     pub mode: String,
     pub pipeline: String,
     pub allow: bool,
+    pub is_tor: Option<bool>,
     pub ip_address: Option<String>,
     pub protocol: Option<String>,
     pub fqdn: Option<String>,
@@ -298,6 +313,7 @@ impl Rule {
             mode: row.get("mode"),
             pipeline: row.get("pipeline"),
             allow: row.get("allow"),
+            is_tor: row.get("is_tor"),
             ip_address: row.get("ip_address"),
             protocol: row.get("protocol"),
             fqdn: row.get("fqdn"),
@@ -327,12 +343,12 @@ impl Rule {
     /// Returns an error if the database query fails.
     pub async fn create(pool: &SqlitePool, rule: NewRule) -> Result<Self, Error> {
         let sql = "INSERT INTO rules (name, description, weight, mode, pipeline, allow,
-            ip_address, protocol, fqdn, path, query, city_name, country_name,
+            is_tor, ip_address, protocol, fqdn, path, query, city_name, country_name,
             country_code, user_agent, method, referer, content_type,
             accept_language, x_request_id, rate_limit_profile_id,
             active, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?,
             ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?,
-            ?, ?, ?, ?, ?, ?) RETURNING *";
+            ?, ?, ?, ?, ?, ?, ?) RETURNING *";
         let now = Utc::now();
         query(sql)
             .bind(&rule.name)
@@ -341,6 +357,7 @@ impl Rule {
             .bind(rule.mode.unwrap_or_else(|| "log_only".to_string()))
             .bind(rule.pipeline.unwrap_or_else(|| "waf".to_string()))
             .bind(rule.allow.unwrap_or(true))
+            .bind(rule.is_tor.unwrap_or(false))
             .bind(rule.ip_address)
             .bind(rule.protocol)
             .bind(rule.fqdn)
@@ -414,6 +431,7 @@ impl Rule {
                 mode = ?,
                 pipeline = ?,
                 allow = ?,
+                is_tor = ?,
                 ip_address = ?,
                 protocol = ?,
                 fqdn = ?,
@@ -441,6 +459,7 @@ impl Rule {
             .bind(&rule.mode)
             .bind(&rule.pipeline)
             .bind(rule.allow)
+            .bind(rule.is_tor)
             .bind(rule.ip_address)
             .bind(rule.protocol)
             .bind(rule.fqdn)
@@ -684,5 +703,112 @@ impl Rule {
             .map(|row| Self::from_row(&row))
             .fetch_one(pool)
             .await
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::models::NewRequest;
+    use chrono::Utc;
+
+    fn make_request(is_tor: Option<bool>) -> NewRequest {
+        NewRequest {
+            ip_address: Some("8.8.8.8".to_string()),
+            protocol: None,
+            fqdn: None,
+            path: None,
+            query: None,
+            city_name: None,
+            country_name: None,
+            country_code: None,
+            user_agent: None,
+            method: None,
+            referer: None,
+            content_type: None,
+            accept_language: None,
+            x_request_id: None,
+            is_tor,
+            rule_id: None,
+            created_at: Utc::now(),
+        }
+    }
+
+    fn make_rule(is_tor: Option<bool>) -> CacheRule {
+        let rule = Rule {
+            id: 0,
+            name: "test".to_string(),
+            description: String::new(),
+            weight: 100,
+            mode: "enforce".to_string(),
+            pipeline: "waf".to_string(),
+            allow: false,
+            is_tor,
+            ip_address: None,
+            protocol: None,
+            fqdn: None,
+            path: None,
+            query: None,
+            city_name: None,
+            country_name: None,
+            country_code: None,
+            user_agent: None,
+            method: None,
+            referer: None,
+            content_type: None,
+            accept_language: None,
+            x_request_id: None,
+            rate_limit_profile_id: None,
+            rate_limit_profile_name: None,
+            active: true,
+            created_at: Utc::now(),
+            updated_at: Utc::now(),
+        };
+        CacheRule::from_rule(&rule)
+    }
+
+    /// Escenario: rule.is_tor = Some(true), request.is_tor = Some(true) → matches
+    #[test]
+    fn test_matches_tor_filter_match() {
+        let rule = make_rule(Some(true));
+        let request = make_request(Some(true));
+        assert!(rule.matches(&request));
+    }
+
+    /// Escenario: rule.is_tor = Some(true), request.is_tor = Some(false) → no match
+    #[test]
+    fn test_matches_tor_filter_no_match() {
+        let rule = make_rule(Some(true));
+        let request = make_request(Some(false));
+        assert!(!rule.matches(&request));
+    }
+
+    /// Escenario: rule.is_tor = None, request.is_tor = Some(true) → matches (neutral)
+    #[test]
+    fn test_matches_tor_filter_neutral() {
+        let rule = make_rule(None);
+        let request = make_request(Some(true));
+        assert!(rule.matches(&request));
+    }
+
+    /// Escenario: rule.is_tor = Some(true), request.is_tor = None → no match (unknown = not Tor)
+    #[test]
+    fn test_matches_tor_filter_lazy_unknown() {
+        let rule = make_rule(Some(true));
+        let request = make_request(None);
+        assert!(!rule.matches(&request));
+    }
+
+    /// Escenario: CacheRule::from_rule() copies is_tor field
+    #[test]
+    fn test_cache_rule_from_rule_copies_is_tor() {
+        let rule = make_rule(Some(true));
+        assert_eq!(rule.is_tor, Some(true));
+
+        let rule = make_rule(None);
+        assert_eq!(rule.is_tor, None);
+
+        let rule = make_rule(Some(false));
+        assert_eq!(rule.is_tor, Some(false));
     }
 }
