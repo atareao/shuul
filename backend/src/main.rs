@@ -34,8 +34,8 @@ use http::{
 use maxminddb::Reader;
 use models::CacheRule;
 use models::{
-    AppState, BanManager, Error, GeoIpService, JwtValidator, OidcMetadata, RateLimiter, Settings,
-    StatsCollector,
+    AppState, BanManager, Error, GeoIpService, JwtValidator, OidcMetadata, PendingBan, RateLimiter,
+    Settings, StatsCollector, TorService,
 };
 use sqlx::{
     migrate::{MigrateDatabase, Migrator},
@@ -158,6 +158,7 @@ async fn main() -> Result<(), Error> {
     ));
     let rate_limiter: Mutex<HashMap<i32, RateLimiter>> = Mutex::new(HashMap::new());
     let settings = Mutex::new(Settings::load(&pool).await.unwrap_or_default());
+    let pending_bans: Mutex<Vec<PendingBan>> = Mutex::new(Vec::new());
     let stats = StatsCollector::load(&pool).await;
 
     // ── OIDC / SSO Configuration (REQUIRED) ──
@@ -181,12 +182,14 @@ async fn main() -> Result<(), Error> {
             Reader::open_readfile(&maxmind_db_path)
                 .map_err(|e| Error::Other(format!("Failed to open MaxMind DB: {e}")))?,
         ),
+        tor_service: TorService::new(),
         static_dir: STATIC_DIR.to_string(),
         rules,
         stats,
         ban_manager,
         rate_limiter,
         settings,
+        pending_bans,
         oidc_metadata: tokio::sync::RwLock::new(None),
         jwt_validator: tokio::sync::RwLock::new(None),
         oidc_states: tokio::sync::Mutex::new(HashMap::new()),
@@ -256,6 +259,23 @@ async fn main() -> Result<(), Error> {
         }
     });
 
+    // Background task: cleanup expired pending bans every 60 seconds
+    let pending_cleanup_state = Arc::clone(&app_state);
+    tokio::spawn(async move {
+        let mut interval = tokio::time::interval(tokio::time::Duration::from_secs(60));
+        loop {
+            interval.tick().await;
+            if let Ok(mut pending) = pending_cleanup_state.pending_bans.lock() {
+                let before = pending.len();
+                pending.retain(|pb| pb.created_at.elapsed() < std::time::Duration::from_secs(60));
+                let after = pending.len();
+                if before != after {
+                    debug!("Pending ban cleanup: {} → {}", before, after);
+                }
+            }
+        }
+    });
+
     // Background task: persist stats every 30 minutes
     let stats_state = Arc::clone(&app_state);
     tokio::spawn(async move {
@@ -263,6 +283,20 @@ async fn main() -> Result<(), Error> {
         loop {
             interval.tick().await;
             stats_state.stats.persist(&stats_state.pool).await;
+        }
+    });
+
+    // Background task: refresh Tor exit node list (lazy — first refresh at 30s, then every 30 min)
+    let tor_state = Arc::clone(&app_state);
+    tokio::spawn(async move {
+        // First refresh after 30s (lazy init)
+        tokio::time::sleep(tokio::time::Duration::from_secs(30)).await;
+        tor_state.tor_service.refresh().await;
+        // Then every 30 minutes
+        let mut interval = tokio::time::interval(tokio::time::Duration::from_secs(1800));
+        loop {
+            interval.tick().await;
+            tor_state.tor_service.refresh().await;
         }
     });
 

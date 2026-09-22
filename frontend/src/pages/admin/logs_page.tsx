@@ -45,20 +45,12 @@ interface LogsResponse {
 }
 
 const EVENT_COLORS: Record<string, string> = {
-  safe_path: "green",
-  trusted_ip: "cyan",
-  trusted_ua: "geekblue",
+  denied: "error",
   banned: "red",
-  pass: "default",
-  allow: "success",
-  block: "error",
-  log_only: "warning",
-  report_received: "purple",
-  report_match: "orange",
-  report_block: "volcano",
-  report_ban: "red",
-  report_ok: "default",
-  report_skip: "gold",
+  admitted: "success",
+  cleared: "default",
+  registered: "orange",
+  sanctioned: "volcano",
 };
 
 const CAPACITY_OPTIONS = [1000, 5000, 10000, 20000];
@@ -161,15 +153,21 @@ export class InnerPage extends React.Component<Props, State> {
         ? prevState.hiddenEvents.filter((e) => e !== event)
         : [...prevState.hiddenEvents, event];
       return { hiddenEvents };
+    }, () => {
+      this.updateUrl();
     });
   };
 
   showAllEvents = () => {
-    this.setState({ hiddenEvents: [] });
+    this.setState({ hiddenEvents: [] }, () => {
+      this.updateUrl();
+    });
   };
 
   toggleAutoRefresh = (checked: boolean) => {
-    this.setState({ autoRefresh: checked });
+    this.setState({ autoRefresh: checked }, () => {
+      this.updateUrl();
+    });
     if (checked) {
       this.pollTimer = setInterval(() => {
         this.refreshData();
@@ -182,7 +180,39 @@ export class InnerPage extends React.Component<Props, State> {
     }
   };
 
+  updateUrl = () => {
+    const { hiddenEvents, autoRefresh } = this.state;
+    const params = new URLSearchParams();
+    if (hiddenEvents.length > 0) {
+      params.set("hidden", hiddenEvents.join(","));
+    }
+    if (autoRefresh) {
+      params.set("autoRefresh", "true");
+    }
+    const newUrl = params.toString()
+      ? `${window.location.pathname}?${params.toString()}`
+      : window.location.pathname;
+    window.history.replaceState(null, "", newUrl);
+  };
+
   componentDidMount = async () => {
+    // Restore state from URL search params
+    const params = new URLSearchParams(window.location.search);
+    const hiddenParam = params.get("hidden");
+    const autoRefreshParam = params.get("autoRefresh");
+    const hiddenEvents = hiddenParam
+      ? hiddenParam.split(",").filter((e) => e.trim() !== "")
+      : [];
+    const autoRefresh = autoRefreshParam === "true";
+
+    this.setState({ hiddenEvents, autoRefresh }, () => {
+      if (autoRefresh) {
+        this.pollTimer = setInterval(() => {
+          this.refreshData();
+        }, 3000);
+      }
+    });
+
     try {
       await this.refreshData();
     } catch (err) {

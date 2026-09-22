@@ -48,6 +48,7 @@ CREATE TABLE rules (
     content_type TEXT,
     accept_language TEXT,
     x_request_id TEXT,
+    is_tor INTEGER NOT NULL DEFAULT 0,
     rate_limit_profile_id INTEGER REFERENCES rate_limit_profiles(id) ON DELETE SET NULL,
     active INTEGER NOT NULL DEFAULT 1,
     created_at TEXT NOT NULL,

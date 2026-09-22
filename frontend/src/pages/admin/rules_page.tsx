@@ -1,8 +1,14 @@
 import React from "react";
 import { useNavigate } from "react-router";
 import { useTranslation } from "react-i18next";
-import { Button, Space, Select, Flex } from "antd";
-import { EditFilled, DeleteFilled, PlusOutlined } from "@ant-design/icons";
+import { Button, Space, Select, Flex, message } from "antd";
+import {
+  EditFilled,
+  DeleteFilled,
+  PlusOutlined,
+  DownloadOutlined,
+  UploadOutlined,
+} from "@ant-design/icons";
 import type Item from "@/models/rule"; // Alias para Rule
 
 // Importamos CustomTable y los tipos necesarios
@@ -10,6 +16,7 @@ import CustomTable from "@/components/custom_table";
 import type { FieldDefinition } from "@/common/types";
 import type { DialogMessages } from "@/components/dialogs/custom_dialog";
 import RuleDialog from "@/components/dialogs/rule_dialog";
+import { BASE_URL } from "@/constants";
 
 // 1. Constantes de configuración (fuera de la clase)
 const TITLE = "Rules";
@@ -128,23 +135,139 @@ interface Props {
 // La clase ya no necesita State, ya que CustomTable maneja el estado de la tabla.
 export class InnerPage extends React.Component<
   Props,
-  { pipelineFilter: string }
+  { pipelineFilter: string; loadingImport: boolean; refreshCounter: number }
 > {
   constructor(props: Props) {
     super(props);
-    this.state = { pipelineFilter: "all" };
+    this.state = {
+      pipelineFilter: "all",
+      loadingImport: false,
+      refreshCounter: 0,
+    };
   }
 
-  // 3. Método para renderizar el botón "Añadir"
+  // Export rules to JSON file
+  private handleExport = async () => {
+    try {
+      const token = localStorage.getItem("token");
+      const response = await fetch(`${BASE_URL}/api/v1/rules/export`, {
+        method: "GET",
+        headers: {
+          "Content-Type": "application/json",
+          ...(token ? { Authorization: `Bearer ${token}` } : {}),
+        },
+      });
+
+      if (!response.ok) {
+        throw new Error(`Export failed: ${response.status}`);
+      }
+
+      const result = await response.json();
+      const data = result.data;
+
+      if (!data) {
+        throw new Error("No data returned from export");
+      }
+
+      const blob = new Blob([JSON.stringify(data, null, 2)], {
+        type: "application/json",
+      });
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement("a");
+      a.href = url;
+      const dateStr = new Date().toISOString().split("T")[0];
+      a.download = `shuul-rules-${dateStr}.json`;
+      document.body.appendChild(a);
+      a.click();
+      document.body.removeChild(a);
+      URL.revokeObjectURL(url);
+    } catch (error) {
+      const msg =
+        error instanceof Error ? error.message : "Failed to export rules";
+      message.error(msg);
+    }
+  };
+
+  // Import rules from JSON file
+  private handleImport = () => {
+    const input = document.createElement("input");
+    input.type = "file";
+    input.accept = ".json";
+    input.onchange = async (e: Event) => {
+      const target = e.target as HTMLInputElement;
+      const file = target.files?.[0];
+      if (!file) return;
+
+      try {
+        const text = await new Promise<string>((resolve, reject) => {
+          const reader = new FileReader();
+          reader.onload = () => resolve(reader.result as string);
+          reader.onerror = () => reject(new Error("Failed to read file"));
+          reader.readAsText(file);
+        });
+
+        const parsed = JSON.parse(text);
+        if (!Array.isArray(parsed)) {
+          throw new Error("Invalid format: expected an array of rules");
+        }
+
+        this.setState({ loadingImport: true });
+
+        const token = localStorage.getItem("token");
+        const response = await fetch(`${BASE_URL}/api/v1/rules/import`, {
+          method: "POST",
+          headers: {
+            "Content-Type": "application/json",
+            ...(token ? { Authorization: `Bearer ${token}` } : {}),
+          },
+          body: JSON.stringify({ rules: parsed }),
+        });
+
+        if (!response.ok) {
+          throw new Error(`Import failed: ${response.status}`);
+        }
+
+        const result = await response.json();
+        message.success(`Imported ${result.imported} rules`);
+        this.setState((prev) => ({
+          refreshCounter: prev.refreshCounter + 1,
+        }));
+      } catch (error) {
+        const msg =
+          error instanceof Error ? error.message : "Failed to import rules";
+        message.error(msg);
+      } finally {
+        this.setState({ loadingImport: false });
+      }
+    };
+    input.click();
+  };
+
+  // 3. Método para renderizar los botones de acción del header
   private renderHeaderAction = (onCreate: () => void) => {
     return (
-      <Button
-        type="primary"
-        onClick={onCreate} // Llama al manejador interno de CustomTable para abrir el diálogo CREATE
-        icon={<PlusOutlined />}
-      >
-        {this.props.t("Add Rule")}
-      </Button>
+      <Space size="middle">
+        <Button
+          onClick={this.handleExport}
+          icon={<DownloadOutlined />}
+        >
+          {this.props.t("Export")}
+        </Button>
+        <Button
+          onClick={this.handleImport}
+          icon={<UploadOutlined />}
+          loading={this.state.loadingImport}
+        >
+          {this.props.t("Import")}
+        </Button>
+        <Button
+          type="primary"
+          onClick={onCreate}
+          icon={<PlusOutlined />}
+        >
+          {this.props.t("Add Rule")}
+        </Button>
+      </Space>
     );
   };
 
@@ -176,6 +299,10 @@ export class InnerPage extends React.Component<
     const params = new Map<string, string>();
     if (this.state.pipelineFilter !== "all") {
       params.set("pipeline", this.state.pipelineFilter);
+    }
+    // Add refresh counter to trigger table refresh after import
+    if (this.state.refreshCounter > 0) {
+      params.set("_t", this.state.refreshCounter.toString());
     }
 
     return (

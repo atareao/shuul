@@ -18,6 +18,7 @@ export interface RuleTemplate {
   content_type: string | null;
   accept_language: string | null;
   x_request_id: string | null;
+  is_tor: boolean | null;
   // Existing fields:
   allow: boolean;
   pipeline: string;

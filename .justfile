@@ -6,6 +6,15 @@ version  := `vampus show`
 list:
     @just --list
 
+check-spec:
+    @scripts/check-spec.sh
+
+setup-hooks:
+    @echo "Installing git hooks..."
+    @cp scripts/pre-commit.sh .git/hooks/pre-commit 2>/dev/null || true
+    @chmod +x .git/hooks/pre-commit
+    @echo "✅ Git hooks installed."
+
 dev:
     cd frontend && pnpm i && pnpm run build && rm -rf ../backend/static && mkdir ../backend/static && cp -r ./dist/* ../backend/static
     cd backend && RUST_LOG=debug cargo run

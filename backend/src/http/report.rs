@@ -17,7 +17,7 @@
 
 use crate::audit_log;
 use crate::models::{
-    AppState, BanManager, EmptyResponse, NewRequest, RateLimitProfile, RateLimiter, ReportPayload,
+    AppState, EmptyResponse, NewRequest, PendingBan, RateLimitProfile, RateLimiter, ReportPayload,
 };
 use axum::{Json, Router, extract::State, http::StatusCode, response::IntoResponse, routing};
 use std::net::IpAddr;
@@ -28,8 +28,8 @@ use tracing::{error, trace, warn};
 fn should_log(mode: &str, category: &str) -> bool {
     match mode {
         "all" => true,
-        "pass" => matches!(category, "pass"),
-        "audit" => matches!(category, "banned" | "block" | "report_block" | "report_ban"),
+        "pass" => matches!(category, "admitted" | "cleared"),
+        "audit" => matches!(category, "denied" | "banned" | "registered" | "pending"),
         _ => false,
     }
 }
@@ -57,22 +57,8 @@ async fn report_handler(
     // ── GeoIP lookup (needed for matching and all audit logs) ──
     let ip_data = app_state.geoip.lookup(&payload.ip_address);
 
-    if should_log(&log_all_requests, "report_received") {
-        audit_log!("report_received",
-            "pipeline": "jail",
-            "rule_id": null,
-            "rule_name": null,
-            "ip": payload.ip_address,
-            "country": ip_data.country_code,
-            "path": payload.path,
-            "method": payload.method,
-            "fqdn": payload.fqdn,
-            "query": payload.query,
-            "referer": payload.referer,
-            "ua": payload.user_agent,
-            "status_code": payload.status_code,
-        );
-    }
+    // ── Tor lookup ──
+    let is_tor = app_state.tor_service.is_exit_node(&payload.ip_address);
 
     // ── Step 1: Build NewRequest for matching ──
     let request = NewRequest {
@@ -102,6 +88,7 @@ async fn report_handler(
         content_type: payload.content_type.clone(),
         accept_language: payload.accept_language.clone(),
         x_request_id: payload.x_request_id.clone(),
+        is_tor,
         rule_id: None,
         created_at: chrono::Utc::now(),
     };
@@ -138,8 +125,8 @@ async fn report_handler(
     // rules lock is released here
 
     if matches.is_empty() {
-        if should_log(&log_all_requests, "report_ok") {
-            audit_log!("report_ok",
+        if should_log(&log_all_requests, "cleared") {
+            audit_log!("cleared",
                 "pipeline": "jail",
                 "rule_id": null,
                 "rule_name": null,
@@ -160,24 +147,6 @@ async fn report_handler(
     let ip: Option<IpAddr> = payload.ip_address.parse().ok();
 
     for (rule_id, profile_id, rule_name) in &matches {
-        if should_log(&log_all_requests, "report_match") {
-            audit_log!("report_match",
-                "pipeline": "jail",
-                "rule_id": rule_id,
-                "rule_name": rule_name,
-                "ip": payload.ip_address,
-                "country": ip_data.country_code,
-                "path": payload.path,
-                "method": payload.method,
-                "fqdn": payload.fqdn,
-                "query": payload.query,
-                "referer": payload.referer,
-                "ua": payload.user_agent,
-                "status_code": payload.status_code,
-                "profile_id": profile_id,
-            );
-        }
-
         // Load the profile from DB (async, no locks held)
         let profile = match RateLimitProfile::read(&app_state.pool, *profile_id).await {
             Ok(p) => p,
@@ -190,8 +159,8 @@ async fn report_handler(
         // Check if the reported status_code is in the profile's fail_codes
         let status_i32 = i32::from(payload.status_code);
         if !profile.fail_codes.contains(&status_i32) {
-            if should_log(&log_all_requests, "report_skip") {
-                audit_log!("report_skip",
+            if should_log(&log_all_requests, "cleared") {
+                audit_log!("cleared",
                     "pipeline": "jail",
                     "rule_id": rule_id,
                     "rule_name": rule_name,
@@ -224,23 +193,6 @@ async fn report_handler(
             payload.path.as_deref(),
             payload.fqdn.as_deref(),
         );
-        if should_log(&log_all_requests, "report_block") {
-            audit_log!("report_block",
-                "pipeline": "jail",
-                "rule_id": rule_id,
-                "rule_name": rule_name,
-                "ip": payload.ip_address,
-                "country": ip_data.country_code,
-                "path": payload.path,
-                "method": payload.method,
-                "fqdn": payload.fqdn,
-                "query": payload.query,
-                "referer": payload.referer,
-                "ua": payload.user_agent,
-                "profile": profile.name,
-            );
-        }
-
         if let Some(ip) = ip {
             // Rate limiter check (sync)
             let should_ban = {
@@ -264,8 +216,8 @@ async fn report_handler(
             // rate_limiter lock released
 
             if should_ban {
-                if should_log(&log_all_requests, "report_ban") {
-                    audit_log!("report_ban",
+                if should_log(&log_all_requests, "pending") {
+                    audit_log!("pending",
                         "pipeline": "jail",
                         "rule_id": rule_id,
                         "rule_name": rule_name,
@@ -281,59 +233,102 @@ async fn report_handler(
                     );
                 }
 
-                // Ban in memory (sync, releases lock before await)
-                let ban_info = {
-                    let mut ban_manager = match app_state.ban_manager.lock() {
-                        Ok(g) => g,
-                        Err(e) => {
-                            error!("Ban manager mutex poisoned: {e}");
-                            return EmptyResponse::create(
-                                StatusCode::INTERNAL_SERVER_ERROR,
-                                "Internal error",
-                            );
-                        },
-                    };
-
-                    // Skip if IP is already serving a ban
-                    if ban_manager.is_banned(&ip).is_some() {
-                        continue;
-                    }
-                    let ban_duration = if profile.bantime_increment {
+                // Create PendingBan instead of executing ban directly
+                let pending_ban = PendingBan {
+                    ip,
+                    rule_id: *rule_id,
+                    reason: format!(
+                        "Rate limit threshold exceeded: {} requests in {}s (profile: {})",
+                        profile.max_retry, profile.find_time_seconds, profile.name
+                    ),
+                    ban_duration_seconds: if profile.bantime_increment {
                         None
                     } else {
                         Some(i64::from(profile.ban_time_seconds))
-                    };
-
-                    let reason = format!(
-                        "Rate limit (report): {} requests in {}s (profile: {})",
-                        profile.max_retry, profile.find_time_seconds, profile.name
-                    );
-
-                    let info = ban_manager
-                        .ban(ip, Some(*rule_id), reason.clone(), ban_duration)
-                        .clone();
-                    drop(ban_manager);
-                    (reason, info)
+                    },
+                    escalation_level: 0, // escalation handled by WAF when executing the ban
+                    created_at: std::time::Instant::now(),
                 };
-                // ban_manager lock released
 
-                // Persist to database (async, no locks held)
-                if let Err(e) = BanManager::persist_ban(
-                    &app_state.pool,
-                    ip,
-                    Some(*rule_id),
-                    &ban_info.0,
-                    ban_info.1.ban_duration_seconds,
-                    ban_info.1.escalation_level,
-                )
-                .await
-                {
-                    warn!("Failed to persist ban to DB: {e}");
+                if let Ok(mut pending) = app_state.pending_bans.lock() {
+                    pending.push(pending_ban);
                 }
+            } else if should_log(&log_all_requests, "registered") {
+                audit_log!("registered",
+                    "pipeline": "jail",
+                    "rule_id": rule_id,
+                    "rule_name": rule_name,
+                    "ip": payload.ip_address,
+                    "country": ip_data.country_code,
+                    "path": payload.path,
+                    "method": payload.method,
+                    "fqdn": payload.fqdn,
+                    "query": payload.query,
+                    "referer": payload.referer,
+                    "ua": payload.user_agent,
+                    "profile": profile.name,
+                );
             }
         }
     }
 
     // Always return 200 OK (fire-and-forget semantics)
     EmptyResponse::create(StatusCode::OK, "Ok")
+}
+
+#[cfg(test)]
+mod tests {
+    #[test]
+    fn test_should_log_audit_new_event_names() {
+        // New event names that SHOULD be in audit category
+        assert!(
+            super::should_log("audit", "denied"),
+            "denied should be in audit"
+        );
+        assert!(
+            super::should_log("audit", "banned"),
+            "banned should be in audit"
+        );
+        assert!(
+            super::should_log("audit", "registered"),
+            "registered should be in audit"
+        );
+        // After B2 refactor: sanctioned moves to WAF, pending replaces it in Jail
+        assert!(
+            super::should_log("audit", "pending"),
+            "pending should be in audit (replaces sanctioned in Jail)"
+        );
+        assert!(
+            !super::should_log("audit", "sanctioned"),
+            "sanctioned should NOT be in audit in Jail (moved to WAF)"
+        );
+        assert!(
+            !super::should_log("audit", "block"),
+            "block should NOT be in audit"
+        );
+        assert!(
+            !super::should_log("audit", "report_block"),
+            "report_block should NOT be in audit"
+        );
+        assert!(
+            !super::should_log("audit", "report_ban"),
+            "report_ban should NOT be in audit"
+        );
+    }
+
+    #[test]
+    fn test_should_log_pass_new_event_names() {
+        assert!(
+            super::should_log("pass", "admitted"),
+            "admitted should be in pass"
+        );
+        assert!(
+            super::should_log("pass", "cleared"),
+            "cleared should be in pass"
+        );
+        assert!(
+            !super::should_log("pass", "pass"),
+            "pass should NOT be in pass"
+        );
+    }
 }
