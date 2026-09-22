@@ -32,6 +32,11 @@ use jsonwebtoken::{Algorithm, DecodingKey, Validation};
 /// Nota: este middleware se monta en `api_routes`, que está anidado bajo `/api/v1`
 /// en el router principal. Axum ya ha eliminado el prefijo `/api/v1` para cuando
 /// este middleware se ejecuta, por lo que las rutas se comprueban sin ese prefijo.
+///
+/// # Errors
+///
+/// Devuelve `StatusCode::UNAUTHORIZED` si el header `Authorization` falta,
+/// no usa el esquema `Bearer`, o el token JWT no es válido.
 pub async fn require_auth(
     State(app_state): State<Arc<AppState>>,
     req: Request,

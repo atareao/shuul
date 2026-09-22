@@ -2355,7 +2355,7 @@ pub fn all_rate_limit_profile_templates() -> Vec<RateLimitProfileTemplate> {
             window_seconds: 300,
             ban_seconds: 900,
             escalation_enabled: true,
-            escalation_multipliers: vec![1, 2, 4, 8],
+            escalation_multipliers: vec![1, 2, 4, 8, 16, 32, 64, 128],
             max_ban_seconds: 604_800,
             cooldown_seconds: 30,
             fail_codes: vec![401],
@@ -2368,7 +2368,7 @@ pub fn all_rate_limit_profile_templates() -> Vec<RateLimitProfileTemplate> {
             window_seconds: 300,
             ban_seconds: 3600,
             escalation_enabled: true,
-            escalation_multipliers: vec![1, 2, 4, 8],
+            escalation_multipliers: vec![1, 2, 4, 8, 16, 32, 64, 128],
             max_ban_seconds: 604_800,
             cooldown_seconds: 30,
             fail_codes: vec![401, 403],
@@ -2381,7 +2381,7 @@ pub fn all_rate_limit_profile_templates() -> Vec<RateLimitProfileTemplate> {
             window_seconds: 60,
             ban_seconds: 300,
             escalation_enabled: true,
-            escalation_multipliers: vec![1, 2, 4, 8],
+            escalation_multipliers: vec![1, 2, 4, 8, 16, 32, 64, 128],
             max_ban_seconds: 86_400,
             cooldown_seconds: 30,
             fail_codes: vec![403, 404],
@@ -2394,7 +2394,7 @@ pub fn all_rate_limit_profile_templates() -> Vec<RateLimitProfileTemplate> {
             window_seconds: 60,
             ban_seconds: 300,
             escalation_enabled: true,
-            escalation_multipliers: vec![1, 2, 4, 8],
+            escalation_multipliers: vec![1, 2, 4, 8, 16, 32, 64, 128],
             max_ban_seconds: 86_400,
             cooldown_seconds: 30,
             fail_codes: vec![401, 403, 429],
@@ -2407,7 +2407,7 @@ pub fn all_rate_limit_profile_templates() -> Vec<RateLimitProfileTemplate> {
             window_seconds: 60,
             ban_seconds: 300,
             escalation_enabled: true,
-            escalation_multipliers: vec![1, 2, 4, 8],
+            escalation_multipliers: vec![1, 2, 4, 8, 16, 32, 64, 128],
             max_ban_seconds: 86_400,
             cooldown_seconds: 7,
             fail_codes: vec![403, 429, 500],
@@ -2433,7 +2433,7 @@ pub fn all_rate_limit_profile_templates() -> Vec<RateLimitProfileTemplate> {
             window_seconds: 172_800,
             ban_seconds: 604_800,
             escalation_enabled: true,
-            escalation_multipliers: vec![1, 2, 4, 8],
+            escalation_multipliers: vec![1, 2, 4, 8, 16, 32, 64, 128],
             max_ban_seconds: 2_592_000,
             cooldown_seconds: 60,
             fail_codes: vec![403, 429],
@@ -2446,7 +2446,7 @@ pub fn all_rate_limit_profile_templates() -> Vec<RateLimitProfileTemplate> {
             window_seconds: 10,
             ban_seconds: 1800,
             escalation_enabled: true,
-            escalation_multipliers: vec![1, 2, 4, 8],
+            escalation_multipliers: vec![1, 2, 4, 8, 16, 32, 64, 128],
             max_ban_seconds: 604_800,
             cooldown_seconds: 30,
             fail_codes: vec![403, 404, 405, 500],
@@ -2459,10 +2459,44 @@ pub fn all_rate_limit_profile_templates() -> Vec<RateLimitProfileTemplate> {
             window_seconds: 60,
             ban_seconds: 300,
             escalation_enabled: true,
-            escalation_multipliers: vec![1, 2, 4, 8],
+            escalation_multipliers: vec![1, 2, 4, 8, 16, 32, 64, 128],
             max_ban_seconds: 86_400,
             cooldown_seconds: 30,
             fail_codes: vec![403, 404, 429, 500, 502, 503],
         },
     ]
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    const NEW_MULTIPLIERS: &[i32] = &[1, 2, 4, 8, 16, 32, 64, 128];
+
+    /// Escenario 1: Templates tienen multipliers [1,2,4,8,16,32,64,128]
+    /// GIVEN los rate limit profile templates
+    /// WHEN se listan
+    /// THEN todos los templates con escalation_enabled=true tienen escalation_multipliers = [1,2,4,8,16,32,64,128]
+    #[test]
+    fn all_escalated_templates_have_aggressive_multipliers() {
+        let profiles = all_rate_limit_profile_templates();
+        for profile in &profiles {
+            if profile.escalation_enabled {
+                assert_eq!(
+                    profile.escalation_multipliers, NEW_MULTIPLIERS,
+                    "Profile '{}' (id={}) debe tener escalation_multipliers = {:?}, pero tiene {:?}",
+                    profile.name, profile.id, NEW_MULTIPLIERS, profile.escalation_multipliers
+                );
+            }
+        }
+    }
+
+    /// Escenario 1 (contraejemplo): Health & Webhooks no tiene escalation, se queda con [1]
+    #[test]
+    fn health_and_webhooks_not_escalated() {
+        let profiles = all_rate_limit_profile_templates();
+        let health = profiles.iter().find(|p| p.id == 6).unwrap();
+        assert!(!health.escalation_enabled);
+        assert_eq!(health.escalation_multipliers, vec![1]);
+    }
 }

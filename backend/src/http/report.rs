@@ -294,8 +294,9 @@ async fn report_handler(
                         },
                     };
 
-                    // Skip if IP is already serving a ban
-                    if ban_manager.is_banned(&ip).is_some() {
+                    // Skip only if the IP already serves a ban for THIS rule.
+                    // Other rules remain independent (fail2ban-style per-jail bypass).
+                    if ban_manager.is_banned_for_rule(&ip, Some(*rule_id)) {
                         continue;
                     }
                     let ban_duration = if profile.bantime_increment {

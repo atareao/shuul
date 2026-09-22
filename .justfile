@@ -39,6 +39,7 @@ test-integration-setup:
 
 build:
     @podman build \
+        --no-cache \
         --tag={{user}}/{{name}}:{{version}} \
         --tag={{user}}/{{name}}:latest .
 

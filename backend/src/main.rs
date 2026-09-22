@@ -34,8 +34,8 @@ use http::{
 use maxminddb::Reader;
 use models::CacheRule;
 use models::{
-    AppState, BanManager, Error, GeoIpService, JwtValidator, OidcMetadata, RateLimiter, Settings,
-    StatsCollector,
+    AppState, BanManager, Error, GeoIpService, JwtValidator, OidcMetadata, RateLimitProfile,
+    RateLimiter, Settings, StatsCollector,
 };
 use sqlx::{
     migrate::{MigrateDatabase, Migrator},
@@ -54,7 +54,11 @@ use tracing_subscriber::{EnvFilter, layer::SubscriberExt, util::SubscriberInitEx
 
 const STATIC_DIR: &str = "static";
 
-#[allow(clippy::too_many_lines, clippy::duration_suboptimal_units)]
+#[allow(
+    clippy::too_many_lines,
+    clippy::duration_suboptimal_units,
+    clippy::cast_sign_loss
+)]
 #[tokio::main]
 async fn main() -> Result<(), Error> {
     // Runtime: migrations at ./migrations/ (Docker: /app/migrations, dev: project root)
@@ -156,7 +160,55 @@ async fn main() -> Result<(), Error> {
             bm
         },
     ));
-    let rate_limiter: Mutex<HashMap<i32, RateLimiter>> = Mutex::new(HashMap::new());
+    // ── Cargar rate limiters persistidos desde DB ──
+    info!("Loading persisted rate limiters...");
+    let active_profile_ids: Vec<i32> = {
+        let rules_guard = rules.lock().unwrap();
+        rules_guard
+            .iter()
+            .filter(|r| r.rule.pipeline == "jail" && r.rule.active)
+            .filter_map(|r| r.rule.rate_limit_profile_id)
+            .collect()
+        // rules_guard drops here, releasing the lock
+    };
+
+    let mut rate_limiter_map = HashMap::new();
+    for profile_id in active_profile_ids {
+        if let Ok(profile) = RateLimitProfile::read(&pool, profile_id).await {
+            let rl = RateLimiter::load(
+                &pool,
+                profile_id,
+                profile.max_retry as u32,
+                profile.find_time_seconds,
+            )
+            .await
+            .unwrap_or_else(|_| {
+                warn!(
+                    "Failed to load rate limiter for profile {} (starting fresh)",
+                    profile_id
+                );
+                RateLimiter::new(profile.max_retry as u32, profile.find_time_seconds)
+            });
+            let ip_count = rl.len();
+            rate_limiter_map.insert(profile_id, rl);
+            if ip_count > 0 {
+                info!(
+                    "Loaded rate limiter for profile {} ({} IPs tracked)",
+                    profile_id, ip_count
+                );
+            }
+        } else {
+            warn!(
+                "Rate limit profile {} not found, skipping rate limiter load",
+                profile_id
+            );
+        }
+    }
+    let rate_limiter: Mutex<HashMap<i32, RateLimiter>> = Mutex::new(rate_limiter_map);
+    info!(
+        "Loaded {} rate limiters from persistent state",
+        rate_limiter.lock().unwrap().len()
+    );
     let settings = Mutex::new(Settings::load(&pool).await.unwrap_or_default());
     let stats = StatsCollector::load(&pool).await;
 
@@ -263,6 +315,29 @@ async fn main() -> Result<(), Error> {
         loop {
             interval.tick().await;
             stats_state.stats.persist(&stats_state.pool).await;
+        }
+    });
+
+    // Background task: persist rate limiters every 60 seconds
+    // Minimizes state loss on server crash.
+    let persist_rl_state = Arc::clone(&app_state);
+    tokio::spawn(async move {
+        let mut interval = tokio::time::interval(tokio::time::Duration::from_secs(60));
+        loop {
+            interval.tick().await;
+            // Collect snapshots under lock, then persist outside lock
+            let snapshots: Vec<(i32, RateLimiter)> = {
+                let rate_limiters = persist_rl_state.rate_limiter.lock().unwrap();
+                rate_limiters
+                    .iter()
+                    .map(|(id, rl)| (*id, rl.clone()))
+                    .collect()
+            };
+            for (profile_id, rl) in snapshots {
+                if let Err(e) = rl.save(&persist_rl_state.pool, profile_id).await {
+                    warn!("Failed to persist rate limiter {profile_id}: {e}");
+                }
+            }
         }
     });
 
