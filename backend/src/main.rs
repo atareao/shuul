@@ -34,8 +34,8 @@ use http::{
 use maxminddb::Reader;
 use models::CacheRule;
 use models::{
-    AppState, BanManager, Error, GeoIpService, JwtValidator, OidcMetadata, RateLimiter, Settings,
-    StatsCollector,
+    AppState, BanManager, Error, GeoIpService, JwtValidator, OidcMetadata, PendingBan,
+    RateLimitProfile, RateLimiter, Settings, StatsCollector, TorService,
 };
 use sqlx::{
     migrate::{MigrateDatabase, Migrator},
@@ -54,7 +54,11 @@ use tracing_subscriber::{EnvFilter, layer::SubscriberExt, util::SubscriberInitEx
 
 const STATIC_DIR: &str = "static";
 
-#[allow(clippy::too_many_lines, clippy::duration_suboptimal_units)]
+#[allow(
+    clippy::too_many_lines,
+    clippy::duration_suboptimal_units,
+    clippy::cast_sign_loss
+)]
 #[tokio::main]
 async fn main() -> Result<(), Error> {
     // Runtime: migrations at ./migrations/ (Docker: /app/migrations, dev: project root)
@@ -156,8 +160,57 @@ async fn main() -> Result<(), Error> {
             bm
         },
     ));
-    let rate_limiter: Mutex<HashMap<i32, RateLimiter>> = Mutex::new(HashMap::new());
+    // ── Cargar rate limiters persistidos desde DB ──
+    info!("Loading persisted rate limiters...");
+    let active_profile_ids: Vec<i32> = {
+        let rules_guard = rules.lock().unwrap();
+        rules_guard
+            .iter()
+            .filter(|r| r.rule.pipeline == "jail" && r.rule.active)
+            .filter_map(|r| r.rule.rate_limit_profile_id)
+            .collect()
+        // rules_guard drops here, releasing the lock
+    };
+
+    let mut rate_limiter_map = HashMap::new();
+    for profile_id in active_profile_ids {
+        if let Ok(profile) = RateLimitProfile::read(&pool, profile_id).await {
+            let rl = RateLimiter::load(
+                &pool,
+                profile_id,
+                profile.max_retry as u32,
+                profile.find_time_seconds,
+            )
+            .await
+            .unwrap_or_else(|_| {
+                warn!(
+                    "Failed to load rate limiter for profile {} (starting fresh)",
+                    profile_id
+                );
+                RateLimiter::new(profile.max_retry as u32, profile.find_time_seconds)
+            });
+            let ip_count = rl.len();
+            rate_limiter_map.insert(profile_id, rl);
+            if ip_count > 0 {
+                info!(
+                    "Loaded rate limiter for profile {} ({} IPs tracked)",
+                    profile_id, ip_count
+                );
+            }
+        } else {
+            warn!(
+                "Rate limit profile {} not found, skipping rate limiter load",
+                profile_id
+            );
+        }
+    }
+    let rate_limiter: Mutex<HashMap<i32, RateLimiter>> = Mutex::new(rate_limiter_map);
+    info!(
+        "Loaded {} rate limiters from persistent state",
+        rate_limiter.lock().unwrap().len()
+    );
     let settings = Mutex::new(Settings::load(&pool).await.unwrap_or_default());
+    let pending_bans: Mutex<Vec<PendingBan>> = Mutex::new(Vec::new());
     let stats = StatsCollector::load(&pool).await;
 
     // ── OIDC / SSO Configuration (REQUIRED) ──
@@ -181,12 +234,14 @@ async fn main() -> Result<(), Error> {
             Reader::open_readfile(&maxmind_db_path)
                 .map_err(|e| Error::Other(format!("Failed to open MaxMind DB: {e}")))?,
         ),
+        tor_service: TorService::new(),
         static_dir: STATIC_DIR.to_string(),
         rules,
         stats,
         ban_manager,
         rate_limiter,
         settings,
+        pending_bans,
         oidc_metadata: tokio::sync::RwLock::new(None),
         jwt_validator: tokio::sync::RwLock::new(None),
         oidc_states: tokio::sync::Mutex::new(HashMap::new()),
@@ -256,6 +311,23 @@ async fn main() -> Result<(), Error> {
         }
     });
 
+    // Background task: cleanup expired pending bans every 60 seconds
+    let pending_cleanup_state = Arc::clone(&app_state);
+    tokio::spawn(async move {
+        let mut interval = tokio::time::interval(tokio::time::Duration::from_secs(60));
+        loop {
+            interval.tick().await;
+            if let Ok(mut pending) = pending_cleanup_state.pending_bans.lock() {
+                let before = pending.len();
+                pending.retain(|pb| pb.created_at.elapsed() < std::time::Duration::from_secs(60));
+                let after = pending.len();
+                if before != after {
+                    debug!("Pending ban cleanup: {} → {}", before, after);
+                }
+            }
+        }
+    });
+
     // Background task: persist stats every 30 minutes
     let stats_state = Arc::clone(&app_state);
     tokio::spawn(async move {
@@ -263,6 +335,43 @@ async fn main() -> Result<(), Error> {
         loop {
             interval.tick().await;
             stats_state.stats.persist(&stats_state.pool).await;
+        }
+    });
+
+    // Background task: refresh Tor exit node list (lazy — first refresh at 30s, then every 30 min)
+    let tor_state = Arc::clone(&app_state);
+    tokio::spawn(async move {
+        // First refresh after 30s (lazy init)
+        tokio::time::sleep(tokio::time::Duration::from_secs(30)).await;
+        tor_state.tor_service.refresh().await;
+        // Then every 30 minutes
+        let mut interval = tokio::time::interval(tokio::time::Duration::from_secs(1800));
+        loop {
+            interval.tick().await;
+            tor_state.tor_service.refresh().await;
+        }
+    });
+
+    // Background task: persist rate limiters every 60 seconds
+    // Minimizes state loss on server crash.
+    let persist_rl_state = Arc::clone(&app_state);
+    tokio::spawn(async move {
+        let mut interval = tokio::time::interval(tokio::time::Duration::from_secs(60));
+        loop {
+            interval.tick().await;
+            // Collect snapshots under lock, then persist outside lock
+            let snapshots: Vec<(i32, RateLimiter)> = {
+                let rate_limiters = persist_rl_state.rate_limiter.lock().unwrap();
+                rate_limiters
+                    .iter()
+                    .map(|(id, rl)| (*id, rl.clone()))
+                    .collect()
+            };
+            for (profile_id, rl) in snapshots {
+                if let Err(e) = rl.save(&persist_rl_state.pool, profile_id).await {
+                    warn!("Failed to persist rate limiter {profile_id}: {e}");
+                }
+            }
         }
     });
 

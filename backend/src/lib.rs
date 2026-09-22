@@ -4,4 +4,6 @@
 //! Exported for integration tests and external consumers.
 
 pub mod constants;
+pub mod http;
 pub mod models;
+pub mod templates;

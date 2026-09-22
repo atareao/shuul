@@ -26,7 +26,13 @@ tracing = "0.1.41"
 tracing-subscriber = { version = "0.3.20", features = ["tracing", "env-filter", "local-time"] }
 urlencoding = "2.1.3"
 uuid = { version = "1.10.0", features = ["v4"] }
+ipnetwork = "0.20.0"
 moka = { version = "0.12.16", features = ["sync"] }
+
+# ---------- DEV DEPENDENCIES ----------
+[dev-dependencies]
+wiremock = "0.6"
+tower = { version = "0.5.3", features = ["util"] }
 
 # ---------- CLIPPY CONFIG ----------
 [lints.clippy]

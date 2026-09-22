@@ -17,6 +17,7 @@ export default interface Rule {
   user_agent?: string;
   method?: string;
   referer?: string;
+  is_tor?: boolean;
   content_type?: string;
   accept_language?: string;
   x_request_id?: string;

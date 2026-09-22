@@ -43,10 +43,17 @@ import { BASE_URL } from "@/constants";
 const { Text } = Typography;
 
 const SEVERITY_COLORS: Record<string, string> = {
-  "🔥 Crítico": "red",
-  "🔴 Alto": "orange",
-  "🟡 Medio": "gold",
-  "🟢 Bajo": "green",
+  critico: "red",
+  alto: "orange",
+  medio: "gold",
+  bajo: "green",
+};
+
+const SEVERITY_LABELS: Record<string, string> = {
+  critico: "🔥 Crítico",
+  alto: "🔴 Alto",
+  medio: "🟡 Medio",
+  bajo: "🟢 Bajo",
 };
 
 const CATEGORY_ICONS: Record<string, React.ReactNode> = {
@@ -203,6 +210,7 @@ export default class TemplatesPage extends React.Component<{}, State> {
         content_type: template.content_type,
         accept_language: template.accept_language,
         x_request_id: template.x_request_id,
+        is_tor: template.is_tor ?? null,
         fqdn: this.state.fqdn || null,
         active: this.state.ruleActive,
       };
@@ -450,7 +458,7 @@ export default class TemplatesPage extends React.Component<{}, State> {
               )}
             </Flex>
             <Tag color={SEVERITY_COLORS[t.severity] || "default"}>
-              {t.severity}
+              {SEVERITY_LABELS[t.severity] || t.severity}
             </Tag>
           </Flex>
           <Text type="secondary" style={{ fontSize: 12 }}>

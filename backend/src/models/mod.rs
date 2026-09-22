@@ -13,6 +13,7 @@ mod ipdata;
 pub mod log_collector;
 mod new_request;
 mod oidc;
+mod pending_ban;
 mod rate_limit_profile;
 mod rate_limiter;
 mod report;
@@ -20,6 +21,7 @@ mod response;
 mod rule;
 mod settings;
 mod stats;
+mod tor_service;
 mod user;
 
 pub use ban_manager::BanManager;
@@ -28,6 +30,7 @@ pub use error::AppError as Error;
 pub use ipdata::GeoIpService;
 pub use new_request::NewRequest;
 pub use oidc::{JwtValidator, OidcMetadata};
+pub use pending_ban::PendingBan;
 pub use rate_limit_profile::{
     NewRateLimitProfile, RateLimitProfile, ReadRateLimitProfileParams, UpdateRateLimitProfile,
 };
@@ -40,6 +43,7 @@ pub use response::{ApiResponse, EmptyResponse, PagedResponse, Pagination};
 pub use rule::{CacheRule, NewRule, ReadRuleParams, Rule, UpdateRule};
 pub use settings::Settings;
 pub use stats::StatsCollector;
+pub use tor_service::TorService;
 pub use user::TokenClaims;
 
 use sqlx::SqlitePool;
@@ -51,6 +55,7 @@ pub struct AppState {
     pub pool: SqlitePool,
     pub secret: String,
     pub geoip: GeoIpService,
+    pub tor_service: TorService,
     pub rules: Mutex<Vec<CacheRule>>,
     pub stats: StatsCollector,
     #[allow(dead_code)]
@@ -58,6 +63,7 @@ pub struct AppState {
     pub ban_manager: Mutex<BanManager>,
     pub rate_limiter: Mutex<HashMap<i32, RateLimiter>>, // profile_id → RateLimiter
     pub settings: Mutex<Settings>,
+    pub pending_bans: Mutex<Vec<PendingBan>>,
     // SSO / OIDC fields
     pub oidc_metadata: tokio::sync::RwLock<Option<OidcMetadata>>,
     pub jwt_validator: tokio::sync::RwLock<Option<JwtValidator>>,

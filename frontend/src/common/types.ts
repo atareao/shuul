@@ -37,6 +37,11 @@ export interface FieldDefinition<T> {
   required?: boolean;
   visible?: boolean;
   /**
+   * When `false`, the field is hidden from the dialog form but still visible in the table.
+   * When `true` or `undefined`, the field shows in both table and dialog (default behavior).
+   */
+  visibleInDialog?: boolean;
+  /**
    * When true, `key` is a virtual field that doesn't exist on T.
    * The `render` function must compute the display value from the record.
    */
