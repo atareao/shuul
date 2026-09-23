@@ -33,9 +33,9 @@ El pipeline Jail registra eventos de auditoría con los siguientes nombres:
 
 - `cleared` (pipe: jail): No hay reglas Jail que matcheen, o matchean pero status_code ∉ fail_codes
 - `registered` (pipe: jail): Regla matcheó + status_code ∈ fail_codes → stats registradas, sin ban aún
-- `sanctioned` (pipe: jail): Threshold de rate limit excedido → IP baneada
+- `pending` (pipe: jail): Threshold de rate limit excedido → PendingBan creado
 
-`registered` y `sanctioned` son mutuamente excluyentes por cada par (request, regla). Si hay ban, solo se logea `sanctioned`.
+Todos los eventos de auditoría del pipeline Jail deben incluir `status_code` con el valor del `ReportPayload.status_code`.
 
 #### Scenario: Cleared when no rules match
 - **GIVEN** un reporte con status_code `200`
@@ -72,6 +72,26 @@ El pipeline Jail registra eventos de auditoría con los siguientes nombres:
 - **AND** se logea `sanctioned` con pipe `jail`
 - **AND** la IP es baneada via BanManager
 - **AND** NO se logea `registered`
+
+#### Scenario: Cleared log includes status_code
+- **GIVEN** un reporte con status_code `404`
+- **AND** ninguna regla Jail activa matchea
+- **WHEN** el Jail pipeline procesa y logea `cleared`
+- **THEN** el `LogEntry` tiene `status_code = 404`
+
+#### Scenario: Registered log includes status_code
+- **GIVEN** un reporte con status_code `500`
+- **AND** una regla Jail matchea con fail_codes que incluye 500
+- **AND** el rate limit NO se excede
+- **WHEN** el Jail pipeline procesa y logea `registered`
+- **THEN** el `LogEntry` tiene `status_code = 500`
+
+#### Scenario: Pending log includes status_code
+- **GIVEN** un reporte con status_code `403`
+- **AND** una regla Jail matchea con fail_codes que incluye 403
+- **AND** el rate limit se excede
+- **WHEN** el Jail pipeline procesa y logea `pending`
+- **THEN** el `LogEntry` tiene `status_code = 403`
 
 ### Requirement: Rate limiting behavior
 
