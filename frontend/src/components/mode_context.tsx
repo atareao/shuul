@@ -1,13 +1,15 @@
 import React from "react";
 
+export type ToggleModeHandler = () => void;
+
 export interface ModeContextInterface {
   isDarkMode: boolean;
-  toggleMode: Function;
+  toggleMode: ToggleModeHandler;
 }
 
 const ModeContext = React.createContext<ModeContextInterface>({
   isDarkMode: true,
-  toggleMode: Function,
+  toggleMode: () => {},
 });
 
 interface Props {
@@ -19,7 +21,7 @@ interface State {
 }
 
 export class ModeContextProvider extends React.Component<Props, State> {
-  constructor(props: any) {
+  constructor(props: Props) {
     console.log("Constructing AuthContextProvider");
     super(props);
     this.state = {
@@ -29,7 +31,7 @@ export class ModeContextProvider extends React.Component<Props, State> {
 
   retrieveMode = () => {
     console.log("Retrieving mode");
-    let mode = localStorage.getItem("mode");
+    const mode = localStorage.getItem("mode");
     if (mode === undefined || mode === null) {
       return true;
     }

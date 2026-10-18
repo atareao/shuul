@@ -1,11 +1,14 @@
 import React from "react";
 import { jwtDecode } from "jwt-decode";
 
+export type LoginHandler = (token: string) => void;
+export type LogoutHandler = () => void;
+
 export interface AuthContextInterface {
   token: string | null;
   isLoggedIn: boolean;
-  login: Function;
-  logout: Function;
+  login: LoginHandler;
+  logout: LogoutHandler;
 }
 
 const AuthContext = React.createContext<AuthContextInterface>({
@@ -29,7 +32,7 @@ interface State {
 export class AuthContextProvider extends React.Component<Props, State> {
   private logoutTimer: ReturnType<typeof setTimeout> | null = null;
 
-  constructor(props: any) {
+  constructor(props: Props) {
     console.log("Constructing AuthContextProvider");
     super(props);
     this.logoutTimer = null;

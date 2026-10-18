@@ -1,18 +1,29 @@
 import react from "react";
 import { useNavigate } from "react-router";
+import type { NavigateFunction } from "react-router";
 import { useTranslation } from "react-i18next";
 import { Flex, Typography, Avatar, Card } from "antd";
 
 import { loadData } from "@/common/utils";
 import { VERSION } from "@/constants";
 import Logo from "@/assets/logo.svg";
+import type Rule from "@/models/rule";
 import type { RuleTemplate, TemplatesResponse } from "@/models/template";
 
 const TITLE = `Shuul (${VERSION})`;
 
+/** Firma exacta de la función de traducción devuelta por `useTranslation`. */
+type Translate = ReturnType<typeof useTranslation>["t"];
+
+/** Respuesta del endpoint `rules/info/all`. */
+interface RuleCounts {
+  total: number;
+  active: number;
+}
+
 interface Props {
-  navigate: any;
-  t: any;
+  navigate: NavigateFunction;
+  t: Translate;
 }
 
 interface State {
@@ -25,7 +36,7 @@ interface State {
   // Security Checklist
   mustHaveTemplates: RuleTemplate[];
   appliedMustHave: Set<string>;
-  rules: any[];
+  rules: Rule[];
 }
 
 export class InnerPage extends react.Component<Props, State> {
@@ -52,12 +63,12 @@ export class InnerPage extends react.Component<Props, State> {
       templates_res,
       rules_res,
     ] = await Promise.all([
-      loadData("rules/info/all"),
-      loadData("stats/info", new Map([["option", "total"]])),
-      loadData("stats/info", new Map([["option", "filtered"]])),
-      loadData("bans/info", new Map()),
-      loadData("templates"),
-      loadData("rules"),
+      loadData<RuleCounts>("rules/info/all"),
+      loadData<number>("stats/info", new Map([["option", "total"]])),
+      loadData<number>("stats/info", new Map([["option", "filtered"]])),
+      loadData<number>("bans/info", new Map()),
+      loadData<TemplatesResponse>("templates"),
+      loadData<Rule[]>("rules"),
     ]);
     console.log(
       "Totals loaded:",
@@ -69,23 +80,22 @@ export class InnerPage extends react.Component<Props, State> {
 
     // Process security checklist data
     let mustHaveTemplates: RuleTemplate[] = [];
-    let appliedMustHave = new Set<string>();
-    let rules: any[] = [];
+    const appliedMustHave = new Set<string>();
+    let rules: Rule[] = [];
 
     if (templates_res.status === 200 && templates_res.data) {
-      const data = templates_res.data as TemplatesResponse;
+      const data = templates_res.data;
       mustHaveTemplates = [...data.waf, ...data.jail].filter(
-        (t) => t.must_have,
+        (template) => template.must_have,
       );
     }
 
     if (rules_res.status === 200 && rules_res.data) {
-      rules = rules_res.data as any[];
+      rules = rules_res.data;
       // Check which must-have templates are already applied
       for (const t of mustHaveTemplates) {
         const isApplied = rules.some(
-          (r: any) =>
-            r.name && (r.name.includes(t.name) || t.name.includes(r.name)),
+          (r) => r.name && (r.name.includes(t.name) || t.name.includes(r.name)),
         );
         if (isApplied) {
           appliedMustHave.add(t.name);
@@ -96,9 +106,13 @@ export class InnerPage extends react.Component<Props, State> {
     this.setState({
       loading: false,
       total_rules:
-        rules_info_res.status === 200 ? (rules_info_res.data as any).total : 0,
+        rules_info_res.status === 200
+          ? (rules_info_res.data as RuleCounts).total
+          : 0,
       total_active_rules:
-        rules_info_res.status === 200 ? (rules_info_res.data as any).active : 0,
+        rules_info_res.status === 200
+          ? (rules_info_res.data as RuleCounts).active
+          : 0,
       total_requests:
         total_requests_res.status === 200
           ? (total_requests_res.data as number)

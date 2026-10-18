@@ -1,9 +1,15 @@
 import { BASE_URL } from "@/constants";
 import type Response from "@/models/response";
 
+/** Valores escalares admitidos como parámetro de consulta. */
+export type QueryParamValue = string | number | boolean;
+
+/** Consulta opcional: cada clave admite un valor o una lista de valores. */
+export type QueryParams = Map<string, QueryParamValue | QueryParamValue[]>;
+
 export const loadData = async <T>(
   endpoint: string,
-  params?: Map<string, string | number | boolean | (string | number | boolean)>,
+  params?: QueryParams,
 ): Promise<Response<T>> => {
   console.log("Loading data");
 
@@ -50,7 +56,7 @@ export const loadData = async <T>(
       try {
         // Intentar leer el cuerpo del error si está en formato JSON
         errorBody = await response.json();
-      } catch (e) {
+      } catch {
         // Si falla al parsear, ignorar y usar un mensaje por defecto
       }
       const msg =
@@ -107,20 +113,26 @@ export const toCapital = (s: string): string => {
     .join(" ");
 };
 
-export interface DebouncedFn<T extends (...args: any[]) => void> {
+/**
+ * Firma genérica de cualquier función. Se usa como restricción de `T` para
+ * poder tipar los argumentos con `Parameters<T>` en los puntos de llamada.
+ */
+export type AnyFunction = (...args: never[]) => void;
+
+export interface DebouncedFn<T extends AnyFunction> {
   (...args: Parameters<T>): void;
   cancel: () => void;
 }
 
-export const debounce = <T extends (...args: any[]) => void>(
+export const debounce = <T extends AnyFunction>(
   func: T,
   delay: number,
 ): DebouncedFn<T> => {
   let timeoutId: ReturnType<typeof setTimeout>;
-  const debounced = function (this: any, ...args: any[]) {
+  const debounced = ((...args: Parameters<T>): void => {
     clearTimeout(timeoutId);
-    timeoutId = setTimeout(() => func.apply(this, args), delay);
-  } as DebouncedFn<T>;
+    timeoutId = setTimeout(() => func(...args), delay);
+  }) as DebouncedFn<T>;
   debounced.cancel = () => {
     clearTimeout(timeoutId);
   };
@@ -130,20 +142,24 @@ export const debounce = <T extends (...args: any[]) => void>(
 /**
  * Obtiene un valor anidado de un objeto de forma segura (ej: 'value.name_es')
  * Esto resuelve el error TS2536.
+ *
+ * El valor devuelto es `unknown` porque la profundidad y el tipo del dato no
+ * se pueden conocer a partir de una ruta en tiempo de ejecución: quien lo use
+ * debe estrechar el tipo (`typeof`, comparaciones, `String(...)`, ...).
  */
-export const getNestedValue = (obj: any, path: string): any => {
+export const getNestedValue = (obj: unknown, path: string): unknown => {
   // Si el objeto es nulo o indefinido, o la ruta no es válida, devolvemos undefined
   if (!obj || !path) {
     return undefined;
   }
 
   const pathParts = path.split(".");
-  let current = obj;
+  let current: unknown = obj;
 
   for (const part of pathParts) {
     // Navegamos al siguiente nivel, asegurando que el objeto actual no sea nulo
     if (current && typeof current === "object" && part in current) {
-      current = current[part];
+      current = (current as Record<string, unknown>)[part];
     } else {
       // Si el camino se rompe (ej: 'value' es null o 'name_es' no existe en 'value')
       return undefined;
