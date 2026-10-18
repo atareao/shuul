@@ -157,3 +157,24 @@ feature     ──────────●  feature ────●
 ● = merge a develop (PR)
 ● = merge a main (release automática)
 ```
+
+## Historia de releases (reparación de tags)
+
+Hasta `v0.11.0` los tags se creaban a mano. Después se mergearon PRs de release
+(`v0.12.0`, `v0.13.0`) pero **los tags nunca se crearon** (no había automatización
+ni changelog), así que el changelog los englobaba dentro de `0.14.0`.
+
+El **2026-10-18** se crearon retroactivamente los tags que faltaban:
+
+| Tag | Commit | Fecha del release |
+|---|---|---|
+| `v0.12.0` | `d3b49cc` | 2026-09-21 |
+| `v0.13.0` | `77c40c8` | 2026-09-22 |
+
+> ⚠️ **Commit deliberadamente sin tag:** `97c3a7f` está titulado
+> `release: v0.12.0`, pero es **posterior** a `v0.13.0` (verificado por ancestría).
+> Es un título duplicado por error; etiquetarlo como `v0.12.0` habría roto la
+> monotonía de la secuencia y generado rangos invertidos en git-cliff. Sus
+> cambios se listan en la sección `0.14.0` del changelog.
+
+A partir de `v0.14.0` los tags los crea `release-prepare.yml` automáticamente.
