@@ -20,15 +20,12 @@
 
 ### Bug Fixes
 
-- *(ban-manager)* Restore escalation_counts on startup from DB
-- *(ban-manager)* Restore escalation_counts on startup from DB
 - *(logs)* Show FQDN column, remove timestamp, add ellipsis
 - *(report)* Populate status_code in jail audit logs
 - *(report)* Populate status_code in jail audit logs
 
 ### Features
 
-- Replace duplicate bans for same IP+rule_id (#28)
 - *(charts)* Show rule name instead of rule ID in Top Rules chart
 - *(charts)* Show rule name instead of rule ID in Top Rules chart
 - *(jail)* Feed the Jail pipeline from systemd-journal-gatewayd
@@ -37,10 +34,21 @@
 ### Other
 
 - Add gitflow automation workflows and GIT_FLOW.md
+## [0.13.0] - 2026-09-22
 
 ### Refactor
 
 - Fix syntax errors and refactor tests for PendingBan/TorService (#32)
+## [0.12.0] - 2026-09-21
+
+### Bug Fixes
+
+- *(ban-manager)* Restore escalation_counts on startup from DB
+- *(ban-manager)* Restore escalation_counts on startup from DB
+
+### Features
+
+- Replace duplicate bans for same IP+rule_id (#28)
 ## [0.11.0] - 2026-09-08
 
 ### Bug Fixes

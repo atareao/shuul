@@ -63,7 +63,7 @@ gh pr create --base develop --head main --title "release: vX.Y.Z"
 #    e) Sincroniza develop con main
 
 # 3. El tag v* dispara release.yml:
-#    a) Construye y publica la imagen de contenedor en Docker Hub
+#    a) Construye y publica la imagen en GitHub Container Registry (ghcr.io)
 #    b) Crea la GitHub Release con las notas del changelog
 ```
 
@@ -139,10 +139,15 @@ checks de formato y clippy sí se ejecutan siempre).
 |---|---|---|
 | `GH_PAT` | Personal Access Token con scope `contents: write`, para que `release-prepare.yml` pueda pushear el commit de release, el tag y sincronizar `develop` | Sí para releases automáticas |
 | `MAXMIND_LICENSE_KEY` | Descargar la base GeoLite2 en CI y poder ejecutar `cargo test` | Recomendado |
-| `DOCKERHUB_USERNAME` | Usuario de Docker Hub para publicar `atareao/shuul` | Sí para publicar la imagen |
-| `DOCKERHUB_TOKEN` | Access token de Docker Hub | Sí para publicar la imagen |
+| `GITHUB_TOKEN` *(automático)* | Publicar en GitHub Container Registry (`ghcr.io/atareao/shuul`). Lo inyecta GitHub: **no hay que configurarlo** | — |
 
 Se configuran en **Settings → Secrets and variables → Actions**.
+
+> **Nota sobre GHCR:** la imagen se publica en `ghcr.io/atareao/shuul` con el
+> `GITHUB_TOKEN`, así que **no requiere ningún secreto**. Pero los paquetes de
+> GHCR son **privados por defecto**: si el host que despliega no está autenticado,
+> hay que hacer público el paquete o hacer `podman login ghcr.io` una vez en él
+> (token con scope `read:packages`). Ver `SELF-HOSTING.md` §6.2.
 
 ## Resumen visual
 
@@ -157,3 +162,24 @@ feature     ──────────●  feature ────●
 ● = merge a develop (PR)
 ● = merge a main (release automática)
 ```
+
+## Historia de releases (reparación de tags)
+
+Hasta `v0.11.0` los tags se creaban a mano. Después se mergearon PRs de release
+(`v0.12.0`, `v0.13.0`) pero **los tags nunca se crearon** (no había automatización
+ni changelog), así que el changelog los englobaba dentro de `0.14.0`.
+
+El **2026-10-18** se crearon retroactivamente los tags que faltaban:
+
+| Tag | Commit | Fecha del release |
+|---|---|---|
+| `v0.12.0` | `d3b49cc` | 2026-09-21 |
+| `v0.13.0` | `77c40c8` | 2026-09-22 |
+
+> ⚠️ **Commit deliberadamente sin tag:** `97c3a7f` está titulado
+> `release: v0.12.0`, pero es **posterior** a `v0.13.0` (verificado por ancestría).
+> Es un título duplicado por error; etiquetarlo como `v0.12.0` habría roto la
+> monotonía de la secuencia y generado rangos invertidos en git-cliff. Sus
+> cambios se listan en la sección `0.14.0` del changelog.
+
+A partir de `v0.14.0` los tags los crea `release-prepare.yml` automáticamente.
