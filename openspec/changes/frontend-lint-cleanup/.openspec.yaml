@@ -1,0 +1,5 @@
+# Refactor puro: no cambia comportamiento observable, así que no hay delta de spec.
+# La verificación es el propio linter + typecheck + tests existentes.
+skip_specs: true
+schema: spec-driven
+created: 2026-10-18
