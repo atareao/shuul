@@ -1,5 +1,6 @@
 import React from "react";
 import { useNavigate } from "react-router";
+import type { NavigateFunction } from "react-router";
 import { useTranslation } from "react-i18next";
 import { Button, Space, Select, Flex, message } from "antd";
 import {
@@ -128,7 +129,7 @@ const RULE_DIALOG_MESSAGES: DialogMessages = {
 
 // 2. Definición de Props y Clase
 interface Props {
-  navigate: any; // Propiedad de useNavigate (aunque no se usa aquí)
+  navigate: NavigateFunction; // Propiedad de useNavigate (aunque no se usa aquí)
   t: (key: string) => string; // Propiedad de useTranslation
 }
 

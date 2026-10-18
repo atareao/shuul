@@ -1,10 +1,11 @@
 import react from "react";
 import { useNavigate } from "react-router";
+import type { NavigateFunction } from "react-router";
 import { useTranslation } from "react-i18next";
 
 interface Props {
-  navigate: any;
-  t: any;
+  navigate: NavigateFunction;
+  t: (key: string) => string;
 }
 
 export class InnerPage extends react.Component<Props> {

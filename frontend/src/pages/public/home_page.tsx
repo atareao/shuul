@@ -1,12 +1,13 @@
 import react from "react";
 import { useNavigate } from "react-router";
+import type { NavigateFunction } from "react-router";
 import { useTranslation } from "react-i18next";
 import { Flex, Typography } from "antd";
 import Logo from "@/assets/logo.svg";
 
 interface Props {
-  navigate: any;
-  t: any;
+  navigate: NavigateFunction;
+  t: (key: string) => string;
 }
 
 export class HomeInnerPage extends react.Component<Props> {

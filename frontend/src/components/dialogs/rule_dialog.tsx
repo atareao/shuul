@@ -36,7 +36,7 @@ interface RuleDialogProps {
 }
 
 // Valores por defecto para CREATE mode
-const DEFAULT_VALUES: Record<string, any> = {
+const DEFAULT_VALUES: Record<string, unknown> = {
   active: true,
   allow: true,
   weight: 100,
@@ -63,7 +63,7 @@ const DEFAULT_VALUES: Record<string, any> = {
 };
 
 // Inicializa los valores del formulario desde un Item o desde valores por defecto
-function initializeFromItem(item?: Item): Record<string, any> {
+function initializeFromItem(item?: Item): Record<string, unknown> {
   if (!item) {
     return { ...DEFAULT_VALUES };
   }
@@ -95,8 +95,10 @@ function initializeFromItem(item?: Item): Record<string, any> {
 }
 
 // Convierte los valores del formulario al formato esperado por la API
-function formatForApi(values: Record<string, any>): Record<string, any> {
-  const body: Record<string, any> = {
+function formatForApi(
+  values: Record<string, unknown>,
+): Record<string, unknown> {
+  const body: Record<string, unknown> = {
     active: values.active,
     allow: values.allow,
     weight: values.weight,
@@ -136,7 +138,7 @@ export default function RuleDialog({
   dialogMessages,
   t,
 }: RuleDialogProps) {
-  const [formValues, setFormValues] = useState<Record<string, any>>(() =>
+  const [formValues, setFormValues] = useState<Record<string, unknown>>(() =>
     initializeFromItem(selectedItem),
   );
   const [loading, setLoading] = useState(false);
@@ -165,7 +167,7 @@ export default function RuleDialog({
           window.location.href = "/login";
           return;
         }
-      } catch (_) {
+      } catch {
         // Silently fail — profiles are optional
       } finally {
         setProfilesLoading(false);
@@ -184,7 +186,7 @@ export default function RuleDialog({
     setError(null);
   }, [selectedItem, dialogMode]);
 
-  const updateField = useCallback((key: string, value: any) => {
+  const updateField = useCallback((key: string, value: unknown) => {
     setFormValues((prev) => ({ ...prev, [key]: value }));
   }, []);
 
@@ -241,7 +243,7 @@ export default function RuleDialog({
         let errorBody: { message?: string } = {};
         try {
           errorBody = await response.json();
-        } catch (_) {
+        } catch {
           /* ignore */
         }
         throw new Error(
@@ -305,7 +307,7 @@ export default function RuleDialog({
       <Text style={{ width: 120, flexShrink: 0 }}>{t(label)}</Text>
       <Input
         style={{ width: "100%" }}
-        value={formValues[key] ?? ""}
+        value={(formValues[key] ?? "") as string | number | undefined}
         placeholder={placeholder || t(label)}
         onChange={(e) => updateField(key, e.target.value)}
         disabled={disabled}
@@ -316,18 +318,14 @@ export default function RuleDialog({
   const renderSelectRow = (
     label: string,
     key: string,
-    options: { value: any; label: string }[],
+    options: { value?: string | number; label: string }[],
     placeholder?: string,
   ) => (
     <Flex align="center" gap="small">
       <Text style={{ width: 120, flexShrink: 0 }}>{t(label)}</Text>
       <Select
         style={{ width: "100%" }}
-        value={
-          formValues[key] !== undefined && formValues[key] !== null
-            ? formValues[key]
-            : undefined
-        }
+        value={(formValues[key] ?? undefined) as string | number | undefined}
         placeholder={placeholder || t(label)}
         onChange={(value) => updateField(key, value)}
         disabled={disabled}

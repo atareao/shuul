@@ -13,11 +13,14 @@ interface State {
 
 // SSO-only login: no local registration, no local login.
 // If SSO is not configured, the backend will refuse to start.
-export default class LoginPage extends React.Component<{}, State> {
+export default class LoginPage extends React.Component<
+  Record<string, never>,
+  State
+> {
   static contextType = AuthContext;
   declare context: React.ContextType<typeof AuthContext>;
 
-  constructor(props: {}) {
+  constructor(props: Record<string, never>) {
     console.log("Constructing login page");
     super(props);
     this.state = {

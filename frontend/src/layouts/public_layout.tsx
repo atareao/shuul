@@ -2,6 +2,8 @@ import react from "react";
 import { Outlet } from "react-router";
 import { Button, Layout, theme } from "antd";
 import { useNavigate } from "react-router";
+import type { NavigateFunction } from "react-router";
+import type { GlobalToken } from "antd";
 import { LoginOutlined } from "@ant-design/icons";
 
 import ModeSwitcher from "@/components/mode_switcher";
@@ -9,8 +11,16 @@ import ModeSwitcher from "@/components/mode_switcher";
 const { Header, Footer, Content } = Layout;
 
 interface Props {
-  token: any;
-  navigate: any;
+  /**
+   * Token de Ant Design del tema activo.
+   *
+   * `coloBgLayout` es la clave *heredada* que lee este layout: parece un typo de
+   * `colorBgLayout`, pero se conserva tal cual (en la práctica vale `undefined`)
+   * para no alterar el estilo actual. Lo único que hacemos es declararla para
+   * poder tipar el acceso sin `any`.
+   */
+  token: GlobalToken & { coloBgLayout?: string };
+  navigate: NavigateFunction;
 }
 
 class InnerPublicLayout extends react.Component<Props> {

@@ -1,7 +1,8 @@
 import react from "react";
 import { useNavigate, Navigate, Outlet } from "react-router";
+import type { NavigateFunction } from "react-router";
 import { Button, Layout, Menu, theme } from "antd";
-import type { MenuProps } from "antd";
+import type { GlobalToken, MenuProps } from "antd";
 import {
   HomeOutlined,
   OrderedListOutlined,
@@ -22,6 +23,8 @@ const TITLE = `Shuul (${VERSION})`;
 const { Header, Content, Footer, Sider } = Layout;
 
 type MenuItem = Required<MenuProps>["items"][number];
+/** Información que Ant Design entrega al hacer clic en una entrada del menú. */
+type MenuClickInfo = Parameters<NonNullable<MenuProps["onClick"]>>[0];
 
 function getItem(
   label: React.ReactNode,
@@ -74,8 +77,8 @@ const AuthGuard = ({ children }: { children: React.ReactNode }) => (
 );
 
 interface Props {
-  token: any;
-  navigate: any;
+  token: GlobalToken;
+  navigate: NavigateFunction;
 }
 interface State {
   collapsed: boolean;
@@ -92,7 +95,7 @@ class InnerAdminLayout extends react.Component<Props, State> {
     this.setState({ collapsed });
   };
 
-  handleMenuClick = (e: any) => {
+  handleMenuClick = (e: MenuClickInfo) => {
     console.log(e);
     this.props.navigate(navigations[e.key]);
   };
