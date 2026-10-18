@@ -413,7 +413,7 @@ pub async fn shuul(
 
 #[cfg(test)]
 mod tests {
-    use crate::models::log_collector::LOG_COLLECTOR;
+    use crate::models::log_collector::{LOG_COLLECTOR, TEST_LOCK};
     use crate::models::{
         AppState, BanManager, CacheRule, GeoIpService, NewRequest, Rule, Settings, StatsCollector,
     };
@@ -717,6 +717,7 @@ mod tests {
     /// behavior where the ban's rule info is propagated.
     #[tokio::test]
     async fn test_banned_audit_includes_rule_info() {
+        let _guard = TEST_LOCK.lock().await;
         // Clear the LOG_COLLECTOR before the test
         if let Ok(mut collector) = LOG_COLLECTOR.lock() {
             // Create a fresh collector
