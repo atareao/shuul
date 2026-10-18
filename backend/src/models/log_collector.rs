@@ -92,6 +92,15 @@ impl LogCollector {
 pub static LOG_COLLECTOR: LazyLock<Mutex<LogCollector>> =
     LazyLock::new(|| Mutex::new(LogCollector::new(1000)));
 
+/// Serializa los tests que reinician o consultan el colector global.
+///
+/// `LOG_COLLECTOR` es un singleton de proceso: sin este cerrojo, dos tests en
+/// paralelo se pisan las entradas y los asserts fallan de forma intermitente.
+/// Todo test, en cualquier módulo, que reinicie o lea el colector debe
+/// adquirirlo.
+#[cfg(test)]
+pub(crate) static TEST_LOCK: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
+
 /// Push a log entry into the global ring buffer (fire-and-forget).
 pub fn push_log(entry: LogEntry) {
     if let Ok(mut collector) = LOG_COLLECTOR.lock() {

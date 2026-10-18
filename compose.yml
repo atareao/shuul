@@ -20,16 +20,18 @@ services:
       # --- GeoIP (MaxMind) ---
       MAXMIND_DB_PATH: /app/geo/GeoLite2-City.mmdb
       # --- Jail pipeline: Traefik access logs from systemd-journal-gatewayd ---
-      # See SELF-HOSTING.md section 2. Both are optional; these are the defaults
-      # rewritten for a container (localhost would be the container itself).
-      SHUUL_JOURNALD_URL: http://host.docker.internal:19531
+      # See SELF-HOSTING.md section 2. The gatewayd socket is bind-mounted
+      # read-only, so there is no TCP port, no firewall rule and no
+      # host.docker.internal alias involved. SHUUL_JOURNALD_URL still works for
+      # a remote gatewayd.
+      SHUUL_JOURNALD_SOCKET: /run/systemd/journal/gatewayd.sock
       SHUUL_JOURNALD_CONTAINER: traefik
-    # Reach systemd-journal-gatewayd running on the Docker host
-    extra_hosts:
-      - host.docker.internal:host-gateway
     volumes:
       - geo:/app/geo
       - db:/app/db
+      # Mount the whole directory, not the socket file: a single-file bind stays
+      # attached to a dead inode when systemd recreates the socket.
+      - /run/systemd/journal:/run/systemd/journal:ro
     networks:
       - proxy
     healthcheck:
