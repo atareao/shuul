@@ -1,5 +1,9 @@
+import type { ReactNode } from "react";
+
+export type ValidationFn = (value: unknown) => boolean;
+
 export interface Validation {
-  check: Function;
+  check: ValidationFn;
   msg: string;
 }
 
@@ -27,13 +31,13 @@ export interface FieldDefinition<T> {
   type: "boolean" | "number" | "date" | "string" | "select" | "tag";
   value?: T[keyof T & string]; // Valor inicial de ese tipo
   customSorter?: (a: T, b: T) => number;
-  render?: (content: any, record: T) => React.ReactNode;
+  render?: (content: unknown, record: T) => ReactNode;
   editable?: boolean;
   filterKey?: string;
   fixed?: "left" | "right";
   width?: number;
   sortKey?: string;
-  options?: { value: any; label: string; color?: string }[];
+  options?: SelectOption[];
   required?: boolean;
   visible?: boolean;
   /**
@@ -66,11 +70,20 @@ export const DialogModes = {
   NONE: "none" as DialogMode,
 };
 
+/**
+ * Valor admitido por los desplegables (`select`) y etiquetas (`tag`) de Ant Design.
+ */
+export interface SelectOption {
+  value: string | number;
+  label: string;
+  color?: string;
+}
+
 export interface PuntoPreemerMarker {
   type: string;
   latitude: number;
   longitude: number;
-  icon?: any;
+  icon?: ReactNode;
   name: string;
   description: string;
   address?: string;

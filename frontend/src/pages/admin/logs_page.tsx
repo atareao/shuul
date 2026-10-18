@@ -1,5 +1,6 @@
 import React from "react";
 import { useNavigate } from "react-router";
+import type { NavigateFunction } from "react-router";
 import { useTranslation } from "react-i18next";
 import {
   Flex,
@@ -89,9 +90,14 @@ const EVENT_COLORS: Record<string, string> = {
 
 const CAPACITY_OPTIONS = [1000, 5000, 10000, 20000];
 
+/**
+ * Props públicas de `InnerPage`. `t` se declara con la firma mínima que usa la
+ * página (`(key: string) => string`) en lugar del `TFunction` de i18next para
+ * que tanto el wrapper (`useTranslation`) como los tests puedan inyectarla.
+ */
 interface Props {
-  navigate: any;
-  t: any;
+  navigate: NavigateFunction;
+  t: (key: string) => string;
   isDarkMode: boolean;
 }
 

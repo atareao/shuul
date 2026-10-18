@@ -30,7 +30,7 @@ interface RateLimitProfileDialogProps {
 }
 
 // Valores por defecto para CREATE mode
-const DEFAULT_VALUES: Record<string, any> = {
+const DEFAULT_VALUES: Record<string, unknown> = {
   name: "",
   description: "",
   max_retry: 5,
@@ -44,7 +44,7 @@ const DEFAULT_VALUES: Record<string, any> = {
 };
 
 // Inicializa los valores del formulario desde un Item o desde valores por defecto
-function initializeFromItem(item?: Item): Record<string, any> {
+function initializeFromItem(item?: Item): Record<string, unknown> {
   if (!item) {
     return { ...DEFAULT_VALUES };
   }
@@ -65,8 +65,10 @@ function initializeFromItem(item?: Item): Record<string, any> {
 }
 
 // Convierte los valores del formulario al formato esperado por la API
-function formatForApi(values: Record<string, any>): Record<string, any> {
-  const body: Record<string, any> = {
+function formatForApi(
+  values: Record<string, unknown>,
+): Record<string, unknown> {
+  const body: Record<string, unknown> = {
     name: values.name || null,
     description: values.description || null,
     max_retry: values.max_retry,
@@ -74,18 +76,18 @@ function formatForApi(values: Record<string, any>): Record<string, any> {
     ban_time_seconds: values.ban_time_seconds,
     bantime_increment: values.bantime_increment,
     bantime_multipliers: values.bantime_multipliers
-      ? values.bantime_multipliers
+      ? String(values.bantime_multipliers)
           .split(",")
-          .map((s: string) => Number(s.trim()))
-          .filter((n: number) => !isNaN(n))
+          .map((s) => Number(s.trim()))
+          .filter((n) => !isNaN(n))
       : [],
     bantime_maxtime_seconds: values.bantime_maxtime_seconds,
     ban_count_decay_days: values.ban_count_decay_days,
     fail_codes: values.fail_codes
-      ? values.fail_codes
+      ? String(values.fail_codes)
           .split(",")
-          .map((s: string) => Number(s.trim()))
-          .filter((n: number) => !isNaN(n))
+          .map((s) => Number(s.trim()))
+          .filter((n) => !isNaN(n))
       : [],
   };
   return body;
@@ -99,7 +101,7 @@ export default function RateLimitProfileDialog({
   dialogMessages,
   t,
 }: RateLimitProfileDialogProps) {
-  const [formValues, setFormValues] = useState<Record<string, any>>(() =>
+  const [formValues, setFormValues] = useState<Record<string, unknown>>(() =>
     initializeFromItem(selectedItem),
   );
   const [loading, setLoading] = useState(false);
@@ -115,7 +117,7 @@ export default function RateLimitProfileDialog({
     setError(null);
   }, [selectedItem, dialogMode]);
 
-  const updateField = useCallback((key: string, value: any) => {
+  const updateField = useCallback((key: string, value: unknown) => {
     setFormValues((prev) => ({ ...prev, [key]: value }));
   }, []);
 
@@ -172,7 +174,7 @@ export default function RateLimitProfileDialog({
         let errorBody: { message?: string } = {};
         try {
           errorBody = await response.json();
-        } catch (_) {
+        } catch {
           /* ignore */
         }
         throw new Error(
@@ -243,7 +245,7 @@ export default function RateLimitProfileDialog({
       <Text style={{ width: 140, flexShrink: 0 }}>{t(label)}</Text>
       <Input
         style={{ width: "100%" }}
-        value={formValues[key] ?? ""}
+        value={(formValues[key] ?? "") as string | number | undefined}
         placeholder={placeholder || t(label)}
         onChange={(e) => updateField(key, e.target.value)}
         disabled={disabled}

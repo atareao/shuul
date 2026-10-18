@@ -4,7 +4,6 @@ import type { GetProp, TableProps, TableColumnsType } from "antd";
 import type {
   FilterValue,
   SorterResult,
-  TableCurrentDataSource,
 } from "antd/es/table/interface";
 import { CheckOutlined, CloseOutlined } from "@ant-design/icons";
 const { Text } = Typography;
@@ -13,7 +12,7 @@ type TablePaginationConfig = Exclude<
   boolean
 >;
 
-import { loadData, mapsEqual, debounce } from "@/common/utils";
+import { loadData, mapsEqual, debounce, getNestedValue } from "@/common/utils";
 import type { DebouncedFn } from "@/common/utils";
 import type { DialogMode, FieldDefinition } from "@/common/types";
 import { DialogModes } from "@/common/types";
@@ -64,8 +63,8 @@ interface State<T> {
   items: T[];
   loading: boolean;
   pagination: TablePaginationConfig;
-  sortField?: SorterResult<any>["field"];
-  sortOrder?: SorterResult<any>["order"];
+  sortField?: SorterResult<T>["field"];
+  sortOrder?: SorterResult<T>["order"];
   filters: Map<string, string>;
   selectedItem?: T; // selectedItem puede ser T o Diptych
   dialogMode: DialogMode;
@@ -73,20 +72,6 @@ interface State<T> {
   autoRefreshInterval: number;
   totalPages: number;
 }
-
-const getNestedValue = (obj: any, path: string): any => {
-  const pathParts = path.split(".");
-  let current = obj;
-
-  for (const part of pathParts) {
-    if (current && typeof current === "object" && part in current) {
-      current = current[part];
-    } else {
-      return undefined;
-    }
-  }
-  return current;
-};
 
 export default class CustomTable<
   T extends { id: number | string },
@@ -159,7 +144,7 @@ export default class CustomTable<
   };
 
   // handleCloseDialog ahora solo cierra el diálogo, no muta items localmente
-  private handleCloseDialog = (_item?: T | undefined) => {
+  private handleCloseDialog = () => {
     this.setState({
       dialogMode: DialogModes.NONE,
       selectedItem: undefined,
@@ -204,7 +189,7 @@ export default class CustomTable<
   };
 
   getColumns = (): TableColumnsType<T> => {
-    let columns: TableColumnsType<T> = this.props.fields
+    const columns: TableColumnsType<T> = this.props.fields
       .filter((f) => f.visible !== false)
       .map((field) => {
         const fieldKey = field.key.toString();
@@ -215,7 +200,7 @@ export default class CustomTable<
         ) => {
           this.debouncedSetFilter(field.key.toString(), e.currentTarget.value);
         };
-        const defaultRender = (content: any) => {
+        const defaultRender = (content: unknown): React.ReactNode => {
           if (field.type === "boolean") {
             return content ? (
               <CheckOutlined style={{ color: "green" }} />
@@ -225,15 +210,20 @@ export default class CustomTable<
           }
           if (field.type === "tag" && field.options) {
             const option = field.options.find((o) => o.value === content);
-            return <Tag color={option?.color}>{option?.label || content}</Tag>;
+            return (
+              <Tag color={option?.color}>
+                {option?.label || String(content)}
+              </Tag>
+            );
           }
-          return <Text>{content}</Text>;
+          return <Text>{content as React.ReactNode}</Text>;
         };
         const isNested = fieldKey.includes(".");
-        let finalRender = field.render || defaultRender;
+        let resolvedRender: (content: unknown, record: T) => React.ReactNode =
+          field.render || defaultRender;
 
         if (isNested && !field.render) {
-          finalRender = (_content: any, record: T) => {
+          resolvedRender = (_content: unknown, record: T) => {
             const value = getNestedValue(record, fieldKey);
             if (field.type === "boolean") {
               return value ? (
@@ -244,11 +234,13 @@ export default class CustomTable<
             }
             if (field.type === "tag" && field.options) {
               const option = field.options.find((o) => o.value === value);
-              return <Tag color={option?.color}>{option?.label || value}</Tag>;
+              return (
+                <Tag color={option?.color}>
+                  {option?.label || String(value)}
+                </Tag>
+              );
             }
-            return (
-              <Text>{value !== undefined && value !== null ? value : ""}</Text>
-            );
+            return <Text>{value == null ? "" : String(value)}</Text>;
           };
         }
         return {
@@ -271,10 +263,8 @@ export default class CustomTable<
           sorter: !field.virtual && field.type !== "boolean" && !!field.sortKey,
           ellipsis: { showTitle: true },
           width: field.width || 100,
-          render: (content: any, record: T) =>
-            field.render
-              ? field.render(content, record)
-              : finalRender(content, record),
+          render: (content: unknown, record: T) =>
+            resolvedRender(content, record),
           fixed: field.fixed || undefined,
         };
       });
@@ -299,11 +289,10 @@ export default class CustomTable<
     pagination: TablePaginationConfig,
     _filters: Record<string, FilterValue | null>,
     sorter: SorterResult<T> | SorterResult<T>[],
-    _extra: TableCurrentDataSource<T>,
   ) => {
     // sorter may be an array, use first element if so
     const effectiveSorter = Array.isArray(sorter) ? sorter[0] : sorter;
-    const rawSortField = effectiveSorter.field as SorterResult<any>["field"];
+    const rawSortField = effectiveSorter.field as SorterResult<T>["field"];
     const fieldDefinition = this.props.fields.find(
       (f) => f.key === rawSortField,
     );
@@ -479,7 +468,7 @@ export default class CustomTable<
       ...this.state.pagination,
       showSizeChanger: true,
       pageSizeOptions: ["10", "50", "100"],
-      showTotal: (total: number, _range: [number, number]) =>
+      showTotal: (total: number) =>
         `Total: ${total} records (${this.state.totalPages} pages)`,
     };
 

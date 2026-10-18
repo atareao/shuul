@@ -2,9 +2,20 @@ import React from "react";
 import { useTranslation } from "react-i18next";
 import { Card, Input, Button } from "antd";
 
+/** Firma exacta de la función de traducción devuelta por `useTranslation`. */
+type Translate = ReturnType<typeof useTranslation>["t"];
+
+/** Datos del formulario enviados al consumidor del componente. */
+export interface UserCredentials {
+  email: string;
+  password: string;
+}
+
+export type SignInSubmitHandler = (userData: UserCredentials) => void;
+
 interface Props {
-  t: Function;
-  onSubmit: Function;
+  t: Translate;
+  onSubmit: SignInSubmitHandler;
   responseMessage: string;
 }
 
@@ -27,20 +38,20 @@ class InnerSignIn extends React.Component<Props, State> {
     };
   };
 
-  handleEmailChange = (e: any) => {
+  handleEmailChange = (e: React.ChangeEvent<HTMLInputElement>) => {
     console.log("Email changed");
     this.setState({ email: e.target.value });
   };
 
-  handlePasswordChange = (e: any) => {
+  handlePasswordChange = (e: React.ChangeEvent<HTMLInputElement>) => {
     console.log("Password changed");
     this.setState({ password: e.target.value });
   };
 
-  handleSubmit = (e: any) => {
+  handleSubmit = (e: React.MouseEvent<HTMLElement>) => {
     e.preventDefault();
     console.log("Submitting sign in form");
-    const userData = {
+    const userData: UserCredentials = {
       email: this.state.email,
       password: this.state.password,
     };
@@ -79,7 +90,7 @@ class InnerSignIn extends React.Component<Props, State> {
 }
 
 interface SignInProps {
-  onSubmit: Function;
+  onSubmit: SignInSubmitHandler;
   responseMessage: string;
 }
 

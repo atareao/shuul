@@ -15,7 +15,7 @@ import {
   Empty,
   Switch,
 } from "antd";
-import type { TabsProps } from "antd";
+import type { CollapseProps, TabsProps } from "antd";
 import {
   CheckCircleOutlined,
   CloseCircleOutlined,
@@ -37,10 +37,61 @@ import type {
   RateLimitProfileTemplate,
   TemplatesResponse,
 } from "@/models/template";
+import type Rule from "@/models/rule";
+import type RateLimitProfile from "@/models/rate_limit_profile";
 import { loadData } from "@/common/utils";
 import { BASE_URL } from "@/constants";
 
 const { Text } = Typography;
+
+/**
+ * Filtros que un template aporta tal cual a la nueva regla. Se reutiliza el
+ * modelo `RuleTemplate`, donde ya están declarados como `string | null`
+ * (los filtros vacíos viajan como `null` al backend).
+ */
+type TemplateFilterFields = Pick<
+  RuleTemplate,
+  | "path"
+  | "query"
+  | "country_code"
+  | "ip_address"
+  | "protocol"
+  | "city_name"
+  | "country_name"
+  | "user_agent"
+  | "method"
+  | "referer"
+  | "content_type"
+  | "accept_language"
+  | "x_request_id"
+  | "is_tor"
+>;
+
+/**
+ * Cuerpo de `POST /api/v1/rules` al aplicar un template: el subconjunto de
+ * campos de `Rule` que envía el formulario (`fqdn` y `active` vienen del
+ * formulario, no del template).
+ */
+type RuleCreatePayload = Pick<
+  Rule,
+  | "name"
+  | "description"
+  | "mode"
+  | "weight"
+  | "allow"
+  | "pipeline"
+  | "rate_limit_profile_id"
+> &
+  TemplateFilterFields & {
+    fqdn: string | null;
+    active: boolean;
+  };
+
+/** Cuerpo de `POST /api/v1/rate-limit-profiles` al aplicar un template. */
+type RateLimitProfileCreatePayload = Omit<
+  RateLimitProfile,
+  "id" | "created_at" | "updated_at"
+>;
 
 const SEVERITY_COLORS: Record<string, string> = {
   critico: "red",
@@ -112,8 +163,11 @@ interface State {
   selectedProfile: RateLimitProfileTemplate | null;
 }
 
-export default class TemplatesPage extends React.Component<{}, State> {
-  constructor(props: {}) {
+export default class TemplatesPage extends React.Component<
+  Record<string, never>,
+  State
+> {
+  constructor(props: Record<string, never>) {
     super(props);
     this.state = {
       wafTemplates: [],
@@ -189,7 +243,7 @@ export default class TemplatesPage extends React.Component<{}, State> {
 
     this.setState({ applying: template.name, modalVisible: false });
     try {
-      const body: Record<string, any> = {
+      const body: RuleCreatePayload = {
         name: this.state.ruleName,
         description: this.state.ruleDescription,
         mode: template.pipeline === "jail" ? "log_only" : "enforce",
@@ -241,8 +295,8 @@ export default class TemplatesPage extends React.Component<{}, State> {
           `Failed to create rule: ${err.message || response.statusText}`,
         );
       }
-    } catch (e: any) {
-      message.error(`Error: ${e.message}`);
+    } catch (e) {
+      message.error(`Error: ${e instanceof Error ? e.message : String(e)}`);
     } finally {
       this.setState({ applying: null });
     }
@@ -270,7 +324,7 @@ export default class TemplatesPage extends React.Component<{}, State> {
 
     this.setState({ applying: profile.name, profileModalVisible: false });
     try {
-      const body: Record<string, any> = {
+      const body: RateLimitProfileCreatePayload = {
         name: profile.name,
         description: profile.description,
         max_retry: profile.max_retry,
@@ -305,8 +359,8 @@ export default class TemplatesPage extends React.Component<{}, State> {
           `Failed to create profile: ${err.message || response.statusText}`,
         );
       }
-    } catch (e: any) {
-      message.error(`Error: ${e.message}`);
+    } catch (e) {
+      message.error(`Error: ${e instanceof Error ? e.message : String(e)}`);
     } finally {
       this.setState({ applying: null });
     }
@@ -521,7 +575,7 @@ export default class TemplatesPage extends React.Component<{}, State> {
     }
 
     // Build collapse items: must_have first, then rest alphabetically
-    const collapseItems: any[] = [];
+    const collapseItems: NonNullable<CollapseProps["items"]> = [];
 
     // Must-have group (always first)
     const mustHaveGroup = groups.get("__must_have__");
