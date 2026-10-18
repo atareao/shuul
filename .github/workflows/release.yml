@@ -8,6 +8,9 @@ on:
 
 permissions:
   contents: write
+  # Required to push to GitHub Container Registry with GITHUB_TOKEN.
+  # No extra secret is needed, unlike an external registry.
+  packages: write
 
 jobs:
   image:
@@ -19,17 +22,18 @@ jobs:
       - name: Set up Buildx
         uses: docker/setup-buildx-action@v3
 
-      - name: Log in to Docker Hub
+      - name: Log in to GitHub Container Registry
         uses: docker/login-action@v3
         with:
-          username: ${{ secrets.DOCKERHUB_USERNAME }}
-          password: ${{ secrets.DOCKERHUB_TOKEN }}
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Container metadata
         id: meta
         uses: docker/metadata-action@v5
         with:
-          images: atareao/shuul
+          images: ghcr.io/${{ github.repository }}
           tags: |
             type=semver,pattern={{version}}
             type=semver,pattern={{major}}.{{minor}}

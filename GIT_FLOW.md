@@ -63,7 +63,7 @@ gh pr create --base develop --head main --title "release: vX.Y.Z"
 #    e) Sincroniza develop con main
 
 # 3. El tag v* dispara release.yml:
-#    a) Construye y publica la imagen de contenedor en Docker Hub
+#    a) Construye y publica la imagen en GitHub Container Registry (ghcr.io)
 #    b) Crea la GitHub Release con las notas del changelog
 ```
 
@@ -139,10 +139,15 @@ checks de formato y clippy sí se ejecutan siempre).
 |---|---|---|
 | `GH_PAT` | Personal Access Token con scope `contents: write`, para que `release-prepare.yml` pueda pushear el commit de release, el tag y sincronizar `develop` | Sí para releases automáticas |
 | `MAXMIND_LICENSE_KEY` | Descargar la base GeoLite2 en CI y poder ejecutar `cargo test` | Recomendado |
-| `DOCKERHUB_USERNAME` | Usuario de Docker Hub para publicar `atareao/shuul` | Sí para publicar la imagen |
-| `DOCKERHUB_TOKEN` | Access token de Docker Hub | Sí para publicar la imagen |
+| `GITHUB_TOKEN` *(automático)* | Publicar en GitHub Container Registry (`ghcr.io/atareao/shuul`). Lo inyecta GitHub: **no hay que configurarlo** | — |
 
 Se configuran en **Settings → Secrets and variables → Actions**.
+
+> **Nota sobre GHCR:** la imagen se publica en `ghcr.io/atareao/shuul` con el
+> `GITHUB_TOKEN`, así que **no requiere ningún secreto**. Pero los paquetes de
+> GHCR son **privados por defecto**: si el host que despliega no está autenticado,
+> hay que hacer público el paquete o hacer `podman login ghcr.io` una vez en él
+> (token con scope `read:packages`). Ver `SELF-HOSTING.md` §6.2.
 
 ## Resumen visual
 

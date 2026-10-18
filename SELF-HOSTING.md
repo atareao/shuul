@@ -339,12 +339,23 @@ SHUUL_JOURNALD_CONTAINER=traefik
 
 ### 6.2 Docker Compose
 
-The project ships with a `compose.yml` ready for production:
+The project ships with a `compose.yml` ready for production. The image is published to **GitHub Container Registry** as `ghcr.io/atareao/shuul` on every release tag.
+
+> **GHCR packages are private by default**, even in a public repository, so the host that runs the container must be able to authenticate. Pick one:
+>
+> - **Make the package public** — repository → *Packages* → `shuul` → *Package settings* → *Change visibility* → **Public**. Then no credentials are needed to pull.
+> - **Log in once on the host** — create a Personal Access Token with the `read:packages` scope and run:
+>   ```bash
+>   echo "$PAT" | docker login ghcr.io -u <your-github-user> --password-stdin
+>   ```
+>   (`podman login ghcr.io` works the same way.)
+>
+> The `GH_PAT` used by the Actions workflows is not available outside GitHub; for pulling you only need `read:packages`.
 
 ```yaml
 services:
   shuul:
-    image: atareao/shuul:latest
+    image: ghcr.io/atareao/shuul:latest
     container_name: shuul
     restart: unless-stopped
     env_file: .env
@@ -675,7 +686,7 @@ Symptoms: `systemctl enable --now systemd-journal-gatewayd.socket` fails with `U
 ```yaml
 services:
   shuul:
-    image: atareao/shuul:latest
+    image: ghcr.io/atareao/shuul:latest
     container_name: shuul
     restart: unless-stopped
     env_file: .env
