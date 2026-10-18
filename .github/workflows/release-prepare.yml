@@ -26,9 +26,6 @@ jobs:
         with:
           tool: git-cliff
 
-      - name: Cache cargo
-        uses: swatinem/rust-cache@v2
-
       - name: Install vampus
         run: cargo install vampus --git https://github.com/atareao/vampus
 
@@ -87,7 +84,18 @@ jobs:
       # without writing anything, which is the safe behaviour.
       - name: Bump version with vampus
         if: steps.state.outputs.action == 'bump'
-        run: vampus upgrade ${{ steps.bump.outputs.type }}
+        run: |
+          BEFORE=$(grep '^current_version' .vampus.yml | sed 's/.*: *//')
+          vampus upgrade ${{ steps.bump.outputs.type }}
+          AFTER=$(grep '^current_version' .vampus.yml | sed 's/.*: *//')
+          if [ "$BEFORE" = "$AFTER" ]; then
+            echo "::error::vampus left the version at $BEFORE instead of bumping it."
+            echo "vampus exits 0 when it aborts, so this step would otherwise pass silently."
+            echo "Most likely cause: a file listed in .vampus.yml's 'replaces' is missing"
+            echo "(e.g. a gitignored file that does not exist in a fresh CI checkout)."
+            exit 1
+          fi
+          echo "Bumped $BEFORE -> $AFTER"
 
       - name: Read release version
         if: steps.state.outputs.action != 'skip'
