@@ -1,4 +1,9 @@
 # Changelog
+## [0.15.0] - 2026-10-18
+
+### Features
+
+- *(jail)* Read Traefik access logs over the gatewayd Unix socket
 ## [0.14.2] - 2026-10-18
 
 ### Bug Fixes
@@ -15,6 +20,7 @@
 ### Miscellaneous Tasks
 
 - Release v0.14.1
+- Release v0.14.2
 
 ### Other
 
