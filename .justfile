@@ -1,3 +1,4 @@
+registry := "ghcr.io"
 user     := "atareao"
 name     := `basename ${PWD}`
 version  := `vampus show`
@@ -49,12 +50,12 @@ test-integration-setup:
 build:
     @podman build \
         --no-cache \
-        --tag={{user}}/{{name}}:{{version}} \
-        --tag={{user}}/{{name}}:latest .
+        --tag={{registry}}/{{user}}/{{name}}:{{version}} \
+        --tag={{registry}}/{{user}}/{{name}}:latest .
 
 push:
-    @podman image push {{user}}/{{name}}:{{version}}
-    @podman image push {{user}}/{{name}}:latest
+    @podman image push {{registry}}/{{user}}/{{name}}:{{version}}
+    @podman image push {{registry}}/{{user}}/{{name}}:latest
 
 upgrade:
     #!/bin/fish

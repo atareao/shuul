@@ -1,6 +1,6 @@
 services:
   shuul:
-    image: atareao/shuul
+    image: ghcr.io/atareao/shuul
     container_name: shuul
     restart: unless-stopped
     init: true

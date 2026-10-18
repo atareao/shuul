@@ -474,7 +474,7 @@ Lógica: si tiene `rate_limit_profile_id` → jail. Si tiene algún filtro → w
 
 #### compose.yml
 
-- Imagen: `atareao/shuul`
+- Imagen: `ghcr.io/atareao/shuul`
 - Volúmenes: `data` (SQLite), `geo` (MaxMind, external)
 - Red: `proxy` (external, para Traefik)
 - Healthcheck: `curl -f http://localhost:3000/api/v1/health/` cada 60s
