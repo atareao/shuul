@@ -563,3 +563,12 @@ routers:
 | `SELF-HOSTING.md` | Administradores | Despliegue completo, Traefik, OIDC, backup, troubleshooting |
 | `USER-GUIDE.md` | Usuarios finales | Dashboard, reglas, perfiles, bans, templates, charts, FAQ |
 | `AGENTS.md` | AI agents | Arquitectura técnica, convenciones de código, reglas del proyecto |
+
+## Git Flow
+
+Este proyecto sigue gitflow estricto. Ver [GIT_FLOW.md](./GIT_FLOW.md) para:
+
+- Estructura de ramas (`main`, `develop`, `feature/*`, `hotfix/*`)
+- Conventional commits con gitmoji
+- Cómo crear features, hotfixes y releases
+- Workflows de CI (`ci.yml`, `release-prepare.yml`, `release.yml`) y secretos necesarios

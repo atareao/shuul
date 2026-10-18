@@ -1,0 +1,98 @@
+name: CI
+
+on:
+  pull_request:
+    branches: [main, develop]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+env:
+  CARGO_TERM_COLOR: always
+  # Mapped to env because the `secrets` context is not reliable in step `if:`.
+  MAXMIND_LICENSE_KEY: ${{ secrets.MAXMIND_LICENSE_KEY }}
+
+jobs:
+  backend:
+    name: Backend (Rust)
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: backend
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
+
+      - name: Cache cargo
+        uses: swatinem/rust-cache@v2
+        with:
+          workspaces: backend
+
+      - name: Check formatting
+        run: cargo fmt --all -- --check
+
+      - name: Clippy (deny warnings)
+        run: cargo clippy -- -D warnings
+
+      - name: Clippy (all targets, all features)
+        run: cargo clippy --all-targets --all-features
+
+      # `cargo test` needs a MaxMind GeoLite2 database at one of the paths the
+      # test helpers probe (../geo/, geo/ or /tmp/test.mmdb). It is gitignored
+      # and cannot be redistributed, so CI downloads it when the repository
+      # secret is available and otherwise skips the suite with a warning.
+      - name: Download GeoLite2 database
+        if: ${{ env.MAXMIND_LICENSE_KEY != '' }}
+        run: |
+          mkdir -p geo
+          curl -fsSL -o /tmp/geolite2.tar.gz \
+            "https://download.maxmind.com/app/geoip_download?edition_id=GeoLite2-City&license_key=${MAXMIND_LICENSE_KEY}&suffix=tar.gz"
+          tar -xzf /tmp/geolite2.tar.gz -C /tmp
+          find /tmp -name GeoLite2-City.mmdb -print -quit | xargs -I{} cp {} geo/
+
+      - name: Run tests
+        if: ${{ env.MAXMIND_LICENSE_KEY != '' }}
+        run: cargo test
+
+      - name: Warn that tests were skipped
+        if: ${{ env.MAXMIND_LICENSE_KEY == '' }}
+        run: |
+          echo "::warning title=Backend tests skipped::MAXMIND_LICENSE_KEY is not set, so the GeoLite2 database could not be downloaded and 'cargo test' was skipped. Add the repository secret to enable the full test suite."
+
+  frontend:
+    name: Frontend (React + TypeScript)
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: frontend
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install pnpm
+        uses: pnpm/action-setup@v4
+        with:
+          version: 10
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+          cache-dependency-path: frontend/pnpm-lock.yaml
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Lint
+        run: pnpm run lint
+
+      - name: Type check and build
+        run: pnpm run build
+
+      - name: Test
+        run: pnpm run test
