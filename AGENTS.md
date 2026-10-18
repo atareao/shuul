@@ -147,7 +147,7 @@ Shuul opera **dos pipelines** sobre un mismo conjunto de reglas:
 | Pipeline | Endpoint/Fuente | Rol | Comportamiento |
 |---|---|---|---|
 | **WAF** | `ANY /api/v1/shuul` | ForwardAuth — interceptar, matchear, allow/deny | Primera regla que matchea gana (break por weight ASC) |
-| **Jail** | `JournaldReader` (background) + `POST /api/v1/report` (HTTP) | Rate limiter post-factum (fail2ban-style) | TODAS las reglas que matchean cuentan |
+| **Jail** | `JournaldReader` (background, socket Unix) + `POST /api/v1/report` (HTTP) | Rate limiter post-factum (fail2ban-style) | TODAS las reglas que matchean cuentan |
 
 #### Flujo completo
 
@@ -160,12 +160,43 @@ Request → WAF rules (first match wins, weight ASC)
                             └─ no → 200 OK
         → Backend responde
         → Traefik accessLog JSON → stdout → journald
-        → systemd-journal-gatewayd (:19531) → JournaldReader (background task)
+        → systemd-journal-gatewayd → JournaldReader (background task)
+            · AF_UNIX /run/systemd/journal/gatewayd.sock  ← por defecto
+            · TCP http://host:19531                       ← alternativa
         → run_jail_pipeline → Jail rules (ALL match) → rate limit → ban si excede
 ```
 
 Ambos caminos (el reader de journald y el endpoint HTTP) llaman a la **misma** función
 `run_jail_pipeline(app_state, payload)` en `http/report.rs`.
+
+#### JournaldReader — transporte
+
+`backend/src/journald_reader.rs` habla HTTP/1.1 contra `systemd-journal-gatewayd` con
+`hyper` (`client::conn::http1`), que es genérico sobre `AsyncRead + AsyncWrite`. El mismo
+código sirve para los dos transportes de [`JournaldTransport`]:
+
+| Transporte | Cuándo | Variable |
+|---|---|---|
+| **Socket Unix** (`AF_UNIX`) | Recomendado y **por defecto en `compose.yml`**. gatewayd en el mismo host: sin puerto, sin regla de firewall | `SHUUL_JOURNALD_SOCKET` |
+| **TCP** | Sólo para un gatewayd en otra máquina o cuando no se puede montar el socket | `SHUUL_JOURNALD_URL` |
+
+**Precedencia: socket → URL → default** (`http://localhost:19531`). Los valores vacíos
+cuentan como no definidos. Si llegan socket y URL a la vez gana el socket y se emite un
+`warn!` nombrando la URL ignorada. `SHUUL_JOURNALD_CONTAINER` (default `traefik`) es común
+a ambos transportes.
+
+- La petición es idéntica en los dos: `GET /entries?follow&CONTAINER_NAME={container}`
+  en **forma origen** (`path?query`) más cabecera `Host`, `Accept: application/json` y
+  `Range: entries=<cursor>:1` al reanudar tras una reconexión.
+- `endpoint_display()` produce el endpoint que aparece en los logs:
+  `unix:/run/systemd/journal/gatewayd.sock` o `scheme://host:port` del endpoint
+  **efectivo** en TCP, no la URL cruda (su path se ignora y se avisa con un
+  `warn!` al arrancar). Es la línea `journald reader: streaming access logs from …`.
+- El contenedor ve el socket porque `compose.yml` monta el **directorio**
+  `/run/systemd/journal:/run/systemd/journal:ro` (un bind de fichero se queda atado a un
+  inodo muerto cuando systemd recrea el socket). No hay `extra_hosts` ni puerto abierto.
+- Fallo de conexión = fail-open: `warn!` (`journald gateway not available`) y reintento
+  cada 30 s. El WAF nunca se ve afectado.
 
 #### WAF (`shuul.rs`)
 
@@ -184,7 +215,7 @@ Ambos caminos (el reader de journald y el endpoint HTTP) llaman a la **misma** f
 - Itera TODAS las reglas (sin break). Cada regla con `rate_limit_profile_id` es un "jail" independiente.
 - Para cada match: carga perfil desde DB, si `status_code ∈ fail_codes` → `record()` + ban si excede.
 - Fire-and-forget: siempre devuelve 200 OK.
-- Recibe `ReportPayload` desde el plugin de Traefik (legacy) o desde el reader de journald; ambos caminos convergen en `run_jail_pipeline`.
+- Recibe `ReportPayload` desde el plugin de Traefik (legacy) o desde el `JournaldReader` (socket Unix por defecto, TCP como alternativa); ambos caminos convergen en `run_jail_pipeline`.
 
 ### CacheRule
 
@@ -289,6 +320,7 @@ Nunca se adquiere un lock en orden inverso para evitar deadlocks. Este patrón s
 | OIDC init | Cada 30s (hasta éxito) | Fetch metadata + JWKS del proveedor OIDC |
 | Ban cleanup | Cada 60s | Eliminar bans expirados, limpiar rate limiters |
 | Stats persist | Cada 1800s (30 min) | Guardar snapshot de StatsCollector en SQLite |
+| JournaldReader | Streaming continuo (reintento cada 30s) | Leer access logs de Traefik vía gatewayd (socket Unix por defecto, TCP alternativo) y alimentar el pipeline Jail |
 
 ### LogCollector
 
@@ -475,8 +507,8 @@ Lógica: si tiene `rate_limit_profile_id` → jail. Si tiene algún filtro → w
 #### compose.yml
 
 - Imagen: `ghcr.io/atareao/shuul`
-- Volúmenes: `data` (SQLite), `geo` (MaxMind, external)
-- Red: `proxy` (external, para Traefik)
+- Volúmenes: `data` (SQLite), `geo` (MaxMind, external), `/run/systemd/journal:/run/systemd/journal:ro` (socket de gatewayd para el pipeline Jail; se monta el directorio, no el fichero, para sobrevivir a la recreación del socket por systemd)
+- Red: `proxy` (external, para Traefik). Sin `extra_hosts`: el transporte por defecto es el socket Unix
 - Healthcheck: `curl -f http://localhost:3000/api/v1/health/` cada 60s
 - Labels Traefik: router rule, entrypoint https, loadbalancer port 3000
 
@@ -493,6 +525,11 @@ Lógica: si tiene `rate_limit_profile_id` → jail. Si tiene algún filtro → w
 | `PORT` | ❌ | Puerto (default: 3000) |
 | `MAXMIND_DB_PATH` | ❌ | Ruta a GeoIP database |
 | `RUST_LOG` | ❌ | Nivel de log |
+| `SHUUL_JOURNALD_SOCKET` | ❌ | Path del socket de gatewayd. Si está definida y no vacía **tiene prioridad** sobre la URL (default: sin definir). En `compose.yml`: `/run/systemd/journal/gatewayd.sock` |
+| `SHUUL_JOURNALD_URL` | ❌ | URL base de un gatewayd por TCP (default: `http://localhost:19531`). Sólo se usa si `SHUUL_JOURNALD_SOCKET` no está definida |
+| `SHUUL_JOURNALD_CONTAINER` | ❌ | Contenedor cuyos access logs se leen (default: `traefik`) |
+
+Precedencia del transporte del `JournaldReader`: **socket → URL → default**. El modo TCP sólo hace falta para un gatewayd remoto o cuando no se puede montar el socket; con gatewayd en el mismo host requiere `extra_hosts: host.docker.internal:host-gateway` y exponer `19531` únicamente a la subred del bridge.
 
 ## Templates
 

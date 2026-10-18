@@ -303,7 +303,7 @@ pub async fn run_jail_pipeline(
 
 #[cfg(test)]
 mod tests {
-    use crate::models::log_collector::LOG_COLLECTOR;
+    use crate::models::log_collector::{LOG_COLLECTOR, TEST_LOCK};
     use crate::models::{
         AppState, BanManager, CacheRule, GeoIpService, ReportPayload, Rule, Settings,
         StatsCollector,
@@ -587,6 +587,7 @@ mod tests {
     /// production code, the log should contain `status_code = Some(404)`.
     #[tokio::test]
     async fn test_cleared_log_includes_status_code() {
+        let _guard = TEST_LOCK.lock().await;
         // Clear the LOG_COLLECTOR before the test
         if let Ok(mut collector) = LOG_COLLECTOR.lock() {
             *collector = crate::models::log_collector::LogCollector::new(1000);
@@ -618,6 +619,7 @@ mod tests {
     /// `"status_code"`, so this test currently FAILS.
     #[tokio::test]
     async fn test_pending_log_includes_status_code() {
+        let _guard = TEST_LOCK.lock().await;
         // Clear the LOG_COLLECTOR before the test
         if let Ok(mut collector) = LOG_COLLECTOR.lock() {
             *collector = crate::models::log_collector::LogCollector::new(1000);
@@ -652,6 +654,7 @@ mod tests {
     /// `"status_code"`, so this test currently FAILS.
     #[tokio::test]
     async fn test_registered_log_includes_status_code() {
+        let _guard = TEST_LOCK.lock().await;
         // Clear the LOG_COLLECTOR before the test
         if let Ok(mut collector) = LOG_COLLECTOR.lock() {
             *collector = crate::models::log_collector::LogCollector::new(1000);
@@ -685,6 +688,7 @@ mod tests {
     /// and must run the full Jail logic (rate limit recorded + audit log).
     #[tokio::test]
     async fn test_run_jail_pipeline_direct_records_and_logs() {
+        let _guard = TEST_LOCK.lock().await;
         if let Ok(mut collector) = LOG_COLLECTOR.lock() {
             *collector = crate::models::log_collector::LogCollector::new(1000);
         }
@@ -739,6 +743,7 @@ mod tests {
     /// producing exactly the same side effects as a direct call.
     #[tokio::test]
     async fn test_report_handler_delegates_to_run_jail_pipeline() {
+        let _guard = TEST_LOCK.lock().await;
         if let Ok(mut collector) = LOG_COLLECTOR.lock() {
             *collector = crate::models::log_collector::LogCollector::new(1000);
         }
@@ -763,6 +768,7 @@ mod tests {
     /// RED TEST: a direct call with no matching rules must log `cleared`.
     #[tokio::test]
     async fn test_run_jail_pipeline_direct_no_match_logs_cleared() {
+        let _guard = TEST_LOCK.lock().await;
         if let Ok(mut collector) = LOG_COLLECTOR.lock() {
             *collector = crate::models::log_collector::LogCollector::new(1000);
         }
