@@ -1,5 +1,6 @@
 import React from "react";
 import { useNavigate } from "react-router";
+import type { NavigateFunction } from "react-router";
 import { useTranslation } from "react-i18next";
 import { Button, Space } from "antd";
 import { EditFilled, DeleteFilled, PlusOutlined } from "@ant-design/icons";
@@ -128,11 +129,11 @@ const DIALOG_MESSAGES: DialogMessages = {
 
 // 2. Definición de Props y Clase
 interface Props {
-  navigate: any;
+  navigate: NavigateFunction;
   t: (key: string) => string;
 }
 
-export class InnerPage extends React.Component<Props, {}> {
+export class InnerPage extends React.Component<Props, Record<string, never>> {
   // 3. Método para renderizar el botón "Añadir"
   private renderHeaderAction = (onCreate: () => void) => {
     return (

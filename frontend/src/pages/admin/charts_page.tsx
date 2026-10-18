@@ -1,5 +1,6 @@
 import react, { lazy, Suspense } from "react";
 import { useNavigate } from "react-router";
+import type { NavigateFunction } from "react-router";
 import { useTranslation } from "react-i18next";
 import { Flex, Typography, Spin, InputNumber, Select, Card, Tabs } from "antd";
 import { loadData } from "@/common/utils";
@@ -15,8 +16,8 @@ import EvolutionByMethod from "@/components/charts/evolution_by_method";
 const Pie = lazy(() => import("@/components/charts/antd_pie"));
 
 interface Props {
-  navigate: any;
-  t: any;
+  navigate: NavigateFunction;
+  t: (key: string) => string;
   isDarkMode: boolean;
 }
 

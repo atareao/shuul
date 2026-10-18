@@ -33,8 +33,11 @@ const DEFAULT_SETTINGS: Settings = {
   log_all_requests: "all",
 };
 
-export default class SettingsPage extends React.Component<{}, State> {
-  constructor(props: {}) {
+export default class SettingsPage extends React.Component<
+  Record<string, never>,
+  State
+> {
+  constructor(props: Record<string, never>) {
     super(props);
     this.state = {
       settings: null,
@@ -71,7 +74,7 @@ export default class SettingsPage extends React.Component<{}, State> {
     }
   };
 
-  handleSave = async (values: Record<string, any>) => {
+  handleSave = async (values: Settings) => {
     this.setState({ saving: true });
     const token = localStorage.getItem("token");
     try {
@@ -94,7 +97,7 @@ export default class SettingsPage extends React.Component<{}, State> {
         }
         message.error(json.message || "Failed to save settings");
       }
-    } catch (_error) {
+    } catch {
       message.error("Error saving settings");
     } finally {
       this.setState({ saving: false });

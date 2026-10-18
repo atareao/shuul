@@ -1,5 +1,6 @@
 import React from "react";
 import { useNavigate } from "react-router";
+import type { NavigateFunction } from "react-router";
 import { useTranslation } from "react-i18next";
 import { Button, Space } from "antd";
 import { DeleteFilled } from "@ant-design/icons";
@@ -76,10 +77,15 @@ const BAN_DIALOG_MESSAGES: DialogMessages = {
     `Are you sure you want to unban IP "${id}"?`,
 };
 
-export class InnerPage extends React.Component<{ navigate: any; t: any }, {}> {
+interface Props {
+  navigate: NavigateFunction;
+  t: (key: string) => string;
+}
+
+export class InnerPage extends React.Component<Props, Record<string, never>> {
   private renderActionColumn = (
     item: Ban,
-    _onEdit: any,
+    _onEdit: (item: Ban) => void,
     onDelete: (item: Ban) => void,
   ) => {
     return (
