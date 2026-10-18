@@ -1,6 +1,21 @@
 # Changelog
 ## [0.14.1] - 2026-10-18
 
+### Bug Fixes
+
+- *(ci)* Stop release-prepare from bumping on a re-run
+- *(ci)* Stop release-prepare from bumping on a re-run (#46)
+
+### Documentation
+
+- Repair historical release tags and their changelog sections
+
+### Other
+
+- Publish the container image to GHCR instead of Docker Hub
+- Publish the container image to GHCR instead of Docker Hub (#47)
+## [0.14.1] - 2026-10-18
+
 ### Documentation
 
 - *(spec)* Add frontend-lint-cleanup change proposal
