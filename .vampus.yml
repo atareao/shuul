@@ -1,8 +1,4 @@
-current_version: 0.14.1
-# Every file listed here MUST be tracked by git: vampus aborts (silently, exit
-# code 0) when a managed file is missing, which is exactly what happened while
-# `frontend/.env` was listed — it is gitignored, so it never exists in CI.
-# Use `frontend/.env.development` (tracked) for the version instead.
+current_version: 0.14.2
 replaces:
 - file: backend/Cargo.toml
   pattern: ^version\s*=\s*\"{{current_version}}\"$

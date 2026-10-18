@@ -1,14 +1,20 @@
 # Changelog
-## [0.14.1] - 2026-10-18
+## [0.14.2] - 2026-10-18
 
 ### Bug Fixes
 
 - *(ci)* Stop release-prepare from bumping on a re-run
 - *(ci)* Stop release-prepare from bumping on a re-run (#46)
+- *(ci)* Make vampus work in CI and fail loudly when it does not
+- *(ci)* Make vampus work in CI and fail loudly when it does not (#49)
 
 ### Documentation
 
 - Repair historical release tags and their changelog sections
+
+### Miscellaneous Tasks
+
+- Release v0.14.1
 
 ### Other
 
