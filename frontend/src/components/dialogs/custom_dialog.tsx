@@ -1,5 +1,6 @@
 import React from "react";
 import { useNavigate } from "react-router";
+import type { NavigateFunction } from "react-router";
 import { useTranslation } from "react-i18next";
 import {
   Modal,
@@ -37,8 +38,8 @@ interface Props<T> {
   dialogMode?: DialogMode;
   // La función onClose ahora devuelve un tipo T
   onClose: (data?: WithOptionalId<T>) => void;
-  navigate: any;
-  t: any;
+  navigate: NavigateFunction;
+  t: (key: string) => string;
 }
 
 // El componente de clase se hace genérico: InnerDialog<T>
@@ -54,10 +55,10 @@ class InnerDialog<T> extends React.Component<Props<T>, State<T>> {
       data:
         this.props.data !== undefined
           ? this.props.data
-          : this.props.fields.reduce((acc: any, field: any) => {
+          : (this.props.fields.reduce<Record<string, unknown>>((acc, field) => {
               acc[field.key] = field.value;
               return acc;
-            }, {} as WithOptionalId<T>),
+            }, {}) as WithOptionalId<T>),
     };
     this.hideMessage = debounce(() => {
       this.setState({ showMessage: false });
@@ -67,7 +68,7 @@ class InnerDialog<T> extends React.Component<Props<T>, State<T>> {
   // Los 'fields' ya no son una propiedad de clase fija, sino que se acceden desde this.props.fields
   // Se han eliminado los 'fields' estáticos de la clase.
 
-  getValue = (key: keyof T & string) => {
+  getValue = (key: keyof T & string): unknown => {
     if (this.state.data) {
       return this.state.data[key];
     }
@@ -77,7 +78,6 @@ class InnerDialog<T> extends React.Component<Props<T>, State<T>> {
 
   fetchData = async () => {
     let method;
-    let url;
     let string_body;
     let queryString = "";
     const basePath = `${BASE_URL}/api/v1/${this.props.endpoint}`;
@@ -91,7 +91,7 @@ class InnerDialog<T> extends React.Component<Props<T>, State<T>> {
         searchParams.append("id", String(dataWithId.id));
       }
       // Pasar rule_id si existe (para bans que tienen rule_id)
-      const ruleId = (dataWithId as any)?.rule_id;
+      const ruleId = getNestedValue(dataWithId, "rule_id");
       if (ruleId !== undefined && ruleId !== null) {
         searchParams.append("rule_id", String(ruleId));
       }
@@ -102,8 +102,8 @@ class InnerDialog<T> extends React.Component<Props<T>, State<T>> {
       string_body = JSON.stringify(this.state.data);
     } else if (this.props.dialogMode === DialogModes.CREATE) {
       method = "POST";
-      const body = this.props.fields.reduce(
-        (acc: any, field: FieldDefinition<T>) => {
+      const body = this.props.fields.reduce<Record<string, unknown>>(
+        (acc, field) => {
           const value = getNestedValue(dataWithId, field.key as string);
           // Convert empty strings to null so they serialize as JSON null.
           // This prevents 422 errors when the backend expects Option<Vec<T>>
@@ -126,7 +126,7 @@ class InnerDialog<T> extends React.Component<Props<T>, State<T>> {
     }
 
     // Manejo de URL: se usa '?' solo si queryString existe para evitar dobles '?'
-    url = `${basePath}${queryString.trim() !== "" ? `?${queryString}` : ""}`;
+    const url = `${basePath}${queryString.trim() !== "" ? `?${queryString}` : ""}`;
 
     console.log("Request URL:", url);
     console.log("Body:", string_body);
@@ -155,7 +155,9 @@ class InnerDialog<T> extends React.Component<Props<T>, State<T>> {
         let errorBody: { message?: string } = {};
         try {
           errorBody = await response.json();
-        } catch (e) {}
+        } catch {
+          /* ignore malformed error body */
+        }
         console.log(JSON.stringify(errorBody));
         return {
           status: response.status,
@@ -245,7 +247,7 @@ class InnerDialog<T> extends React.Component<Props<T>, State<T>> {
   };
 
   // La clave ahora está tipada como keyof T & string
-  onChange = (key: keyof T & string, value: any) => {
+  onChange = (key: keyof T & string, value: unknown) => {
     this.setState((prevState) => ({
       data: {
         // Renombrado de 'rule' a 'data'
@@ -271,20 +273,21 @@ class InnerDialog<T> extends React.Component<Props<T>, State<T>> {
     const { showMessage, messageText, messageType } = this.state;
     const dialogMode = this.props.dialogMode;
     // Obtener la clave 'id' de forma segura para usar en el mensaje de borrado.
-    const data_id = this.state.data ? (this.state.data as any).id : undefined;
+    const data_id = getNestedValue(this.state.data, "id") as number | string;
     const disabled = dialogMode === DialogModes.READ;
     let title = "";
     let message = "";
+    const dialogMessages = this.props.dialogMessages;
     if (dialogMode === DialogModes.CREATE) {
-      title = this.props.t(this.props.dialogMessages?.createTitle); // Título genérico
+      title = this.props.t(dialogMessages?.createTitle as string); // Título genérico
     } else if (dialogMode === DialogModes.UPDATE) {
-      title = this.props.t(this.props.dialogMessages?.updateTitle); // Título genérico
+      title = this.props.t(dialogMessages?.updateTitle as string); // Título genérico
     } else if (dialogMode === DialogModes.READ) {
-      title = this.props.t(this.props.dialogMessages?.readTitle); // Título genérico
+      title = this.props.t(dialogMessages?.readTitle as string); // Título genérico
     } else if (dialogMode === DialogModes.DELETE) {
-      title = this.props.t(this.props.dialogMessages?.deleteTitle); // Título genérico
+      title = this.props.t(dialogMessages?.deleteTitle as string); // Título genérico
       message = this.props.t(
-        this.props.dialogMessages?.confirmDeleteMessage(data_id),
+        dialogMessages?.confirmDeleteMessage(data_id) as string,
       ); // Mensaje genérico
     }
     return (
@@ -408,7 +411,7 @@ class InnerDialog<T> extends React.Component<Props<T>, State<T>> {
                             defaultValue={
                               this.getValue(
                                 field.key as keyof T & string,
-                              ) as any
+                              ) as string | number | undefined
                             }
                             onChange={(value) =>
                               this.onChange(
@@ -426,7 +429,7 @@ class InnerDialog<T> extends React.Component<Props<T>, State<T>> {
                             defaultValue={
                               this.getValue(
                                 field.key as keyof T & string,
-                              ) as any
+                              ) as string | number | undefined
                             }
                             onChange={(value) =>
                               this.onChange(
