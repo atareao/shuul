@@ -19,7 +19,7 @@ mod health;
 pub mod log;
 mod middleware;
 mod rate_limit_profile;
-mod report;
+pub mod report;
 mod rule;
 mod settings;
 mod shuul;
