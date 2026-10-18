@@ -32,28 +32,42 @@ jobs:
       - name: Install vampus
         run: cargo install vampus --git https://github.com/atareao/vampus
 
-      # The merge to `main` may arrive in either state:
-      #   - version files already bumped in the release PR  -> only tag
-      #   - version files still equal to the last tag       -> bump first
-      # Comparing `.vampus.yml` with the last tag tells us which one it is,
-      # which keeps this job idempotent either way.
-      - name: Decide whether a bump is still needed
+      # A merge to `main` can arrive in three states. Comparing the version in
+      # `.vampus.yml` with the tag that points at it tells them apart, which
+      # keeps the job idempotent:
+      #
+      #   skip  -> `v$CURRENT` exists and HEAD *is* that tag. Nothing to release;
+      #            this is what a manual re-run of an already finished release
+      #            looks like. Without this case a re-run would bump the version
+      #            again and publish a spurious release.
+      #   bump  -> `v$CURRENT` exists but HEAD has newer commits (a normal
+      #            release PR that only carries features): bump first.
+      #   tag   -> `v$CURRENT` is not tagged yet (the release PR already bumped
+      #            `.vampus.yml` by hand): only changelog + tag.
+      - name: Decide what to do
         id: state
         run: |
           LAST_TAG=$(git describe --tags --abbrev=0 2>/dev/null || echo "")
           CURRENT=$(grep '^current_version' .vampus.yml | sed 's/.*: *//')
           echo "current=$CURRENT" >> "$GITHUB_OUTPUT"
           echo "last_tag=$LAST_TAG" >> "$GITHUB_OUTPUT"
-          if [ "v$CURRENT" = "$LAST_TAG" ]; then
-            echo "needs_bump=true" >> "$GITHUB_OUTPUT"
-            echo "Version files are still at the last tag ($LAST_TAG): bumping."
+
+          if git rev-parse -q --verify "refs/tags/v$CURRENT" >/dev/null; then
+            TAGGED_SHA=$(git rev-list -n1 "v$CURRENT")
+            if [ "$TAGGED_SHA" = "$(git rev-parse HEAD)" ]; then
+              echo "action=skip" >> "$GITHUB_OUTPUT"
+              echo "v$CURRENT is already released and HEAD is exactly that tag: nothing to release."
+            else
+              echo "action=bump" >> "$GITHUB_OUTPUT"
+              echo "v$CURRENT is released but HEAD has newer commits: bumping."
+            fi
           else
-            echo "needs_bump=false" >> "$GITHUB_OUTPUT"
-            echo "Version files are already at $CURRENT (last tag $LAST_TAG): tagging only."
+            echo "action=tag" >> "$GITHUB_OUTPUT"
+            echo "v$CURRENT is not tagged yet (bumped in the release PR): tagging only."
           fi
 
       - name: Determine bump type from commits
-        if: steps.state.outputs.needs_bump == 'true'
+        if: steps.state.outputs.action == 'bump'
         id: bump
         run: |
           LAST_TAG="${{ steps.state.outputs.last_tag }}"
@@ -72,10 +86,11 @@ jobs:
       # `.vampus.yml:current_version` beforehand. When they are not, it aborts
       # without writing anything, which is the safe behaviour.
       - name: Bump version with vampus
-        if: steps.state.outputs.needs_bump == 'true'
+        if: steps.state.outputs.action == 'bump'
         run: vampus upgrade ${{ steps.bump.outputs.type }}
 
       - name: Read release version
+        if: steps.state.outputs.action != 'skip'
         id: version
         run: |
           V=$(grep '^current_version' .vampus.yml | sed 's/.*: *//')
@@ -83,9 +98,11 @@ jobs:
           echo "Releasing v$V"
 
       - name: Generate changelog
+        if: steps.state.outputs.action != 'skip'
         run: git-cliff -o CHANGELOG.md --tag "v${{ steps.version.outputs.value }}"
 
       - name: Commit, tag and push
+        if: steps.state.outputs.action != 'skip'
         run: |
           V="${{ steps.version.outputs.value }}"
           git config user.name "github-actions[bot]"
