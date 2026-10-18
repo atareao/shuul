@@ -5,10 +5,10 @@
 > cambios en `eslint.config.js` o degradar reglas.
 
 ## Task 0: Baseline y red de seguridad
-- [ ] MEDIR: `cd frontend && npx eslint . -f json` → 114 errores en 23 ficheros
-- [ ] VERIFICAR: `pnpm run test` (vitest) pasa en verde **antes** de tocar nada
-- [ ] VERIFICAR: `pnpm run build` (`tsc -b && vite build`) pasa en verde antes de tocar nada
-- [ ] ANOTAR: guardar el recuento por regla para comparar al final
+- [x] MEDIR: `cd frontend && npx eslint . -f json` → **114 errores en 23 ficheros**
+- [x] VERIFICAR: `pnpm run test` → **5/5 tests pasan** (1 fichero, `logs_page.test.tsx`)
+- [x] VERIFICAR: `pnpm run build` (`tsc -b && vite build`) → **verde** (36.6 s)
+- [x] ANOTAR: recuento por regla = 82 any · 10 Function · 9 unused · 8 empty-object · 4 prefer-const · 1 no-empty
 
 ## Task 1: Auto-fixables (`prefer-const`, `no-empty`)
 - [ ] `npx eslint . --fix` y revisar el diff (no debe tocar nada más)
