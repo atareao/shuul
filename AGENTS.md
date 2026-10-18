@@ -144,10 +144,10 @@ Always prefix your progress updates with the current status tag:
 
 Shuul opera **dos pipelines** sobre un mismo conjunto de reglas:
 
-| Pipeline | Endpoint | Rol | Comportamiento |
+| Pipeline | Endpoint/Fuente | Rol | Comportamiento |
 |---|---|---|---|
 | **WAF** | `ANY /api/v1/shuul` | ForwardAuth — interceptar, matchear, allow/deny | Primera regla que matchea gana (break por weight ASC) |
-| **Jail** | `POST /api/v1/report` | Rate limiter post-factum (fail2ban-style) | TODAS las reglas que matchean cuentan |
+| **Jail** | `JournaldReader` (background) + `POST /api/v1/report` (HTTP) | Rate limiter post-factum (fail2ban-style) | TODAS las reglas que matchean cuentan |
 
 #### Flujo completo
 
@@ -159,9 +159,13 @@ Request → WAF rules (first match wins, weight ASC)
                             ├─ sí → 403 FORBIDDEN
                             └─ no → 200 OK
         → Backend responde
-        → Plugin captura status_code
-        → Jail rules (ALL match) → rate limit → ban si excede
+        → Traefik accessLog JSON → stdout → journald
+        → systemd-journal-gatewayd (:19531) → JournaldReader (background task)
+        → run_jail_pipeline → Jail rules (ALL match) → rate limit → ban si excede
 ```
+
+Ambos caminos (el reader de journald y el endpoint HTTP) llaman a la **misma** función
+`run_jail_pipeline(app_state, payload)` en `http/report.rs`.
 
 #### WAF (`shuul.rs`)
 
@@ -180,7 +184,7 @@ Request → WAF rules (first match wins, weight ASC)
 - Itera TODAS las reglas (sin break). Cada regla con `rate_limit_profile_id` es un "jail" independiente.
 - Para cada match: carga perfil desde DB, si `status_code ∈ fail_codes` → `record()` + ban si excede.
 - Fire-and-forget: siempre devuelve 200 OK.
-- Recibe `ReportPayload` desde el plugin de Traefik.
+- Recibe `ReportPayload` desde el plugin de Traefik (legacy) o desde el reader de journald; ambos caminos convergen en `run_jail_pipeline`.
 
 ### CacheRule
 
@@ -518,6 +522,8 @@ Auth Brute Force, Admin Guard, Path Scanning, API Abuse, Scraping, Global Shield
 
 ### Plugin Traefik: traefik-shuul-reporter
 
+**Deprecado.** El reader de journald (`backend/src/journald_reader.rs`, vía `systemd-journal-gatewayd`) es el camino recomendado para alimentar el pipeline Jail. El plugin `traefik-shuul-reporter` sigue funcionando para despliegues existentes y su configuración de abajo sigue siendo válida, pero ya no se recomienda para instalaciones nuevas. Ver `SELF-HOSTING.md` sección 2.
+
 Plugin externo en Go que captura el status code del backend y lo reporta a shuul vía `POST /api/v1/report`.
 
 #### Middleware chain
@@ -557,3 +563,12 @@ routers:
 | `SELF-HOSTING.md` | Administradores | Despliegue completo, Traefik, OIDC, backup, troubleshooting |
 | `USER-GUIDE.md` | Usuarios finales | Dashboard, reglas, perfiles, bans, templates, charts, FAQ |
 | `AGENTS.md` | AI agents | Arquitectura técnica, convenciones de código, reglas del proyecto |
+
+## Git Flow
+
+Este proyecto sigue gitflow estricto. Ver [GIT_FLOW.md](./GIT_FLOW.md) para:
+
+- Estructura de ramas (`main`, `develop`, `feature/*`, `hotfix/*`)
+- Conventional commits con gitmoji
+- Cómo crear features, hotfixes y releases
+- Workflows de CI (`ci.yml`, `release-prepare.yml`, `release.yml`) y secretos necesarios

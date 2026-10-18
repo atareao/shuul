@@ -17,7 +17,8 @@
 
 use crate::audit_log;
 use crate::models::{
-    AppState, EmptyResponse, NewRequest, PendingBan, RateLimitProfile, RateLimiter, ReportPayload,
+    AppState, EmptyResponse, Error as AppError, NewRequest, PendingBan, RateLimitProfile,
+    RateLimiter, ReportPayload,
 };
 use axum::{Json, Router, extract::State, http::StatusCode, response::IntoResponse, routing};
 use std::net::IpAddr;
@@ -38,17 +39,41 @@ pub fn report_router() -> Router<Arc<AppState>> {
     Router::new().route("/", routing::post(report_handler))
 }
 
-/// Handler de reporte de status codes desde el plugin de Traefik.
+/// Handler HTTP de reporte de status codes.
+///
+/// Delega toda la lógica en [`run_jail_pipeline`] y traduce el resultado
+/// a una respuesta HTTP. Sigue siendo fire-and-forget: devuelve 200 OK
+/// salvo error interno.
+async fn report_handler(
+    State(app_state): State<Arc<AppState>>,
+    Json(payload): Json<ReportPayload>,
+) -> impl IntoResponse {
+    match run_jail_pipeline(&app_state, &payload).await {
+        Ok(()) => EmptyResponse::create(StatusCode::OK, "Ok"),
+        Err(e) => e.into_response(),
+    }
+}
+
+/// Núcleo del pipeline Jail: rate limiting post-factum (fail2ban-style).
+///
+/// Es invocado tanto desde el endpoint HTTP [`report_handler`] como desde
+/// el lector del socket de journald (`journald_reader`), de modo que ambos
+/// caminos comparten exactamente la misma lógica.
 ///
 /// # Seguridad de concurrencia
 ///
 /// Todos los `MutexGuard` se liberan antes de cualquier `.await` para
 /// garantizar que el future sea `Send`.
+///
+/// # Errors
+///
+/// Devuelve [`AppError::CachePoisoned`] si un mutex compartido queda
+/// envenenado.
 #[allow(clippy::cast_sign_loss, clippy::too_many_lines)]
-async fn report_handler(
-    State(app_state): State<Arc<AppState>>,
-    Json(payload): Json<ReportPayload>,
-) -> impl IntoResponse {
+pub async fn run_jail_pipeline(
+    app_state: &Arc<AppState>,
+    payload: &ReportPayload,
+) -> Result<(), AppError> {
     let log_all_requests = app_state
         .settings
         .lock()
@@ -99,7 +124,7 @@ async fn report_handler(
             Ok(g) => g,
             Err(e) => {
                 error!("Rules mutex poisoned: {e}");
-                return EmptyResponse::create(StatusCode::INTERNAL_SERVER_ERROR, "Internal error");
+                return Err(AppError::CachePoisoned);
             },
         };
 
@@ -141,7 +166,7 @@ async fn report_handler(
                 "status_code": payload.status_code,
             );
         }
-        return EmptyResponse::create(StatusCode::OK, "Ok");
+        return Ok(());
     }
 
     // ── Step 3: Apply rate limiting for each matched rule (fail2ban-style) ──
@@ -201,10 +226,7 @@ async fn report_handler(
                     Ok(g) => g,
                     Err(e) => {
                         error!("Rate limiter mutex poisoned: {e}");
-                        return EmptyResponse::create(
-                            StatusCode::INTERNAL_SERVER_ERROR,
-                            "Internal error",
-                        );
+                        return Err(AppError::CachePoisoned);
                     },
                 };
                 let rl = rate_limiters.entry(*profile_id).or_insert_with(|| {
@@ -275,8 +297,8 @@ async fn report_handler(
         }
     }
 
-    // Always return 200 OK (fire-and-forget semantics)
-    EmptyResponse::create(StatusCode::OK, "Ok")
+    // Fire-and-forget semantics: the caller decides the HTTP response
+    Ok(())
 }
 
 #[cfg(test)]
@@ -654,6 +676,112 @@ mod tests {
             entry.status_code,
             Some(401),
             "registered audit log should include status_code from payload"
+        );
+    }
+
+    // ── Task 5 (journald-reader): run_jail_pipeline extraction ──
+
+    /// RED TEST: `run_jail_pipeline` must be callable directly (no HTTP layer)
+    /// and must run the full Jail logic (rate limit recorded + audit log).
+    #[tokio::test]
+    async fn test_run_jail_pipeline_direct_records_and_logs() {
+        if let Ok(mut collector) = LOG_COLLECTOR.lock() {
+            *collector = crate::models::log_collector::LogCollector::new(1000);
+        }
+
+        let app_state = build_jail_app_state(5).await; // max_retry=5 → within threshold
+        let payload = make_report_payload(401);
+
+        let result = super::run_jail_pipeline(&app_state, &payload).await;
+        assert!(
+            result.is_ok(),
+            "run_jail_pipeline should succeed: {result:?}"
+        );
+
+        let entries = LOG_COLLECTOR.lock().map(|c| c.all()).unwrap_or_default();
+        let registered = entries.iter().find(|e| e.event == "registered");
+        assert!(
+            registered.is_some(),
+            "direct run_jail_pipeline call must produce a 'registered' audit log"
+        );
+        assert_eq!(
+            registered.unwrap().status_code,
+            Some(401),
+            "status_code must be propagated through run_jail_pipeline"
+        );
+    }
+
+    /// RED TEST: `run_jail_pipeline` must create a PendingBan when the
+    /// threshold is exceeded — proving the ban path runs without HTTP.
+    #[tokio::test]
+    async fn test_run_jail_pipeline_direct_creates_pending_ban() {
+        let app_state = build_jail_app_state(1).await; // max_retry=1 → exceeded immediately
+        let payload = make_report_payload(401);
+
+        let result = super::run_jail_pipeline(&app_state, &payload).await;
+        assert!(
+            result.is_ok(),
+            "run_jail_pipeline should succeed: {result:?}"
+        );
+
+        let pending = app_state
+            .pending_bans
+            .lock()
+            .map(|g| g.len())
+            .unwrap_or_default();
+        assert_eq!(
+            pending, 1,
+            "run_jail_pipeline must push a PendingBan when the threshold is exceeded"
+        );
+    }
+
+    /// RED TEST: `report_handler` must delegate to `run_jail_pipeline`,
+    /// producing exactly the same side effects as a direct call.
+    #[tokio::test]
+    async fn test_report_handler_delegates_to_run_jail_pipeline() {
+        if let Ok(mut collector) = LOG_COLLECTOR.lock() {
+            *collector = crate::models::log_collector::LogCollector::new(1000);
+        }
+
+        let app_state = build_jail_app_state(5).await;
+        let payload = make_report_payload(401);
+
+        let response = super::report_handler(State(Arc::clone(&app_state)), Json(payload)).await;
+        assert_eq!(
+            response.into_response().status(),
+            200,
+            "report_handler must keep returning 200 OK"
+        );
+
+        let entries = LOG_COLLECTOR.lock().map(|c| c.all()).unwrap_or_default();
+        assert!(
+            entries.iter().any(|e| e.event == "registered"),
+            "report_handler must produce the same audit log as run_jail_pipeline"
+        );
+    }
+
+    /// RED TEST: a direct call with no matching rules must log `cleared`.
+    #[tokio::test]
+    async fn test_run_jail_pipeline_direct_no_match_logs_cleared() {
+        if let Ok(mut collector) = LOG_COLLECTOR.lock() {
+            *collector = crate::models::log_collector::LogCollector::new(1000);
+        }
+
+        let app_state = build_empty_app_state().await;
+        let payload = make_report_payload(404);
+
+        let result = super::run_jail_pipeline(&app_state, &payload).await;
+        assert!(
+            result.is_ok(),
+            "run_jail_pipeline should succeed: {result:?}"
+        );
+
+        let entries = LOG_COLLECTOR.lock().map(|c| c.all()).unwrap_or_default();
+        assert!(
+            entries
+                .iter()
+                .any(|e| e.event == "cleared" && e.status_code == Some(404)),
+            "no matching rules must log 'cleared' with status_code=404"
         );
     }
 }

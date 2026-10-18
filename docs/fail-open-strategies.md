@@ -5,6 +5,55 @@ todas las peticiones (ForwardAuth falla → 403). Este documento describe
 dos estrategias para que el tráfico **siga pasando** cuando shuul no está
 disponible, a costa de no filtrar nada durante esa ventana.
 
+## Estado actual (implementado): reader de journald in-process
+
+> **Nota.** La solución finalmente implementada para alimentar el pipeline Jail no es
+> ninguno de los dos mecanismos descritos en este documento, sino un **reader de
+> journald in-process** dentro del propio backend (`backend/src/journald_reader.rs`),
+> que corre como background task. No hay sidecar separado ni plugin Yaegi: vive dentro
+> de shuul.
+
+El reader obtiene los access logs de Traefik desde **`systemd-journal-gatewayd`** por
+HTTP en streaming:
+
+```
+GET {gateway_url}/entries?follow&CONTAINER_NAME=traefik
+Accept: application/json
+```
+
+La respuesta es NDJSON (un objeto JSON por línea). El reader encaja con la filosofía de
+la "opción A": Rust, sin Yaegi, sin latencia extra para Traefik y cero impacto en
+Traefik, pero **sin proceso adicional**.
+
+### Configuración
+
+| Variable | Default | Descripción |
+|---|---|---|
+| `SHUUL_JOURNALD_URL` | `http://localhost:19531` | URL de `systemd-journal-gatewayd` |
+| `SHUUL_JOURNALD_CONTAINER` | `traefik` | Nombre del contenedor cuyos logs se consumen |
+
+Detalles de despliegue en `SELF-HOSTING.md`, sección 2.
+
+### Fail-open del reader
+
+- Si `gatewayd` no está disponible, registra `journald gateway not available` y
+  **reintenta cada 30 s**. El proceso no se cae y el **pipeline WAF sigue intacto**;
+  solo el Jail deja de recibir observaciones hasta que reconecte.
+- **Entradas descartables**: se ignoran las que no son del contenedor configurado, las
+  que no traen `MESSAGE`, las cuyo `MESSAGE` no es JSON válido (p. ej. líneas de log
+  normales de Traefik) y las que tienen `OriginStatus == 0` (la request nunca llegó al
+  backend: la respuesta vino del routing o de un middleware).
+- **No se pierden entradas al reconectar**: guarda el último `__CURSOR` y reconecta con
+  `Range: entries=<cursor>:1`.
+
+### Compatibilidad con el plugin (legacy)
+
+El plugin Go `traefik-shuul-reporter` y el endpoint `POST /api/v1/report` **siguen
+existiendo** por compatibilidad. Ambos caminos (el reader de journald y el endpoint
+HTTP) llaman a la misma función `run_jail_pipeline`.
+
+---
+
 ## Tabla comparativa
 
 | Aspecto | Sidecar Rust | Plugin Yaegi |
@@ -20,7 +69,7 @@ disponible, a costa de no filtrar nada durante esa ventana.
 
 ---
 
-## Opción A: Sidecar (Rust) — recomendada
+## Opción A: Sidecar (Rust) — recomendada (propuesta de diseño)
 
 ### Arquitectura
 
@@ -185,7 +234,7 @@ services:
 
 ---
 
-## Opción B: Plugin Yaegi en Traefik (alternativa)
+## Opción B: Plugin Yaegi en Traefik (alternativa — legacy)
 
 ### Arquitectura
 
@@ -198,7 +247,11 @@ Traefik ──► [plugin shuul-forwardauth] ──HTTP──► shuul:3000/api/
 El plugin es código Go interpretado por Yaegi que vive dentro de Traefik.
 Se distribuye como código fuente en un volumen compartido.
 
-### Cómo se distribuye
+### Cómo se distribuye (legacy)
+
+> **Legacy.** Mecanismo vigente en su día para distribuir los plugins; sigue soportado
+> pero ya **no recomendado**. El entrypoint y el `docker-compose` de abajo se conservan
+> como documentación histórica.
 
 1. Los plugins (`shuul-reporter` + `shuul-forwardauth`) van dentro de la imagen de shuul
 2. Un entrypoint copia los plugins a un volumen nombrado compartido con Traefik
@@ -262,15 +315,16 @@ volumes:
 
 ## Decisión
 
-**Cuando se implemente, la opción A (sidecar Rust)** es la recomendada
-por su simplicidad, bajo mantenimiento, y cero impacto en Traefik.
+Lo finalmente implementado es el **reader de journald in-process**
+(`backend/src/journald_reader.rs`), equivalente en espíritu a la opción A
+(Rust, sin Yaegi, sin latencia extra y cero impacto en Traefik) pero **sin
+proceso adicional**: vive dentro del propio backend como background task. No
+se implementó un sidecar separado ni un plugin Yaegi.
 
-La opción B (plugin Yaegi) se tendría en cuenta solo si en el futuro:
+El plugin Yaegi (opción B) queda como **legacy**: la distribución de plugins
+descrita arriba sigue soportada pero ya no es el mecanismo recomendado, y el
+plugin Go `traefik-shuul-reporter` y el endpoint `POST /api/v1/report` siguen
+existiendo por compatibilidad. Ambos caminos —el reader de journald y el
+endpoint HTTP— convergen en la misma función `run_jail_pipeline`.
 
-- El sidecar supusiera un problema de recursos (no debería, es ~5MB y 0.1% CPU)
-- Se necesitara eliminar cualquier latencia extra (casos límite de alto throughput)
-- Traefik ofreciera una API de plugins más madura y estable
-
-Ambas opciones son compatibles con el `traefik-shuul-reporter` existente,
-que puede seguir funcionando como bind mount o como parte del volumen
-compartido sin cambios.
+La configuración del reader está en `SELF-HOSTING.md`, sección 2.

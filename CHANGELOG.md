@@ -1,4 +1,25 @@
 # Changelog
+## [0.14.0] - 2026-10-18
+
+### Bug Fixes
+
+- *(ban-manager)* Restore escalation_counts on startup from DB
+- *(ban-manager)* Restore escalation_counts on startup from DB
+- *(logs)* Show FQDN column, remove timestamp, add ellipsis
+- *(report)* Populate status_code in jail audit logs
+- *(report)* Populate status_code in jail audit logs
+
+### Features
+
+- Replace duplicate bans for same IP+rule_id (#28)
+- *(charts)* Show rule name instead of rule ID in Top Rules chart
+- *(charts)* Show rule name instead of rule ID in Top Rules chart
+- *(jail)* Feed the Jail pipeline from systemd-journal-gatewayd
+- *(jail)* Feed the Jail pipeline from systemd-journal-gatewayd (#41)
+
+### Refactor
+
+- Fix syntax errors and refactor tests for PendingBan/TorService (#32)
 ## [0.11.0] - 2026-09-08
 
 ### Bug Fixes
@@ -17,16 +38,15 @@
 - Add in-memory log viewer with configurable ring buffer
 - Improve Log Viewer with toggle filters, fix CustomTable and chart colors (#23)
 
-### Other
-
-- V0.11.0
-
 ### Refactor
 
 - Fix clippy warnings and improve code quality across backend
 - Fix clippy warnings and improve code quality across backend
-# Changelog
 ## [0.10.0] - 2026-09-05
+
+### Bug Fixes
+
+- *(charts)* Use colorField + group instead of seriesField + dodgeX for evolution chart colors
 
 ### Features
 
@@ -37,12 +57,7 @@
 ### Miscellaneous Tasks
 
 - Bump version to 0.8.0 and update CHANGELOG
-
-### Other
-
-- V0.9.0
-- V0.9.0 (#22)
-- V0.10.0 (#24)
+- Add cliff.toml and regenerate CHANGELOG.md
 
 ### Performance
 
@@ -82,7 +97,6 @@
 
 - *(frontend)* Show clear preview of what will be created in apply modals
 - Editable name/description/weight/active/store in apply modal, switches in same row
-- V0.7.0 — SQLite migration
 
 ### Refactor
 
@@ -105,6 +119,8 @@
 
 ### Features
 
+- Add ellipsis tooltip and column widths to rules and requests tables
+- Consolidate schema, status code rate limiting, rules export/import
 - Add rule_name to requests and rate_limit_profile_name to rules via LEFT JOIN
 - *(frontend)* Update models with rule_name, rate_limit_profile_name, and ban id
 - *(frontend)* Add request detail dialog with create rule action
@@ -114,27 +130,13 @@
 
 - Formatting and misc changes
 
-### Other
+### Refactor
 
-- V0.4.0 — UX improvements, ban persistence, logging fixes
+- Align Rule model with schema, add Settings to AppState, 7 profile templates
 
 ### Styling
 
 - *(frontend)* Improve UX - simplify fields, add ellipsis, fix bans page, reorder sidebar
-## [0.5.0] - 2026-08-31
-
-### Features
-
-- Consolidate schema, status code rate limiting, rules export/import
-
-### Other
-
-- V0.4.0
-- V0.5.0
-
-### Refactor
-
-- Align Rule model with schema, add Settings to AppState, 7 profile templates
 ## [0.3.3] - 2026-08-23
 
 ### Bug Fixes
@@ -150,7 +152,6 @@
 - Enforce SSO-only mode - no local login, no local register
 - Validate OIDC id_token with JWKS and remove dead code
 - Reload rules cache on CRUD, add Create Rule from Request dialog
-- Add ellipsis tooltip and column widths to rules and requests tables
 - Ellipsis tooltip and column widths for rules/requests tables
 
 ### Miscellaneous Tasks

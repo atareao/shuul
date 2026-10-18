@@ -19,6 +19,14 @@ services:
       OIDC_REDIRECT_URL: $OIDC_REDIRECT_URL
       # --- GeoIP (MaxMind) ---
       MAXMIND_DB_PATH: /app/geo/GeoLite2-City.mmdb
+      # --- Jail pipeline: Traefik access logs from systemd-journal-gatewayd ---
+      # See SELF-HOSTING.md section 2. Both are optional; these are the defaults
+      # rewritten for a container (localhost would be the container itself).
+      SHUUL_JOURNALD_URL: http://host.docker.internal:19531
+      SHUUL_JOURNALD_CONTAINER: traefik
+    # Reach systemd-journal-gatewayd running on the Docker host
+    extra_hosts:
+      - host.docker.internal:host-gateway
     volumes:
       - geo:/app/geo
       - db:/app/db

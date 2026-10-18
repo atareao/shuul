@@ -15,6 +15,7 @@
 
 mod constants;
 mod http;
+mod journald_reader;
 mod models;
 mod templates;
 use axum::{
@@ -372,6 +373,18 @@ async fn main() -> Result<(), Error> {
                     warn!("Failed to persist rate limiter {profile_id}: {e}");
                 }
             }
+        }
+    });
+
+    // Background task: stream Traefik access logs from systemd-journal-gatewayd
+    // into the Jail pipeline. Fail-open: if the gateway is unreachable the
+    // reader logs a warning and retries, the WAF pipeline is unaffected.
+    let journald_state = Arc::clone(&app_state);
+    let (_journald_shutdown_tx, journald_shutdown_rx) = tokio::sync::watch::channel(false);
+    tokio::spawn(async move {
+        let reader = journald_reader::JournaldReader::from_env();
+        if let Err(e) = reader.run(journald_state, journald_shutdown_rx).await {
+            warn!("journald reader stopped: {e}");
         }
     });
 
