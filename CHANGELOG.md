@@ -1,4 +1,21 @@
 # Changelog
+## [0.14.1] - 2026-10-18
+
+### Documentation
+
+- *(spec)* Add frontend-lint-cleanup change proposal
+
+### Refactor
+
+- *(frontend)* Fix ESLint errors in common utils, contexts and layouts
+- *(frontend)* Fix ESLint errors in CustomTable and dialogs
+- *(frontend)* Fix ESLint errors in admin and public pages
+- *(frontend)* Fix 114 pre-existing ESLint errors (#44)
+
+### Testing
+
+- *(spec)* Record frontend lint baseline (114 errors, tests+build green)
+- *(spec)* Mark frontend-lint-cleanup tasks complete and archive
 ## [0.14.0] - 2026-10-18
 
 ### Bug Fixes
@@ -16,6 +33,10 @@
 - *(charts)* Show rule name instead of rule ID in Top Rules chart
 - *(jail)* Feed the Jail pipeline from systemd-journal-gatewayd
 - *(jail)* Feed the Jail pipeline from systemd-journal-gatewayd (#41)
+
+### Other
+
+- Add gitflow automation workflows and GIT_FLOW.md
 
 ### Refactor
 
