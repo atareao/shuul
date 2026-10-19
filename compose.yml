@@ -26,6 +26,13 @@ services:
       # a remote gatewayd.
       SHUUL_JOURNALD_SOCKET: /run/systemd/journal/gatewayd.sock
       SHUUL_JOURNALD_CONTAINER: traefik
+    group_add:
+      # The image runs as `app` (uid 1000), not root, so it needs the journal
+      # group to connect to the gatewayd socket. Docker resolves the name from
+      # the host; Podman resolves it inside the image, and Alpine has no
+      # systemd-journal group, so Podman users must set JOURNALD_GROUP to the
+      # numeric gid (`getent group systemd-journal`).
+      - ${JOURNALD_GROUP:-systemd-journal}
     volumes:
       - geo:/app/geo
       - db:/app/db

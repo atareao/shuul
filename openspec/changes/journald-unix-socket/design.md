@@ -100,8 +100,10 @@ así que el coste de compilación es nulo. `bytes` no se declara: el módulo usa
   aplicado) → el reader entra en bucle de warning cada 30 s. Mitigación: el
   warning incluye el path completo, y `SELF-HOSTING.md` documenta cómo
   verificarlo con `ls -l`.
-- **Permisos del socket** (`SocketMode=0660` root:root) → el contenedor corre
-  como root, así que no aplica; queda documentado por si alguien añade `user:`.
+- **Permisos del socket**: el análisis original de este apartado partía de que el
+  contenedor corre como root, y no es cierto (la imagen declara `USER app`, uid 1000).
+  El socket queda `root:systemd-journal 0660` y el contenedor necesita ese grupo
+  suplementario. Corregido en `openspec/changes/journald-socket-permissions/design.md`.
 - **`hyper` sin `Connection: close`** → la `Connection` se queda viva tras el
   cierre del stream; por eso se hace `tokio::spawn` y se descarta al salir del
   bucle, igual que hacía el cliente de `reqwest`.
