@@ -23,6 +23,25 @@
 //! 4. Parsea el campo `MESSAGE` como JSON de access log de Traefik
 //! 5. Construye un `ReportPayload` y lo envía al pipeline Jail
 //!
+//! ## Filtrado
+//!
+//! `?follow` sirve el journal desde el principio, así que el lector descarta
+//! en cliente:
+//!
+//! - las entradas con `__REALTIME_TIMESTAMP` anterior al inicio del intento de
+//!   conexión en curso (o ausente / no numérico), para que un reinicio no
+//!   reproduzca el histórico contra el rate limiter;
+//! - la entrada cuyo `__CURSOR` coincide con el último ya procesado, porque el
+//!   stream puede reanudarse en ella.
+//!
+//! El `Range` de reanudación es sólo una pista: gatewayd ignora `realtime` con
+//! `follow` y no aplica el `skip` de `entries=<cursor>:1` sin `num_entries`.
+//!
+//! Limitación conocida: por TCP el corte se compara con los
+//! `__REALTIME_TIMESTAMP` de un gatewayd remoto, así que un desfase NTP entre
+//! hosts descarta tráfico legítimo si el remoto va atrasado, o deja pasar
+//! histórico si va adelantado. Por socket Unix ambos relojes son el mismo.
+//!
 //! ## Concurrencia
 //!
 //! El reader corre como background task en main.rs. No comparte estado mutable
@@ -39,7 +58,7 @@ use hyper_util::rt::TokioIo;
 use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::Arc;
-use std::time::Duration;
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use thiserror::Error;
 use tokio::io::{AsyncRead, AsyncWrite};
 use tokio::net::{TcpStream, UnixStream};
@@ -276,6 +295,55 @@ async fn wait_for_shutdown(shutdown: &mut tokio::sync::watch::Receiver<bool>) {
     }
 }
 
+/// Instante actual en microsegundos desde `UNIX_EPOCH`, la misma unidad que
+/// usa `__REALTIME_TIMESTAMP` en el journal.
+fn now_micros() -> u64 {
+    cutoff_micros_at(SystemTime::now())
+}
+
+/// Corte en microsegundos desde `UNIX_EPOCH` para el instante `at`.
+///
+/// **Fail-closed:** si `at` es anterior a la época el corte vale `u64::MAX` y
+/// descarta todas las entradas. Es deliberado — mejor perder una entrada que
+/// banear una IP por evidencia vieja — y es lo contrario de devolver `0`, que
+/// aceptaría el journal entero.
+fn cutoff_micros_at(at: SystemTime) -> u64 {
+    at.duration_since(UNIX_EPOCH).map_or(u64::MAX, |elapsed| {
+        u64::try_from(elapsed.as_micros()).unwrap_or(u64::MAX)
+    })
+}
+
+#[cfg(test)]
+mod tests_cutoff {
+    use super::cutoff_micros_at;
+    use std::time::{Duration, UNIX_EPOCH};
+
+    #[test]
+    fn test_cutoff_is_the_instant_in_microseconds() {
+        let at = UNIX_EPOCH + Duration::from_micros(1_723_897_600_123_456);
+        assert_eq!(cutoff_micros_at(at), 1_723_897_600_123_456);
+    }
+
+    #[test]
+    fn test_cutoff_before_the_epoch_is_fail_closed() {
+        let before = UNIX_EPOCH - Duration::from_secs(1);
+        assert_eq!(
+            cutoff_micros_at(before),
+            u64::MAX,
+            "a clock before UNIX_EPOCH must discard everything, not accept the whole journal"
+        );
+    }
+
+    #[test]
+    fn test_cutoff_of_the_epoch_itself_is_zero() {
+        assert_eq!(
+            cutoff_micros_at(UNIX_EPOCH),
+            0,
+            "the epoch is a known instant: only entries older than it are discarded"
+        );
+    }
+}
+
 /// Espera por defecto entre reintentos cuando el gateway no está disponible.
 pub const DEFAULT_RETRY_DELAY: Duration = Duration::from_secs(30);
 
@@ -348,6 +416,13 @@ impl JournaldReader {
         shutdown: &mut tokio::sync::watch::Receiver<bool>,
         last_cursor: &mut Option<String>,
     ) -> Result<StreamOutcome, JournalError> {
+        // Every attempt fixes its own cutoff *before* asking the gateway for
+        // anything: whatever the journal accumulated while this reader was
+        // down (or between two attempts) must not reach the Jail pipeline.
+        // Replaying it would feed `RateLimiter::record()` with failures that
+        // happened long ago and ban IPs on startup.
+        let cutoff_micros = now_micros();
+
         // Bound with a name on purpose: `_` would drop the ConnectionTask
         // immediately and stop the body from ever being driven.
         let (_connection, response) = tokio::select! {
@@ -410,7 +485,41 @@ impl JournaldReader {
                     },
                 };
 
-                if let Some(cursor) = entry.get("__CURSOR") {
+                let cursor = entry.get("__CURSOR");
+
+                // The cursor is only a hint: `?follow` can hand back the entry
+                // the cursor points at after a reconnect. `last_cursor` is
+                // `None` on startup, so this never fires for the backlog — at
+                // most once per reconnect.
+                if cursor.is_some() && cursor == last_cursor.as_ref() {
+                    debug!("journald reader: discarding the entry already processed at the cursor");
+                    continue;
+                }
+
+                // An entry that cannot be placed after the start of this
+                // attempt is not ours to count. A missing or malformed
+                // timestamp is treated the same way: better to lose an entry
+                // than to ban an IP on stale evidence. Silence is deliberate:
+                // on startup this runs for every entry of the backlog, so an
+                // `INFO` line (or worse) here would flood the log.
+                let Some(timestamp) = entry
+                    .get("__REALTIME_TIMESTAMP")
+                    .and_then(|value| value.parse::<u64>().ok())
+                else {
+                    debug!(
+                        "journald reader: discarding entry without a usable __REALTIME_TIMESTAMP"
+                    );
+                    continue;
+                };
+                if timestamp < cutoff_micros {
+                    debug!(
+                        "journald reader: discarding entry from before this connection attempt \
+                         ({timestamp} < {cutoff_micros})"
+                    );
+                    continue;
+                }
+
+                if let Some(cursor) = cursor {
                     *last_cursor = Some(cursor.clone());
                 }
 
@@ -1360,7 +1469,9 @@ fn drain_ndjson_lines(buffer: &mut Vec<u8>) -> Vec<String> {
 
 #[cfg(test)]
 mod tests_task7 {
-    use super::{CONNECT_TIMEOUT, JournalError, JournaldReader, drain_ndjson_lines, tcp_endpoint};
+    use super::{
+        CONNECT_TIMEOUT, JournalError, JournaldReader, drain_ndjson_lines, now_micros, tcp_endpoint,
+    };
     use crate::models::log_collector::{LOG_COLLECTOR, TEST_LOCK};
     use crate::models::{AppState, BanManager, GeoIpService, Settings, StatsCollector, TorService};
     use http::header;
@@ -1779,8 +1890,27 @@ mod tests_task7 {
         });
     }
 
-    /// Builds a journal NDJSON line that carries a Traefik access log.
-    fn journal_line(cursor: Option<&str>, status: u16, path: &str) -> String {
+    /// Leads the reader's cutoff by an hour: fixtures are built *before* the
+    /// connection attempt starts, so a live entry must be dated in the future
+    /// to pass a cutoff fixed later.
+    const LIVE_SKEW_MICROS: u64 = 60 * 60 * 1_000_000;
+
+    /// A 2024 timestamp, far older than any cutoff these tests can fix.
+    const OLD_TIMESTAMP_MICROS: u64 = 1_723_897_600_123_456;
+
+    /// Timestamp that survives the cutoff of any attempt made during the test.
+    fn live_timestamp() -> u64 {
+        now_micros() + LIVE_SKEW_MICROS
+    }
+
+    /// Builds a journal NDJSON line that carries a Traefik access log, with an
+    /// explicit `__REALTIME_TIMESTAMP` (`None` leaves the field out).
+    fn journal_line_with_timestamp(
+        cursor: Option<&str>,
+        status: u16,
+        path: &str,
+        timestamp: Option<&str>,
+    ) -> String {
         let message = serde_json::json!({
             "ClientHost": "10.0.0.1",
             "OriginStatus": status,
@@ -1794,9 +1924,32 @@ mod tests_task7 {
         if let Some(cursor) = cursor {
             entry.insert("__CURSOR".to_string(), serde_json::json!(cursor));
         }
+        if let Some(timestamp) = timestamp {
+            entry.insert(
+                "__REALTIME_TIMESTAMP".to_string(),
+                serde_json::json!(timestamp),
+            );
+        }
         entry.insert("CONTAINER_NAME".to_string(), serde_json::json!("traefik"));
         entry.insert("MESSAGE".to_string(), serde_json::json!(message));
         serde_json::Value::Object(entry).to_string()
+    }
+
+    /// Builds a journal NDJSON line dated `timestamp_micros`.
+    fn journal_line_at(
+        cursor: Option<&str>,
+        status: u16,
+        path: &str,
+        timestamp_micros: u64,
+    ) -> String {
+        let timestamp = timestamp_micros.to_string();
+        journal_line_with_timestamp(cursor, status, path, Some(&timestamp))
+    }
+
+    /// Builds a journal NDJSON line dated far enough in the future to pass the
+    /// cutoff of any connection attempt the reader makes during the test.
+    fn journal_line(cursor: Option<&str>, status: u16, path: &str) -> String {
+        journal_line_at(cursor, status, path, live_timestamp())
     }
 
     /// Waits until the Jail pipeline has logged an entry with this status and
@@ -1828,7 +1981,7 @@ mod tests_task7 {
     }
 
     /// Serves one HTTP response with the given NDJSON body, then closes.
-    async fn spawn_fake_gateway(body: &'static str) -> String {
+    async fn spawn_fake_gateway(body: String) -> String {
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
             .await
             .expect("bind fake gateway");
@@ -1858,7 +2011,7 @@ mod tests_task7 {
             *collector = crate::models::log_collector::LogCollector::new(1000);
         }
 
-        let body = "{\"__REALTIME_TIMESTAMP\":\"1723897600123456\",\"CONTAINER_NAME\":\"traefik\",\"MESSAGE\":\"{\\\"ClientHost\\\":\\\"10.0.0.1\\\",\\\"OriginStatus\\\":404,\\\"RequestPath\\\":\\\"/api/login\\\",\\\"RequestMethod\\\":\\\"GET\\\",\\\"RequestHost\\\":\\\"example.com\\\"}\"}\n";
+        let body = format!("{}\n", journal_line(None, 404, "/api/login"));
         let gateway_url = spawn_fake_gateway(body).await;
 
         let reader = JournaldReader::new(&gateway_url, "traefik");
@@ -1889,9 +2042,7 @@ mod tests_task7 {
 
     /// Serves one response per connection, recording the raw HTTP request
     /// received on each of them.
-    async fn spawn_recording_gateway(
-        bodies: Vec<&'static str>,
-    ) -> (String, Arc<Mutex<Vec<String>>>) {
+    async fn spawn_recording_gateway(bodies: Vec<String>) -> (String, Arc<Mutex<Vec<String>>>) {
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
             .await
             .expect("bind recording gateway");
@@ -1925,24 +2076,8 @@ mod tests_task7 {
     async fn test_run_resumes_from_last_cursor_after_reconnect() {
         const CURSOR: &str = "s=abc;i=42;b=def";
 
-        let message = serde_json::json!({
-            "ClientHost": "10.0.0.1",
-            "OriginStatus": 404,
-            "RequestPath": "/x",
-            "RequestMethod": "GET",
-            "RequestHost": "example.com",
-        })
-        .to_string();
-
-        let line = serde_json::json!({
-            "__CURSOR": CURSOR,
-            "CONTAINER_NAME": "traefik",
-            "MESSAGE": message,
-        })
-        .to_string();
-
-        let body: &'static str = Box::leak(format!("{line}\n").into_boxed_str());
-        let (gateway_url, recorded) = spawn_recording_gateway(vec![body, ""]).await;
+        let body = format!("{}\n", journal_line(Some(CURSOR), 404, "/x"));
+        let (gateway_url, recorded) = spawn_recording_gateway(vec![body, String::new()]).await;
 
         let reader = JournaldReader::new(&gateway_url, "traefik")
             .with_retry_delay(tokio::time::Duration::from_millis(50));
@@ -1979,9 +2114,255 @@ mod tests_task7 {
         );
     }
 
+    // ── History replay filter ──
+
+    /// Empties the shared audit buffer so a test only observes its own entries.
+    ///
+    /// Callers must hold `TEST_LOCK`.
+    fn reset_log_collector() {
+        if let Ok(mut collector) = LOG_COLLECTOR.lock() {
+            *collector = crate::models::log_collector::LogCollector::new(1000);
+        }
+    }
+
+    /// Serves two connections over `AF_UNIX`, recording the request head of
+    /// each. The first one is rejected with HTTP 500; the second one returns
+    /// the body built from the instant the first request arrived, which is the
+    /// moment the journal content is "written during the outage".
+    fn spawn_outage_unix_gateway(socket_path: &Path) -> Arc<Mutex<Vec<String>>> {
+        let listener =
+            tokio::net::UnixListener::bind(socket_path).expect("bind outage unix gateway");
+        let recorded: Arc<Mutex<Vec<String>>> = Arc::new(Mutex::new(Vec::new()));
+        let sink = Arc::clone(&recorded);
+
+        tokio::spawn(async move {
+            // First attempt: reject it, keeping the instant of the request.
+            let Ok((mut stream, _)) = listener.accept().await else {
+                return;
+            };
+            let request = read_request_head(&mut stream).await;
+            let outage_at = now_micros();
+            if let Ok(mut sink) = sink.lock() {
+                sink.push(request);
+            }
+            let _ = stream
+                .write_all(
+                    b"HTTP/1.1 500 Server Error\r\nContent-Length: 0\r\nConnection: close\r\n\r\n",
+                )
+                .await;
+            let _ = stream.flush().await;
+
+            // Second attempt: what the journal accumulated while the reader was
+            // down, next to an entry produced after it reconnected.
+            let Ok((mut stream, _)) = listener.accept().await else {
+                return;
+            };
+            let request = read_request_head(&mut stream).await;
+            if let Ok(mut sink) = sink.lock() {
+                sink.push(request);
+            }
+            let body = format!(
+                "{}\n{}\n",
+                journal_line_at(None, 412, "/during-outage", outage_at),
+                journal_line_at(None, 413, "/after-outage", outage_at + LIVE_SKEW_MICROS),
+            );
+            let response = format!(
+                "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
+                body.len(),
+                body
+            );
+            let _ = stream.write_all(response.as_bytes()).await;
+            let _ = stream.flush().await;
+        });
+
+        recorded
+    }
+
+    #[tokio::test]
+    async fn test_run_ignores_entries_older_than_the_connection_attempt() {
+        let _guard = TEST_LOCK.lock().await;
+        reset_log_collector();
+
+        let body = format!(
+            "{}\n{}\n",
+            journal_line_at(None, 407, "/history", OLD_TIMESTAMP_MICROS),
+            journal_line(None, 408, "/live"),
+        );
+        let socket = TempSocketPath::new();
+        spawn_fake_unix_gateway(socket.path(), body).await;
+
+        let reader = JournaldReader::unix(socket.path(), "traefik");
+        let app_state = build_test_app_state().await;
+        let (shutdown_tx, shutdown_rx) = tokio::sync::watch::channel(false);
+
+        let handle = tokio::spawn(async move { reader.run(app_state, shutdown_rx).await });
+
+        let live = wait_for_pipeline_entry(408, "/live").await;
+        // Both lines travel in the same body: once the live one is in, any
+        // entry accepted from the historical one would already be there.
+        tokio::time::sleep(Duration::from_millis(200)).await;
+
+        let _ = shutdown_tx.send(true);
+        let result = tokio::time::timeout(Duration::from_secs(5), handle)
+            .await
+            .expect("run() must stop on shutdown, not hang")
+            .expect("run() task must not panic");
+
+        assert!(result.is_ok(), "run() must return Ok on shutdown");
+        assert!(
+            live,
+            "an entry dated after the connection attempt must reach the pipeline"
+        );
+        assert_eq!(
+            pipeline_entry_count(407, "/history"),
+            0,
+            "an entry dated before the connection attempt must not reach the pipeline"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_run_discards_entries_without_a_usable_timestamp() {
+        let _guard = TEST_LOCK.lock().await;
+        reset_log_collector();
+
+        let body = format!(
+            "{}\n{}\n{}\n",
+            journal_line_with_timestamp(None, 409, "/no-timestamp", None),
+            journal_line_with_timestamp(None, 410, "/bad-timestamp", Some("abc")),
+            journal_line(None, 411, "/with-timestamp"),
+        );
+        let socket = TempSocketPath::new();
+        spawn_fake_unix_gateway(socket.path(), body).await;
+
+        let reader = JournaldReader::unix(socket.path(), "traefik");
+        let app_state = build_test_app_state().await;
+        let (shutdown_tx, shutdown_rx) = tokio::sync::watch::channel(false);
+
+        let handle = tokio::spawn(async move { reader.run(app_state, shutdown_rx).await });
+
+        let valid = wait_for_pipeline_entry(411, "/with-timestamp").await;
+        tokio::time::sleep(Duration::from_millis(200)).await;
+
+        let _ = shutdown_tx.send(true);
+        let result = tokio::time::timeout(Duration::from_secs(5), handle)
+            .await
+            .expect("run() must stop on shutdown, not hang")
+            .expect("run() task must not panic");
+
+        assert!(result.is_ok(), "run() must return Ok on shutdown");
+        assert!(
+            valid,
+            "the entry with a usable timestamp must still reach the pipeline"
+        );
+        assert_eq!(
+            pipeline_entry_count(409, "/no-timestamp"),
+            0,
+            "an entry without __REALTIME_TIMESTAMP cannot be placed in time and must be discarded"
+        );
+        assert_eq!(
+            pipeline_entry_count(410, "/bad-timestamp"),
+            0,
+            "an entry whose __REALTIME_TIMESTAMP is not a number must be discarded"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_run_moves_the_cutoff_forward_after_a_failed_attempt() {
+        let _guard = TEST_LOCK.lock().await;
+        reset_log_collector();
+
+        let socket = TempSocketPath::new();
+        let recorded = spawn_outage_unix_gateway(socket.path());
+
+        let reader = JournaldReader::unix(socket.path(), "traefik")
+            .with_retry_delay(Duration::from_millis(150));
+        let app_state = build_test_app_state().await;
+        let (shutdown_tx, shutdown_rx) = tokio::sync::watch::channel(false);
+
+        let handle = tokio::spawn(async move { reader.run(app_state, shutdown_rx).await });
+
+        let after_outage = wait_for_pipeline_entry(413, "/after-outage").await;
+        tokio::time::sleep(Duration::from_millis(200)).await;
+
+        let _ = shutdown_tx.send(true);
+        let result = tokio::time::timeout(Duration::from_secs(5), handle)
+            .await
+            .expect("run() must stop on shutdown, not hang")
+            .expect("run() task must not panic");
+
+        assert!(result.is_ok(), "run() must return Ok on shutdown");
+        assert!(
+            recorded.lock().map_or(0, |r| r.len()) >= 2,
+            "the reader must retry after the failed attempt"
+        );
+        assert!(
+            after_outage,
+            "an entry dated after the reconnect must reach the pipeline"
+        );
+        assert_eq!(
+            pipeline_entry_count(412, "/during-outage"),
+            0,
+            "an entry written while the reader was down is older than the new cutoff: \
+             the cutoff of each attempt is fixed when that attempt starts"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_run_does_not_reprocess_the_entry_at_the_cursor_after_reconnecting() {
+        const CURSOR: &str = "s=dup;i=7;b=abc";
+
+        let _guard = TEST_LOCK.lock().await;
+        reset_log_collector();
+
+        // Dated in the future on purpose: only the cursor rule can discard the
+        // replay, so the assertion cannot pass for the cutoff's sake.
+        let line = journal_line(Some(CURSOR), 414, "/replayed");
+        let body = format!("{line}\n");
+        let (gateway_url, recorded) = spawn_recording_gateway(vec![body.clone(), body]).await;
+
+        let reader = JournaldReader::new(&gateway_url, "traefik")
+            .with_retry_delay(Duration::from_millis(50));
+        let app_state = build_test_app_state().await;
+        let (shutdown_tx, shutdown_rx) = tokio::sync::watch::channel(false);
+
+        let handle = tokio::spawn(async move { reader.run(app_state, shutdown_rx).await });
+
+        let processed = wait_for_pipeline_entry(414, "/replayed").await;
+        let mut reconnected = false;
+        for _ in 0..60 {
+            tokio::time::sleep(Duration::from_millis(50)).await;
+            if recorded.lock().map_or(0, |r| r.len()) >= 2 {
+                reconnected = true;
+                break;
+            }
+        }
+        tokio::time::sleep(Duration::from_millis(200)).await;
+
+        let _ = shutdown_tx.send(true);
+        let result = tokio::time::timeout(Duration::from_secs(5), handle)
+            .await
+            .expect("run() must stop on shutdown, not hang")
+            .expect("run() task must not panic");
+
+        assert!(result.is_ok(), "run() must return Ok on shutdown");
+        assert!(
+            processed,
+            "the entry must reach the pipeline on the first read"
+        );
+        assert!(
+            reconnected,
+            "the reader must have reconnected and been served the entry again"
+        );
+        assert_eq!(
+            pipeline_entry_count(414, "/replayed"),
+            1,
+            "the entry at the last processed cursor must not be processed twice"
+        );
+    }
+
     #[tokio::test]
     async fn test_tcp_request_uses_origin_form_and_required_headers() {
-        let (gateway_url, recorded) = spawn_recording_gateway(vec![""]).await;
+        let (gateway_url, recorded) = spawn_recording_gateway(vec![String::new()]).await;
         let host = gateway_url.trim_start_matches("http://").to_string();
 
         let reader = JournaldReader::new(&gateway_url, "traefik")
