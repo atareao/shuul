@@ -603,6 +603,46 @@ If that prints nothing, choose a gid and write the **same number** in both place
 - **On the host, without the UI:** count Traefik's journal entries over one minute and compare with the events registered in that same minute. They must be of the same order of magnitude; the event count may be lower because entries with `OriginStatus: 0` are discarded on purpose (2.1).
 - **If nothing appears at all:** go back to the `journald reader: streaming access logs from …` line (2.8). If it says `journald gateway not available`, the problem is the socket or its permissions, not your rules.
 
+**Confirm the startup backlog is not replayed.**
+
+This is the sibling of the check above: that one confirms traffic **arrives**; this one confirms the backlog **does not** — that the cut-off described in 2.5 is working in the build you are running. Measured on a real host with `Storage=volatile` (2.6, roughly 28 min of retention) running `ghcr.io/atareao/shuul:0.15.2`:
+
+- The container started at `17:13:34Z` and the reader opened its connection at `17:13:36.051Z`.
+- **2322** backlog entries were discarded, **all** of them between `17:13:36.135` and `17:13:37.414` — **1.3 s**.
+- Jail pipeline events per minute (UTC, taken from each log line's own timestamp): `17:13` → 28 `CLEARED` / 0 `REGISTERED` / 0 `BANNED` / 0 `PENDING`; `17:14` → 31 `CLEARED` / 19 `REGISTERED`; `17:15` → 73 `CLEARED`.
+
+Read it as: zero `BANNED` / `PENDING` / `REGISTERED` in the first seconds, the whole backlog drained and dropped at once, and live traffic then entering normally — no ban spike.
+
+The discards are emitted at `debug!` **on purpose** (at `INFO` they would flood the log on every start), so this procedure needs the level raised temporarily:
+
+```bash
+# In the stack, set RUST_LOG=backend=debug and recreate the container, then:
+
+docker logs shuul 2>&1 | grep -c "discarding entry from before this connection attempt"
+# 2322   ← the whole journal backlog, dropped
+
+# When did they happen? They must fit in one or two seconds:
+docker logs shuul 2>&1 | grep "discarding entry from before this connection attempt" | sed -n '1p;$p'
+# 2026-10-19T17:13:36.135…  …2026-10-19T17:13:37.414Z
+```
+
+Note the format of the mark: `docker logs --since/--until` works correctly here; the only thing to be careful about is the timestamp — **it must carry a `Z` suffix (UTC) or be a Unix timestamp**. A mark without `Z` is read as local time and hands you the wrong window: in the example, `--since "2026-10-19T17:13:34"` without `Z` returned **zero** events, whereas with `Z` it returns the 35 `CLEARED` that span genuinely holds.
+
+To see the per-minute breakdown without building windows at all, count from the timestamp each log line already carries:
+
+```bash
+# Per-minute breakdown, using the timestamp each log line already carries:
+docker logs shuul 2>&1 | sed -E 's/\x1b\[[0-9;]*m//g' \
+  | awk '/\[BANNED\]|\[PENDING\]|\[REGISTERED\]|\[CLEARED\]/ {
+      ev=""; if (index($0,"[BANNED]")) ev="BANNED";
+      else if (index($0,"[PENDING]")) ev="PENDING";
+      else if (index($0,"[REGISTERED]")) ev="REGISTERED";
+      else if (index($0,"[CLEARED]")) ev="CLEARED";
+      if (ev!="") print substr($1,12,5), ev }' | sort | uniq -c
+```
+
+What to look for: zero `BANNED`, `PENDING` and `REGISTERED` in the first minute; the discards concentrated in one or two seconds; and the live-traffic `CLEARED` events present, so it is clear the reader is not simply blind. When you are done, put `RUST_LOG` back to `backend=info`.
+
 **`Suppressed N messages from …` appears in the journal.** This is journald's rate limiting (2.6): access logs are being dropped and the Jail pipeline never sees them. Confirm with the `grep` shown there and raise `RateLimitBurst` in the same drop-in.
 
 **`curl --unix-socket` returns `000` (or `Permission denied`) on the host, but the container works.** The user you are testing with is not in `systemd-journal`; the socket is `root:systemd-journal 0660`. Check with `id` and use `sudo curl …`, or add your user to the group:
