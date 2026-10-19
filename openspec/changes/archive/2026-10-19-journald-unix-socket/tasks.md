@@ -35,5 +35,5 @@
 ## 5. Verificación de integración
 
 - [x] 5.1 `cargo test`, `cargo clippy -- -D warnings` y `cargo fmt --check` en verde, sin tests ignorados nuevos.
-- [ ] 5.2 Contra un `systemd-journal-gatewayd` real del host: con el socket montado, confirmar en logs `streaming access logs from unix:/…` y que aparecen eventos en `GET /api/v1/logs`. (pendiente del despliegue en el host)
+- [x] 5.2 Contra un `systemd-journal-gatewayd` real del host: con el socket montado, confirmar en logs `streaming access logs from unix:/…` y que aparecen eventos en `GET /api/v1/logs`. (verificado en producción: 3487 eventos del pipeline `jail` y el socket `root:systemd-journal 0660` montado en el contenedor)
 - [x] 5.3 Dejar escrito el rollback (quitar volumen, restaurar `SHUUL_JOURNALD_URL` y `extra_hosts`, recrear) en `SELF-HOSTING.md`. Verificación: la sección existe y coincide con el Migration Plan del design.
