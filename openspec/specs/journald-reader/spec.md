@@ -8,21 +8,42 @@ TBD - created by archiving change journald-reader. Update Purpose after archive.
 ### Requirement: Journald reader transport
 
 El módulo `journald_reader` SHALL obtener los access logs de Traefik desde
-`systemd-journal-gatewayd` mediante HTTP en streaming.
+`systemd-journal-gatewayd` mediante HTTP en streaming, sobre uno de dos
+transportes: **TCP** o **socket Unix `AF_UNIX`**.
 
 NO SHALL leer directamente `/run/systemd/journal/socket`, porque ese socket es
 **write-only** (las aplicaciones lo usan para *enviar* entradas al journal); el
 contenido sólo se sirve a través de la API del journal, que gatewayd expone por
 HTTP.
 
-La petición SHALL ser `GET {gateway_url}/entries?follow&CONTAINER_NAME={container_name}`
-con la cabecera `Accept: application/json` (Journal JSON Format, NDJSON: un
-objeto JSON por línea). El filtrado por contenedor SHALL delegarse en el servidor
-mediante el parámetro `KEY=match`.
+El transporte SHALL seleccionarse con esta precedencia:
+
+1. Si `SHUUL_JOURNALD_SOCKET` está definida y no está en blanco → transporte
+   **Unix**, conectando al path indicado.
+2. Si no, si `SHUUL_JOURNALD_URL` está definida y no está en blanco → transporte
+   **TCP** contra esa URL base.
+3. Si no, transporte **TCP** contra `http://localhost:19531`.
+
+Cuando ambas variables estén definidas y no vacías, SHALL usarse el socket y
+SHALL registrarse un warning indicando que `SHUUL_JOURNALD_URL` se ignora.
+
+La petición SHALL ser `GET /entries?follow&CONTAINER_NAME={container_name}` con
+las cabeceras `Accept: application/json` (Journal JSON Format, NDJSON: un objeto
+JSON por línea) y `Host`. El filtrado por contenedor SHALL delegarse en el
+servidor mediante el parámetro `KEY=match`. La misma ruta de petición SHALL
+usarse en ambos transportes; sólo cambia el transporte subyacente.
+
+Ambos transportes SHALL compartir el mismo comportamiento de streaming,
+reconexión, cursor, shutdown y fail-open.
 
 ```rust
+pub enum JournaldTransport {
+    Tcp { base_url: String },
+    UnixSocket { path: PathBuf },
+}
+
 pub struct JournaldReader {
-    pub gateway_url: String,
+    pub transport: JournaldTransport,
     pub container_name: String,
     pub retry_delay: Duration,
 }
@@ -30,13 +51,20 @@ pub struct JournaldReader {
 pub const DEFAULT_GATEWAY_URL: &str = "http://localhost:19531";
 pub const DEFAULT_CONTAINER_NAME: &str = "traefik";
 pub const DEFAULT_RETRY_DELAY: Duration = Duration::from_secs(30);
+pub const CONNECT_TIMEOUT: Duration = Duration::from_secs(10);
 
 impl JournaldReader {
-    pub fn new(gateway_url: &str, container_name: &str) -> Self;
-    pub const fn with_retry_delay(self, retry_delay: Duration) -> Self;
-    pub fn from_values(gateway_url: Option<String>, container_name: Option<String>) -> Self;
+    pub fn new(base_url: &str, container_name: &str) -> Self;
+    pub fn unix(path: impl Into<PathBuf>, container_name: &str) -> Self;
+    pub fn from_values(
+        socket: Option<String>,
+        url: Option<String>,
+        container_name: Option<String>,
+    ) -> Self;
     pub fn from_env() -> Self;
-    pub fn entries_url(&self) -> String;
+    pub fn request_target(&self) -> String;
+    pub fn endpoint_display(&self) -> String;
+    pub const fn with_retry_delay(self, retry_delay: Duration) -> Self;
     pub async fn run(
         &self,
         app_state: Arc<AppState>,
@@ -44,16 +72,48 @@ impl JournaldReader {
     ) -> Result<(), JournalError>;
 }
 
-impl Default for JournaldReader { /* gatewayd local + contenedor "traefik" */ }
+impl Default for JournaldReader { /* gatewayd local por TCP + contenedor "traefik" */ }
 ```
 
 #### Scenario: Stream entries from gatewayd
-- **GIVEN** gatewayd escuchando en `gateway_url`
+- **GIVEN** gatewayd escuchando en el transporte configurado
 - **WHEN** `JournaldReader::run()` se ejecuta
-- **THEN** hace `GET {gateway_url}/entries?follow&CONTAINER_NAME={container_name}`
-- **AND** envía `Accept: application/json`
+- **THEN** hace `GET /entries?follow&CONTAINER_NAME={container_name}`
+- **AND** envía las cabeceras `Accept: application/json` y `Host`
 - **AND** lee el cuerpo en chunks sin bloquear
 - **AND** procesa cada línea NDJSON completa, conservando las parciales hasta completarlas
+
+#### Scenario: Socket transport selected from the environment
+- **GIVEN** `SHUUL_JOURNALD_SOCKET=/run/systemd/journal/gatewayd.sock` definida y no vacía
+- **WHEN** se construye el reader con `from_env()`
+- **THEN** el transporte es `UnixSocket` con ese path
+- **AND** la URL por defecto no se usa
+
+#### Scenario: Socket takes precedence over the URL
+- **GIVEN** `SHUUL_JOURNALD_SOCKET` y `SHUUL_JOURNALD_URL` definidas y no vacías
+- **WHEN** se construye el reader con `from_env()`
+- **THEN** el transporte es `UnixSocket` con el path de `SHUUL_JOURNALD_SOCKET`
+- **AND** se registra un warning de que `SHUUL_JOURNALD_URL` se ignora
+
+#### Scenario: Stream entries over a Unix socket
+- **GIVEN** gatewayd escuchando en un socket `AF_UNIX` en el path configurado
+- **WHEN** `JournaldReader::run()` se ejecuta
+- **THEN** conecta al socket, envía la petición HTTP/1.1 y recibe el NDJSON
+- **AND** cada access log de Traefik llega al pipeline Jail igual que por TCP
+
+#### Scenario: Missing socket does not abort startup
+- **GIVEN** `SHUUL_JOURNALD_SOCKET` apunta a un path que no existe
+- **WHEN** `JournaldReader::run()` se ejecuta
+- **THEN** se registra el warning `journald gateway not available` incluyendo el path
+- **AND** se reintenta tras `retry_delay`
+- **AND** el proceso no se cae y el WAF sigue funcionando
+
+#### Scenario: Connect attempt times out
+- **GIVEN** el endpoint acepta la conexión pero no responde al handshake HTTP
+- **WHEN** transcurren `CONNECT_TIMEOUT` (10 s)
+- **THEN** el intento se aborta
+- **AND** se registra el warning `journald gateway not available`
+- **AND** se reintenta tras `retry_delay`
 
 #### Scenario: Graceful shutdown on stop signal
 - **GIVEN** el reader está recibiendo entradas
@@ -63,7 +123,7 @@ impl Default for JournaldReader { /* gatewayd local + contenedor "traefik" */ }
 - **AND** la espera entre reintentos también se interrumpe de inmediato
 
 #### Scenario: Gateway not available
-- **GIVEN** gatewayd NO está escuchando en `gateway_url`
+- **GIVEN** gatewayd NO está escuchando en el transporte configurado
 - **WHEN** `JournaldReader::run()` se ejecuta
 - **THEN** se registra un warning `journald gateway not available`
 - **AND** se reintenta tras `retry_delay`
@@ -74,6 +134,7 @@ impl Default for JournaldReader { /* gatewayd local + contenedor "traefik" */ }
 - **WHEN** la conexión se cierra y el reader reconecta
 - **THEN** repite la petición con la cabecera `Range: entries=<cursor>:1`
 - **AND** no reprocesa la entrada del cursor
+- **AND** el comportamiento es idéntico en ambos transportes
 
 #### Scenario: Rejected cursor restarts the stream
 - **GIVEN** el reader tiene un cursor guardado
@@ -83,10 +144,11 @@ impl Default for JournaldReader { /* gatewayd local + contenedor "traefik" */ }
 - **AND** el siguiente intento empieza desde el principio del journal
 
 #### Scenario: Configuration from environment
-- **GIVEN** las variables `SHUUL_JOURNALD_URL` y `SHUUL_JOURNALD_CONTAINER`
+- **GIVEN** las variables `SHUUL_JOURNALD_SOCKET`, `SHUUL_JOURNALD_URL` y `SHUUL_JOURNALD_CONTAINER`
 - **WHEN** se construye el reader con `from_env()`
 - **THEN** usa sus valores cuando están definidos y no están en blanco
 - **AND** cae en `http://localhost:19531` y `traefik` cuando faltan o están en blanco
+- **AND** una variable en blanco equivale a no definirla
 
 ### Requirement: Journal JSON entry parsing
 
@@ -290,3 +352,31 @@ pub async fn run_jail_pipeline(
 - **THEN** se registra el audit log correspondiente con su `status_code`
 - **AND** si se excede el umbral se crea un `PendingBan`
 - **AND** sin reglas que matcheen se registra `cleared`
+
+### Requirement: Configuration diagnostics
+
+Cuando la configuración del transporte no sea utilizable, el lector SHALL emitir un
+diagnóstico que identifique el valor rechazado y, cuando exista una corrección evidente,
+nombre la variable que lo aceptaría.
+
+El diagnóstico NO SHALL romper el fail-open: el fallo se registra como warning y se
+reintenta cada `retry_delay`; el proceso y el pipeline WAF no se ven afectados.
+
+#### Scenario: Absolute path passed as the gateway URL
+- **GIVEN** `SHUUL_JOURNALD_URL=/run/systemd/journal/gatewayd.sock`
+- **WHEN** el lector construye el transporte a partir del entorno
+- **THEN** el error incluye el valor recibido
+- **AND** menciona `SHUUL_JOURNALD_SOCKET` como la variable que acepta ese valor
+- **AND** se registra como warning y se reintenta, sin abortar el arranque
+
+#### Scenario: URL without a scheme that is not a path
+- **GIVEN** `SHUUL_JOURNALD_URL=localhost:19531`
+- **WHEN** el lector construye el transporte a partir del entorno
+- **THEN** el error indica que falta el esquema
+- **AND** NO menciona `SHUUL_JOURNALD_SOCKET`, porque la pista sería engañosa
+
+#### Scenario: Unreadable socket
+- **GIVEN** `SHUUL_JOURNALD_SOCKET` apunta a un socket existente sin permiso de conexión
+- **WHEN** el lector intenta conectar
+- **THEN** el warning nombra el path y el error del sistema
+- **AND** el pipeline WAF sigue funcionando
