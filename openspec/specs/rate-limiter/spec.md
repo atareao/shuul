@@ -1,7 +1,7 @@
 # rate-limiter Specification
 
 ## Purpose
-TBD - created by archiving change ban-system-hardening. Update Purpose after archive.
+Define la persistencia y el ciclo de vida del estado de los rate limiters: los ring buffers por IP se guardan en SQLite (`rate_limiter_state`), se vuelcan periódicamente desde un background task y se recargan al arrancar para los `profile_id` activos, descartando los timestamps ya expirados. Garantiza que el rate limiting no empiece de cero tras un reinicio del servidor.
 
 ## Requirements
 

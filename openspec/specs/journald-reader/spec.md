@@ -1,7 +1,7 @@
 # journald-reader Specification
 
 ## Purpose
-TBD - created by archiving change journald-reader. Update Purpose after archive.
+Define el módulo `journald_reader`, que obtiene en streaming los access logs de Traefik desde `systemd-journal-gatewayd` —por socket Unix o TCP— los mapea a `ReportPayload` y los entrega al pipeline Jail, la misma función que alimenta el endpoint HTTP `POST /api/v1/report`. Cubre el transporte seleccionable por entorno, el filtrado por contenedor, los diagnósticos de configuración y el corte que descarta el backlog previo al inicio del intento de conexión, de modo que el rate limiter nunca cuenta tráfico anterior al arranque.
 
 ## Requirements
 
