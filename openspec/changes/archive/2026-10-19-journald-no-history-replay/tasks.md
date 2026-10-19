@@ -21,4 +21,7 @@
 ## 4. Verificación
 
 - [x] 4.1 `cargo test`, `cargo clippy -- -D warnings` y `cargo fmt --check` en verde.
-- [ ] 4.2 Comprobar en el host que un reinicio del contenedor no produce un pico de `[BANNED]` ni de `[REGISTERED]` en los primeros segundos. Verificación: comparar el número de eventos del pipeline en el primer minuto tras el reinicio con el tráfico real del journal en ese minuto.
+- [x] 4.2 Comprobar en el host que un reinicio del contenedor no produce un pico de `[BANNED]` ni de `[REGISTERED]` en los primeros segundos. Verificación: comparar el número de eventos del pipeline en el primer minuto tras el reinicio con el tráfico real del journal en ese minuto.
+  - Verificado en el host (`ghcr.io/atareao/shuul:latest`, digest amd64 idéntico a `0.15.2`): contenedor arrancado a las 17:13:34Z, reader conectado a las 17:13:36.051Z. 2322 entradas del backlog descartadas por el corte, todas entre 17:13:36.135 y 17:13:37.414 (1,3 s) con `discarding entry from before this connection attempt (… < 1792430016037393)`.
+  - Eventos del pipeline Jail, sin `--since/--until`: 17:13 (desde :34) → 28 CLEARED / 0 REGISTERED / 0 BANNED / 0 PENDING; 17:14 → 31 CLEARED / 19 REGISTERED / 0 BANNED / 0 PENDING; 17:15 → 73 CLEARED / 0 REGISTERED / 0 BANNED / 0 PENDING.
+  - Cero `BANNED`/`PENDING`/`REGISTERED` en el primer minuto, backlog drenado en ~1,3 s y tráfico en vivo entrando con normalidad (19 REGISTERED en el minuto siguiente). Sin pico de baneos.
