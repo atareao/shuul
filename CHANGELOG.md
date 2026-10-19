@@ -1,4 +1,14 @@
 # Changelog
+## [0.15.2] - 2026-10-19
+
+### Bug Fixes
+
+- *(jail)* Never feed the journal backlog to the rate limiter
+## [0.15.1] - 2026-10-19
+
+### Miscellaneous Tasks
+
+- Release v0.15.1
 ## [0.15.0] - 2026-10-18
 
 ### Features
