@@ -148,6 +148,7 @@ sudo tee /etc/systemd/system/systemd-journal-gatewayd.socket.d/unix.conf >/dev/n
 [Socket]
 ListenStream=
 ListenStream=/run/systemd/journal/gatewayd.sock
+SocketGroup=systemd-journal
 SocketMode=0660
 EOF
 sudo systemctl daemon-reload
@@ -158,16 +159,21 @@ What each line does:
 
 - **The empty `ListenStream=` removes the inherited `19531` TCP listener.** A drop-in cannot delete a setting, and repeated assignments *append*, so an empty assignment is the only way to reset the list — the second line then becomes the sole address the unit listens on. After this, `ss -ltn | grep 19531` prints nothing and there is no port to firewall.
 - **`ListenStream=/run/systemd/journal/gatewayd.sock`** is systemd's canonical path for this socket and the one the shipped `compose.yml` mounts.
-- **`SocketMode=0660`** leaves the socket owned by `root:root`, usable only by root and its group. shuul's container runs as root, so this is enough; see 2.10 if you add a `user:` to the service.
+- **`SocketGroup=systemd-journal`** makes the socket `root:systemd-journal` instead of `root:root`. This is required because the image does **not** run as root: the `Dockerfile` declares `USER app`, and that user has **uid 1000**. `systemd-journal` is the group the system already uses to mean "may read the journal", and 2.6 grants it to the container as a supplementary group. Without it the reader fails with `connect: Permission denied (os error 13)` — see 2.10.
+- **`SocketMode=0660`** restricts the socket to its owner and its group. Note this is **not** systemd's default: `SocketMode=` defaults to `0666` (`systemd.socket(5)`), which would let any local account open the socket and read the whole journal. `0660` is chosen here so that only root and the `systemd-journal` group can connect. The mode alone is not enough — a `0660` socket without `SocketGroup` stays `root:root`, which is exactly the configuration this guide used to document and that failed with `EACCES`. Together, `SocketGroup=systemd-journal` and `SocketMode=0660` produce `root:systemd-journal 0660`.
 
-Verify that the socket exists and answers:
+Verify that the socket exists, has the expected owner, and answers:
 
 ```bash
-ls -l /run/systemd/journal/gatewayd.sock
+ls -ln /run/systemd/journal/gatewayd.sock
+# srw-rw---- 1 0 <gid> 0 ...   ← <gid> is the group id of systemd-journal
+
 curl -s --unix-socket /run/systemd/journal/gatewayd.sock http://localhost/machine
 ```
 
-`ls` must show a `srw-rw----` entry (leading `s` = socket). `/machine` returns a small JSON object describing the journal (machine id, boot id, hostname, version) and is the cheapest proof that the socket is alive. Over `AF_UNIX` the host name in the URL is meaningless — gatewayd ignores it — so `http://localhost/…` is fine.
+`ls` must show a `srw-rw----` entry (leading `s` = socket) owned by uid `0` and the `systemd-journal` gid. The gid is **not fixed**: it depends on the distribution and on the order in which the system created its groups, so never copy a number from a guide — read the real value on your host with `getent group systemd-journal`. If the socket still shows gid `0` (`root`), the drop-in was not reloaded: run `daemon-reload` and restart the `.socket` unit again.
+
+`/machine` returns a small JSON object describing the journal (machine id, boot id, hostname, version) and is the cheapest proof that the socket is alive. Over `AF_UNIX` the host name in the URL is meaningless — gatewayd ignores it — so `http://localhost/…` is fine.
 
 ### 2.4 Verify real-time reading
 
@@ -222,13 +228,63 @@ services:
     environment:
       - SHUUL_JOURNALD_SOCKET=/run/systemd/journal/gatewayd.sock
       - SHUUL_JOURNALD_CONTAINER=traefik
+    group_add:
+      - systemd-journal          # Docker: resolved from the host
+      # - "982"                  # Podman: numeric gid, see below
     volumes:
       - /run/systemd/journal:/run/systemd/journal:ro
 ```
 
+**The `group_add` is the permission that opens the socket.** The container runs as `app` (uid 1000, `USER app` in the `Dockerfile`), while the socket is `root:systemd-journal` with mode `0660`. Mounting the directory makes the socket *visible*, but only a process that is a member of `systemd-journal` can `connect()` to it; `group_add` adds that group as a supplementary group of the container's main process. The two halves are set on different sides on purpose: the host decides who may read the journal (`SocketGroup` in 2.3), and the stack declares which container gets that group.
+
+`group_add` is applied when the container is **created**, not when it is restarted, so changing it needs a recreate:
+
+```bash
+docker compose up -d --force-recreate shuul
+```
+
+Confirm the container process is actually in the group:
+
+```bash
+docker exec shuul id
+# uid=1000(app) gid=1000(app) groups=1000(app),<gid>
+```
+
+The group appears as a **number, not a name**. Docker only adds the gid to the OCI spec; it does not create an entry in the image's `/etc/group`, and BusyBox's `id` cannot resolve a gid with no name. So the check is to compare that number with the host:
+
+```bash
+getent group systemd-journal        # systemd-journal:x:<gid>:  → that gid must be in groups=
+```
+
+If the number is missing from `groups=`, either the container was restarted instead of recreated, or `group_add` is not in the service definition.
+
+**Podman: use the numeric gid.** Docker resolves the `group_add` name against the **host's** `/etc/group`; Podman resolves it inside the **image**, and the `alpine` base has no `systemd-journal` entry. With the name, container creation fails outright:
+
+```
+$ podman run --rm --group-add systemd-journal alpine:3.23 id
+Error: unable to find group systemd-journal: no matching entries in group file
+```
+
+`podman-compose up` then aborts before starting shuul — and with it the WAF. Read the gid on the host and pass the number instead:
+
+```bash
+getent group systemd-journal        # systemd-journal:x:<gid>:
+```
+
+```yaml
+    group_add:
+      - "<gid>"
+```
+
+`<gid>` is the number printed above (982 on the machine where the Podman failure was reproduced — do not copy it to another host).
+
+The shipped `compose.yml` interpolates this, so the same file works on both engines: `group_add: ["${JOURNALD_GROUP:-systemd-journal}"]`. Docker needs no configuration; on Podman set `JOURNALD_GROUP=<gid>` in `.env` (or the environment) before `podman-compose up -d --force-recreate shuul`.
+
+**Rootless Podman** needs one more flag. There the container runs inside a user namespace where the gid of the bind-mounted socket is not mapped, so listing the numeric gid is not enough: start the container with `--group-add keep-groups` as well, which keeps the invoking user's supplementary groups inside the container and makes the socket's gid usable. If your compose implementation forwards `group_add` verbatim, `group_add: [keep-groups, "<gid>"]` expresses the same thing; otherwise run the container with `podman run --group-add keep-groups --group-add <gid> …`.
+
 **Mount the directory, never the socket file.** A single-file bind mount stays attached to the inode it was created from: when systemd recreates the socket (socket restart, host reboot, `daemon-reload`), the container keeps seeing the dead inode and every connection fails with `ENOENT` even though `ls -l` on the host looks perfectly healthy. Mounting the parent directory propagates the recreated socket. `docker.sock` has exactly the same gotcha.
 
-With this in place there is no `extra_hosts` entry, no published port and no firewall rule: the container only needs read access to one path on the host. The shipped `compose.yml` already contains both the variable and the volume; the snippet above is what a hand-written compose file needs.
+With this in place there is no `extra_hosts` entry, no published port and no firewall rule: the container only needs read access to one path on the host, plus the one group that guards it. The shipped `compose.yml` already contains the variable, the group and the volume; the snippet above is what a hand-written compose file needs.
 
 ### 2.7 Configuration reference
 
@@ -313,7 +369,7 @@ Be aware that this adds a second place to keep in sync: the pinned address must 
 
 `systemd-journal-gatewayd` performs **no authentication and no authorization**: anyone who can open its socket, or a TCP connection to `19531`, can read the journal. Treat it as an unauthenticated internal service.
 
-- **Prefer the Unix socket.** It has no network surface at all: access is decided by filesystem permissions (`SocketMode=0660`, owner `root:root`) and by the bind mount you control. That is the main reason 2.3 removes the TCP listener.
+- **Prefer the Unix socket.** It has no network surface at all: access is decided by filesystem permissions (`SocketMode=0660`, owner `root:systemd-journal`, group chosen with `SocketGroup`) and by the bind mount you control. That is the main reason 2.3 removes the TCP listener.
 - **Never expose `19531` to the Internet** in TCP mode. Do not publish it through Traefik, do not open it publicly in your firewall, and restrict it to the Docker bridge subnet(s) as shown in 2.8. Binding the listener to a private address is a defence in depth, not a substitute for the firewall rule.
 - **Remember what the journal contains:** request paths, query strings (which may carry tokens or API keys), headers, user agents and client IPs. Anyone who can reach gatewayd can read all of it — restrict access accordingly.
 
@@ -342,7 +398,70 @@ sudo journalctl -u systemd-journal-gatewayd -n 50 --no-pager
 
 A failure mentioning `libmicrohttpd` means the package is incomplete (or was built without the HTTP gateway). Reinstall `systemd-journal-remote` (2.2), `daemon-reload` and restart the `.socket` unit.
 
-**`Permission denied` when connecting.** The socket is `root:root` with mode `0660`, so only root and the root group may connect. The shipped container runs as root and this never triggers; if you added a `user:` directive to the service, either remove it or raise `SocketMode` to `0666` and rely on the read-only mount for isolation.
+**`Permission denied` when connecting (or `connect: Permission denied (os error 13)` in the logs).** The socket is a Unix socket with an owner and a mode, and the shipped container is **not** root: the `Dockerfile` declares `USER app`, so the process runs as uid 1000. If the socket is `root:root` with mode `0660` — the pairing this guide used to recommend, before the socket had a group — then every user except root is refused by the kernel at `connect()`, which is what the reader reports as `EACCES`. (`systemd`'s own default for `SocketMode` is `0666`; the `0660` is set by the drop-in in 2.3, and it only becomes usable once `SocketGroup` names a group the container belongs to.)
+
+The fix has two halves, and both are required:
+
+1. **On the host**, give the socket a group the container can join (2.3):
+
+   ```ini
+   # /etc/systemd/system/systemd-journal-gatewayd.socket.d/unix.conf
+   [Socket]
+   SocketGroup=systemd-journal
+   SocketMode=0660
+   ```
+
+   ```bash
+   sudo systemctl daemon-reload
+   sudo systemctl restart systemd-journal-gatewayd.socket
+   ```
+
+2. **In the stack**, grant that group to the container (2.6):
+
+   ```yaml
+       group_add:
+         - systemd-journal          # Docker: resolved from the host
+         # - "982"                  # Podman: numeric gid
+   ```
+
+   Then **recreate** the container — a restart is not enough, because supplementary groups are fixed at container creation:
+
+   ```bash
+   docker compose up -d --force-recreate shuul
+   ```
+
+How to confirm each half:
+
+```bash
+# 1. Host: the socket's owner is root, its group must be systemd-journal, mode 0660.
+ls -ln /run/systemd/journal/gatewayd.sock
+# srw-rw---- 1 0 <gid> 0 ...   ← <gid> is the systemd-journal group id on this host
+
+# 2. Host: read that gid so you can compare it with the next output.
+getent group systemd-journal
+# systemd-journal:x:<gid>:
+
+# 3. Container: the gid is listed as a number — Docker does not add a group name
+#    to the image's /etc/group, so `id` prints the bare gid, not systemd-journal.
+docker exec shuul id
+# uid=1000(app) gid=1000(app) groups=1000(app),<gid>
+
+# 4. Container: the socket must be visible with the same owner/gid.
+docker exec shuul ls -l /run/systemd/journal/gatewayd.sock
+```
+
+If step 1 shows the group as `root` (`0`), the drop-in did not take effect. If step 2's gid is not among step 3's `groups=`, the container was restarted instead of recreated, `group_add` is not in the service definition, or — on Podman — the group was given by name, which Podman cannot resolve inside the image. If step 4 fails with `No such file or directory`, the volume is wrong — see the mount note in 2.6.
+
+**Fallback when the host has no `systemd-journal` group** (a minimal host whose system did not create it). Use the numeric gid on both sides. Read it once:
+
+```bash
+getent group systemd-journal
+# systemd-journal:x:<gid>:
+```
+
+If that prints nothing, choose a gid and write the **same number** in both places — `SocketGroup=<gid>` in the drop-in and the numeric gid in the container (`group_add: ["<gid>"]`, or `JOURNALD_GROUP=<gid>` with the shipped compose file). Do not copy a gid from another machine: group ids are assigned by the distribution and are not portable.
+
+**Do not use `SocketMode=0666` as a fix.** It makes the socket writable and readable by any local user, which means any account on the host can read the entire journal (request paths, query strings, headers, tokens, client IPs — see 2.9). It is acceptable only as a temporary diagnostic to prove the problem is group-related, and must be reverted immediately.
 
 **`curl --unix-socket` works on the host but shuul stays silent.** Compare the exact path: `SHUUL_JOURNALD_SOCKET` must be the path **inside the container** (`/run/systemd/journal/gatewayd.sock`), and the log line from 2.6 prints the endpoint the reader actually uses. A host-only path such as a custom `/run/mygatewayd.sock` outside the mounted directory will never be visible.
 
@@ -520,12 +639,12 @@ If you feed the Jail pipeline from the systemd journal, also mount the gatewayd 
 - [ ] **SECRET** is a strong random string (`openssl rand -hex 32`)
 - [ ] OIDC redirect URL uses HTTPS
 - [ ] Traefik network is created and shared
-- [ ] Data directory permissions are correct (container runs as `app` user, UID 10001)
+- [ ] Data directory permissions are correct (container runs as `app` user, UID 1000)
 - [ ] MaxMind database is downloaded and mounted
 - [ ] `RUST_LOG` is set to `info` or `warn` (not `debug`) in production
 - [ ] Health check is working
 - [ ] Container restarts automatically
-- [ ] `systemd-journal-gatewayd.socket` is enabled and serving the Unix socket, and `/run/systemd/journal` is mounted read-only into the container (only if using the journald feed — see 2.3 and 2.6). In TCP mode, `19531` is restricted to the Docker bridge subnet
+- [ ] `systemd-journal-gatewayd.socket` is enabled and serving the Unix socket, `/run/systemd/journal` is mounted read-only into the container, and the container joins the `systemd-journal` group (`group_add`; on Podman use the numeric gid via `JOURNALD_GROUP` — only if using the journald feed, see 2.3 and 2.6). In TCP mode, `19531` is restricted to the Docker bridge subnet
 
 ---
 
@@ -826,6 +945,12 @@ services:
       - SHUUL_JOURNALD_CONTAINER=traefik                           # optional (default: traefik)
       # TCP alternative only — requires extra_hosts and an open 19531 (see 2.8)
       # - SHUUL_JOURNALD_URL=http://host.docker.internal:19531      # optional (default: http://localhost:19531)
+    # The image runs as `app` (uid 1000), not root; this group is what lets it
+    # connect to the `root:systemd-journal 0660` socket (see 2.3/2.6).
+    # Docker resolves the name from the host; on Podman set JOURNALD_GROUP to the
+    # numeric gid, because Podman resolves it inside the image (see 2.6).
+    group_add:
+      - ${JOURNALD_GROUP:-systemd-journal}
     volumes:
       - ./data:/app/data:Z           # SQLite database
       - ./geo:/app/geo:Z             # GeoIP database

@@ -568,9 +568,18 @@ impl TcpEndpoint {
 /// esquema o usa `https`, que no está soportado (gatewayd se consulta en local
 /// y sin TLS por diseño).
 fn tcp_endpoint(base_url: &str) -> Result<TcpEndpoint, JournalError> {
-    let uri: Uri = base_url
-        .parse()
-        .map_err(|e| JournalError::Connection(format!("invalid gateway URL {base_url}: {e}")))?;
+    // Un path absoluto aquí es casi siempre el socket en la variable
+    // equivocada: nombrar la variable correcta evita diagnósticos engañosos,
+    // tanto si el valor no parsea como URI como si le falta el esquema.
+    let hint = if base_url.starts_with('/') {
+        " (hint: absolute paths belong in SHUUL_JOURNALD_SOCKET)"
+    } else {
+        ""
+    };
+
+    let uri: Uri = base_url.parse().map_err(|e| {
+        JournalError::Connection(format!("invalid gateway URL {base_url}: {e}{hint}"))
+    })?;
 
     match uri.scheme_str() {
         Some("http") => {},
@@ -586,7 +595,7 @@ fn tcp_endpoint(base_url: &str) -> Result<TcpEndpoint, JournalError> {
         },
         None => {
             return Err(JournalError::Connection(format!(
-                "gateway URL {base_url} has no scheme"
+                "gateway URL {base_url} has no scheme{hint}"
             )));
         },
     }
@@ -1502,6 +1511,54 @@ mod tests_task7 {
             request.uri().to_string(),
             "/entries?follow&CONTAINER_NAME=traefik",
             "the target stays in origin form"
+        );
+    }
+
+    #[test]
+    fn test_tcp_endpoint_hints_the_socket_variable_for_an_absolute_path() {
+        let err = tcp_endpoint("/run/systemd/journal/gatewayd.sock")
+            .err()
+            .expect("an absolute path without a scheme must be rejected");
+        let message = err.to_string();
+        assert!(
+            message.contains("/run/systemd/journal/gatewayd.sock"),
+            "the rejected value must appear in the diagnosis, got: {message}"
+        );
+        assert!(
+            message.contains("SHUUL_JOURNALD_SOCKET"),
+            "an absolute path belongs in the socket variable and the diagnosis must say so, got: {message}"
+        );
+    }
+
+    #[test]
+    fn test_tcp_endpoint_hints_the_socket_variable_for_an_unparsable_path() {
+        let err = tcp_endpoint("/run/systemd/journal/my gateway.sock")
+            .err()
+            .expect("a path with a space cannot be a valid URI");
+        let message = err.to_string();
+        assert!(
+            message.contains("/run/systemd/journal/my gateway.sock"),
+            "the rejected value must appear in the diagnosis, got: {message}"
+        );
+        assert!(
+            message.contains("SHUUL_JOURNALD_SOCKET"),
+            "an absolute path belongs in the socket variable even when it does not parse as a URI, got: {message}"
+        );
+    }
+
+    #[test]
+    fn test_tcp_endpoint_does_not_hint_for_a_scheme_less_host_port() {
+        let err = tcp_endpoint("localhost:19531")
+            .err()
+            .expect("a scheme-less host:port must be rejected");
+        let message = err.to_string();
+        assert!(
+            message.contains("has no scheme"),
+            "the diagnosis must point at the missing scheme, got: {message}"
+        );
+        assert!(
+            !message.contains("SHUUL_JOURNALD_SOCKET"),
+            "a host:port is not a socket path, so the hint would be misleading, got: {message}"
         );
     }
 

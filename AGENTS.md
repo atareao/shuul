@@ -508,6 +508,7 @@ Lógica: si tiene `rate_limit_profile_id` → jail. Si tiene algún filtro → w
 
 - Imagen: `ghcr.io/atareao/shuul`
 - Volúmenes: `data` (SQLite), `geo` (MaxMind, external), `/run/systemd/journal:/run/systemd/journal:ro` (socket de gatewayd para el pipeline Jail; se monta el directorio, no el fichero, para sobrevivir a la recreación del socket por systemd)
+- `group_add: [${JOURNALD_GROUP:-systemd-journal}]`: el socket es `root:systemd-journal 0660` y la imagen corre como `app` (uid 1000, `USER app` en el `Dockerfile`), **no como root**; sin ese grupo suplementario `connect()` falla con `EACCES`. Se fija al crear el contenedor: cambiarlo exige `--force-recreate`, no `restart`. Docker resuelve el nombre contra el host, pero Podman lo resuelve contra la imagen (`alpine` no tiene el grupo) y falla al crear el contenedor: en Podman hay que dar el gid numérico con `JOURNALD_GROUP=<gid>` (`getent group systemd-journal`)
 - Red: `proxy` (external, para Traefik). Sin `extra_hosts`: el transporte por defecto es el socket Unix
 - Healthcheck: `curl -f http://localhost:3000/api/v1/health/` cada 60s
 - Labels Traefik: router rule, entrypoint https, loadbalancer port 3000
