@@ -4,6 +4,10 @@
 ### Features
 
 - *(jail)* Read Traefik access logs over the gatewayd Unix socket
+
+### Miscellaneous Tasks
+
+- Release v0.15.0
 ## [0.14.2] - 2026-10-18
 
 ### Bug Fixes
