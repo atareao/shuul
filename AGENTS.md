@@ -186,8 +186,9 @@ cuentan como no definidos. Si llegan socket y URL a la vez gana el socket y se e
 a ambos transportes.
 
 - La petición es idéntica en los dos: `GET /entries?follow&CONTAINER_NAME={container}`
-  en **forma origen** (`path?query`) más cabecera `Host`, `Accept: application/json` y
-  `Range: entries=<cursor>:1` al reanudar tras una reconexión.
+  en **forma origen** (`path?query`) más cabecera `Host`, `Accept: application/json` y un
+  `Range` de reanudación (`entries=<cursor>:…`) tras una reconexión. El `Range` es sólo una
+  **pista**: la corrección no depende de él (ver más abajo).
 - `endpoint_display()` produce el endpoint que aparece en los logs:
   `unix:/run/systemd/journal/gatewayd.sock` o `scheme://host:port` del endpoint
   **efectivo** en TCP, no la URL cruda (su path se ignora y se avisa con un
@@ -197,6 +198,15 @@ a ambos transportes.
   inodo muerto cuando systemd recrea el socket). No hay `extra_hosts` ni puerto abierto.
 - Fallo de conexión = fail-open: `warn!` (`journald gateway not available`) y reintento
   cada 30 s. El WAF nunca se ve afectado.
+- **Corte por intento de conexión:** sólo se procesan entradas cuyo `__REALTIME_TIMESTAMP`
+  (µs) es posterior al instante en que empezó el intento de conexión actual. Lo escrito
+  mientras shuul estaba caído **no** cuenta para el rate limiting: `RateLimiter::record()`
+  sella con `Instant::now()`, así que reproducir el histórico al arrancar banearía IPs con
+  historial de escaneo. Una entrada sin `__REALTIME_TIMESTAMP` numérico se descarta.
+- **Dedupe por `__CURSOR`:** tras una reconexión se descarta la entrada cuyo cursor coincide
+  con el último ya procesado. Por eso no se depende de `Range` para evitar reprocesar
+  histórico: con `?follow` gatewayd ignora `realtime`, y `entries=<cursor>:1` no aplica el
+  skip sin `num_entries` (la forma útil es `entries=<cursor>:1:N`).
 
 #### WAF (`shuul.rs`)
 
