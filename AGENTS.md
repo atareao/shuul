@@ -511,7 +511,7 @@ Lógica: si tiene `rate_limit_profile_id` → jail. Si tiene algún filtro → w
 ### Multi-stage build
 
 1. **backend-builder**: `rust:alpine3.23` — compila el backend Rust
-2. **frontend-builder**: `node:23-alpine` — build del frontend con pnpm
+2. **frontend-builder**: `node:22-alpine` — build del frontend con pnpm
 3. **runtime**: `alpine:3.23` — copia binario + static + migrations, expone puerto 3000
 
 #### compose.yml
