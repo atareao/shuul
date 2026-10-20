@@ -3164,14 +3164,13 @@ mod tests_task7 {
             "the frame error must surface as Socket, got: {err:?}"
         );
 
-        let hyper = std::error::Error::source(&err)
-            .and_then(|source| source.downcast_ref::<hyper::Error>())
-            .expect("the source must be the hyper::Error");
-        // This truncation surfaces as a body read failure; the point is that the
-        // `hyper::Error` is now reachable by type instead of being flattened.
+        // The `hyper::Error` must be reachable by type instead of being
+        // flattened. No assertion on its wording: that belongs to hyper.
         assert!(
-            hyper.to_string().contains("body"),
-            "the hyper::Error must describe the body read failure, got: {hyper}"
+            std::error::Error::source(&err)
+                .and_then(|source| source.downcast_ref::<hyper::Error>())
+                .is_some(),
+            "the source must be the hyper::Error"
         );
     }
 

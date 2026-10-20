@@ -22,7 +22,7 @@
 - [x] 2.5 RED/GREEN 592 (`TcpStream::connect`): test contra un puerto cerrado; assertar `source()` es el `io::Error` con `kind() == ConnectionRefused`. Verificación: el test pasa.
   - Cubierto por `test_closed_tcp_port_exposes_an_io_error_connection_refused`.
 - [ ] 2.6 RED/GREEN 618 (`builder.body`): test de la construcción de la petición cuando falla; assertar `source()` es el `http::Error`. Verificación: el test pasa. **Si forzar el fallo de `body()` de forma limpia no es posible, decirlo en vez de declarar cobertura inexistente.**
-  - **NO CUBIERTO — no existe cobertura propia.** El `#[source]` del sitio 618 está puesto (`connection_from`), pero `http::request::Builder::body` sólo falla si el builder acumuló un error previo (URI, método o cabecera inválidos). `build_request` alimenta el builder con un `Uri` ya validado por `tcp_endpoint`, una `Method::GET` constante y cabeceras derivadas de esa misma autoridad; ningún input alcanza `body()` con el builder en estado de error. Un test aquí probaría la crate `http`, no shuul. Se descarta por no aportar.
+  - **NO CUBIERTO — no existe cobertura propia.** El `#[source]` del sitio 618 está puesto (`connection_from`), pero `http::request::Builder::body` sólo falla si el builder acumuló un error previo (URI, método o cabecera inválidos). Las tres entradas que recibe `build_request` son: un `Method::GET` constante, el target de `request_target()` (el `container_name` va percent-encoded con `urlencoding::encode`) y el `Host` de `host_header()` —que sí deriva de `tcp_endpoint`, ya validado—; con esas tres entradas el builder no puede quedar en estado de error y `body()` no puede devolver `Err`. Un test aquí probaría la crate `http`, no shuul. Se descarta por no aportar.
 - [x] 2.7 RED/GREEN 690 (`base_url.parse`): test con una URL que no parsea; assertar `source()` es el `http::uri::InvalidUri`. Verificación: el test pasa.
   - Cubierto por `test_invalid_gateway_url_exposes_the_invalid_uri` (determinista y trivial).
 - [x] 2.8 RED/GREEN 771 (`parse_journal_entry`): test con línea no JSON; assertar `source()` es el `serde_json::Error` con `line()`/`column()`. Verificación: el test pasa.
@@ -43,8 +43,13 @@
 
 ## 4. Verificación
 
-- [ ] 4.1 `cargo test` en verde (hoy 273 tests: anotar exactamente cuántos nuevos se añaden con este cambio).
-- [ ] 4.2 `cargo clippy -- -D warnings` sin warnings nuevos.
-- [ ] 4.3 `cargo fmt --check` sin diferencias.
-- [ ] 4.4 Auditoría con `rust-reviewer` sobre `backend/src/journald_reader.rs`; resolver o documentar lo que salga.
-- [ ] 4.5 Impacto operativo: confirmar que con la opción elegida en `design.md` §D3 los `debug!`/`warn!` de `:483`, `:638` y `:643` no pierden información respecto a hoy. Si se eligió la Opción 2, esto obliga a reescribir esos tres sitios y sus tests. Verificación: comparar el texto de los tres logs antes y después sobre una misma entrada.
+- [x] 4.1 `cargo test` en verde (hoy 273 tests: anotar exactamente cuántos nuevos se añaden con este cambio).
+  - Evidencia: 273 → **284** tests, **+11** nuevos. Verificado por CLI, 0 fallos.
+- [x] 4.2 `cargo clippy -- -D warnings` y `cargo fmt --check` sin warnings ni diferencias.
+  - Evidencia: `clippy -- -D warnings` limpio y `fmt --check` sin diff.
+- [x] 4.3 `openspec validate journal-error-source-chain`.
+  - Evidencia: `Change 'journal-error-source-chain' is valid`.
+- [x] 4.4 Auditoría con `rust-reviewer` sobre `backend/src/journald_reader.rs`; resolver o documentar lo que salga.
+  - Evidencia: **APTO CON CAMBIOS**; los tres hallazgos aplicados. La auditoría confirmó además, sin hallazgo, que el texto de los 9 sitios con causa es byte a byte el de `8a16ef0` (Opción 1 respetada) y que las dos exenciones de `hyper` (553 y 618) son legítimas.
+- [x] 4.5 Impacto operativo: confirmar que con la opción elegida en `design.md` §D3 los `debug!`/`warn!` de `:483`, `:638` y `:643` no pierden información respecto a hoy. Si se eligió la Opción 2, esto obliga a reescribir esos tres sitios y sus tests. Verificación: comparar el texto de los tres logs antes y después sobre una misma entrada.
+  - Evidencia: satisfecha por construcción — los cuatro sitios de log siguen imprimiendo `{e}` con `Display` y, como el primer campo no cambia, no pierden un carácter. La auditoría lo verificó punto por punto.
