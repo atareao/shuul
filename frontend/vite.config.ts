@@ -11,7 +11,8 @@ export default defineConfig({
             targets: [
                 {
                     src: 'src/assets/logo.svg',
-                    dest: 'images'
+                    dest: 'images',
+                    rename: { stripBase: 2 }
                 }
             ]
         })
