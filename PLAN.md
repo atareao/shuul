@@ -71,7 +71,7 @@ En `co1`, y **antes** de decidir nada:
 # ¿Con qué driver escribe Traefik sus logs? Determina si la API los ve.
 docker inspect -f '{{.HostConfig.LogConfig.Type}}' traefik
 
-# Versión de la API del motor (Docker 28.2.2 → v1.49+). Decide si `since` está disponible.
+# Versión de la API del motor (Docker 28.2.2 → v1.50+). Decide si `since` está disponible.
 docker version --format '{{.Server.APIVersion}}'
 
 # gid del grupo docker en el host (NO hardcodear: varía por máquina).
@@ -412,10 +412,29 @@ Lo que la prueba **no** cubre, para que conste: `fetch` iba rechazado a propósi
 
 3 alertas abiertas, ninguna con PR propia: `brace-expansion` ×2 (media) y `rand` (baja).
 
-- [ ] **6.1** `pnpm why brace-expansion` → identificar el paquete padre que la arrastra.
-- [ ] **6.2** `cargo tree -i rand` → identificar quién depende de `rand` (el lock muestra `rand 0.8.5`).
-- [ ] **6.3** Subir el **padre** (o añadir un `override` de pnpm si el padre no se puede mover) y volver a mirar las alertas.
-- [ ] **6.4** Si un padre no se puede subir sin romper, **documentar por qué** queda abierta en lugar de silenciarla.
+- [x] **6.1** `pnpm why brace-expansion` → identificar el paquete padre que la arrastra.
+- [x] **6.2** `cargo tree -i rand` → identificar quién depende de `rand` (el lock muestra `rand 0.8.5`).
+- [x] **6.3** Subir el **padre** (o añadir un `override` de pnpm si el padre no se puede mover) y volver a mirar las alertas.
+- [x] **6.4** Si un padre no se puede subir sin romper, **documentar por qué** queda abierta en lugar de silenciarla.
+
+**Resultado — hecho y fusionado (PR #83, `develop` en `e0e0f57`).** Y el diagnóstico inicial era **demasiado pesimista**: de las tres alertas, sólo **una** necesitaba trabajo.
+
+**6.1 — `brace-expansion` ×2: no había nada que arreglar.** Conviven **dos linajes** en el árbol y los dos están ya en su versión parcheada:
+
+| Linaje | Quién lo arrastra | Versión |
+|---|---|---|
+| `1.x` | `minimatch@3.1.5` ← `@eslint/config-array` y `@eslint/eslintrc` ← `eslint@9.39.5` | **1.1.21** |
+| `5.x` | `minimatch@10.2.6` ← `@typescript-eslint/typescript-estree@8.71.2` | **5.0.12** |
+
+Las dos son exactamente el `first_patched_version` del aviso vivo (`GHSA-q2hr-2g5m-vwhr`), así que **`develop` ya está parcheado** y `pnpm audit` ya no reporta `brace-expansion`. Un `pnpm.overrides` aquí habría sido **incorrecto**: no hay ninguna versión más alta a la que fijar dentro de ningún major, y fijar `brace-expansion@1`/`@2` habría roto a los consumidores de los otros majors sin arreglar nada.
+
+**Por qué siguen `open` entonces:** leyendo los dos lockfiles, `main` tiene **1.1.18** y **5.0.9**, mientras que `develop` tiene **1.1.21** y **5.0.12**. El dependency graph de Dependabot evalúa la **rama por defecto** —el mismo motivo por el que GitHub las anuncia «on the default branch» en cada push—. **Se cerrarán solas con el próximo release**, cuando la lockfile de `develop` aterrice en `main`. No son deuda pendiente: son deuda **ya saldada** que todavía no ha viajado.
+
+**6.2 y 6.3 — `rand` sí, y sin forzar nada.** `rand = "0.8"` es dependencia **directa** de `backend`, y además la arrastran `jsonwebtoken`, `num-bigint-dig`, `sqlx-mysql` y `sqlx-postgres`. `cargo update -p "rand@0.8.5"` → **0.8.5 → 0.8.8**, que cumple el `first_patched_version` del aviso (`<0.8.6 => 0.8.6`). El padre ya admitía el bump, así que **no hizo falta `[patch]` ni forzar el árbol**. El commit toca **un fichero y 7 líneas**.
+
+**6.4 — y aquí está el matiz que había que dejar escrito:** lo único que no se arregla es lo que **no tiene parche publicado**. `pnpm audit` sale con exit 1, pero ya no por `brace-expansion`, sino por **`braces <=3.0.3`** (`patched_versions: null`), dev-only bajo `vite-plugin-static-copy > chokidar`. Queda anotado, no arreglado, y **no forma parte de estas tres alertas**.
+
+Gates con los baselines intactos: **284 tests** backend, **5** frontend, lint **0 errores**, clippy y fmt `EXIT=0`, build ✓ y chunk `index` en **411.23 kB** (sin cambios).
 
 ---
 
@@ -443,6 +462,8 @@ Lo que la prueba **no** cubre, para que conste: `fetch` iba rechazado a propósi
 - **Fase 3 fusionada** (PR #71): `maxminddb` 0.32.0 **sin tocar código**, y la geolocalización **idéntica bit a bit** sobre las bases reales —17 IPs y un muestreo de un millón de direcciones—. Queda demostrado que el único riesgo real, el límite de 32 subdivisiones, es **inalcanzable** con `GeoLite2-City` (máximo observado: 2).
 - **Fase 4 fusionada** (PR #75): `react-router` 8.4.0, con la navegación real verificada montando la `<App />` en jsdom (guard, redirect a `/login`, `Outlet` anidado y `useNavigate`). El chunk `index` **baja** de 412.92 a **411.23 kB**.
 - **Con esto quedan cerradas las cuatro PRs de Dependabot del día y no hay ninguna abierta en el repositorio.**
+- **Fase 6 fusionada** (PR #83): de las tres alertas, **sólo `rand` requería trabajo** (`0.8.5 → 0.8.8`, un fichero, 7 líneas). `brace-expansion` ya estaba parcheado en `develop`, y sus dos alertas **se cerrarán solas** cuando la lockfile llegue a `main`, que es la rama que Dependabot escanea. Queda anotado un cuarto aviso **sin parche publicado** (`braces`, dev-only, bajo `vite-plugin-static-copy`).
+- **Todas las fases menos la 0 están cerradas.** Fusionadas y sin ninguna abierta: las tres de mantenimiento (#81 dependencias muertas, #82 Node 22, #83 `rand`) y las tres de Dependabot que quedaban (#70, #71, #75).
 
 ---
 
@@ -454,6 +475,6 @@ Lo que la prueba **no** cubre, para que conste: `fetch` iba rechazado a propósi
 
 ## Pendiente
 
-1. ¿El transporte Docker pasa a ser el **preferido** y journald queda como alternativa, o al revés? Se puede decidir con §0.2 delante.
+1. **Documentación, no bloqueo.** Con las dos entradas implementadas (ver `## Decisiones tomadas`), cuál se escribe como preferida es una línea del README y se cambia sin recompilar: **no impide iniciar la Fase 0**. Se decide con §0.2 delante toda.
 2. ¿Se retira el soporte de `systemd-journal-gatewayd` o se mantiene? Mantener dos transportes tiene un coste de test que hay que reconocer.
 3. Ajeno a este plan: no existe directorio `locales` ni JSON de traducción pese a ~88 llamadas a `t()`; i18next recibe 404 y devuelve la clave.
