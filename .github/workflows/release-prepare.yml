@@ -149,8 +149,17 @@ jobs:
             git push origin "v${V}"
           fi
 
+      # The release PR's head branch is `develop`, so a `gh pr merge
+      # --delete-branch` on it deletes `develop` from the remote. The release
+      # itself still goes out (tag, image, GitHub Release) and this step is the
+      # only thing that fails, with a bare "pathspec 'develop' did not match any
+      # file(s)" that names nothing. Fail with the cause instead.
       - name: Sync develop with main
         run: |
-          git checkout develop
+          if ! git fetch origin develop; then
+            echo "::error::cannot fetch origin/develop. Most likely the branch was deleted by 'gh pr merge --delete-branch' on the release PR; if not, read the fetch error above."
+            exit 1
+          fi
+          git checkout -B develop origin/develop
           git merge origin/main --no-edit
           git push origin develop

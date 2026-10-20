@@ -53,7 +53,7 @@ git merge main && git push origin develop
 
 ```bash
 # 1. PR de develop -> main, titulado "release: vX.Y.Z"
-gh pr create --base develop --head main --title "release: vX.Y.Z"
+gh pr create --base main --head develop --title "release: vX.Y.Z"
 
 # 2. Al mergear, el workflow release-prepare.yml:
 #    a) Compara .vampus.yml con el último tag
@@ -66,6 +66,15 @@ gh pr create --base develop --head main --title "release: vX.Y.Z"
 #    a) Construye y publica la imagen en GitHub Container Registry (ghcr.io)
 #    b) Crea la GitHub Release con las notas del changelog
 ```
+
+> ⚠️ **No uses `--delete-branch` al fusionar la PR de release.** La rama *head* de
+> `develop -> main` es `develop`, así que `gh pr merge --delete-branch` la borra
+> del remoto. El release se publica igual (tag, imagen y GitHub Release), pero el
+> paso `Sync develop with main` falla al no encontrarla y `develop` se queda sin
+> el commit de release. Si ocurre, se reconstruye con
+> `git checkout -b develop origin/main && git push -u origin develop`, que es lo
+> que el paso habría hecho (el merge es fast-forward: `develop` es ancestro de
+> `main`).
 
 `release-prepare.yml` es **idempotente**: si la versión ya se bumpeó a mano en el PR, sólo regenera el changelog, commitea y taguea; si los ficheros de versión siguen en el último tag, bumpea primero.
 
