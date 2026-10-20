@@ -34,7 +34,7 @@ moka = { version = "0.12.16", features = ["sync"] }
 
 # ---------- DEV DEPENDENCIES ----------
 [dev-dependencies]
-serial_test = "3"
+serial_test = "4"
 tokio = { version = "1.48.0", features = ["test-util"] }
 wiremock = "0.6"
 tower = { version = "0.5.3", features = ["util"] }
