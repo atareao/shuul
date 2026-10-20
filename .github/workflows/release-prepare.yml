@@ -97,6 +97,26 @@ jobs:
           fi
           echo "Bumped $BEFORE -> $AFTER"
 
+      # vampus bumps the version literals declared in .vampus.yml, but it knows
+      # nothing about backend/Cargo.lock: the workspace member carries its own
+      # version in a `[[package]]` entry. Leaving it behind fails `cargo
+      # --locked` on the release tag and dirties the tree on every local build,
+      # so resync it here and fail loudly if it did not take.
+      - name: Sync Cargo.lock with the bumped version
+        if: steps.state.outputs.action == 'bump'
+        run: |
+          read_locked() {
+            sed -n '/^name = "backend"$/{n;s/^version = "\(.*\)"$/\1/p;}' backend/Cargo.lock
+          }
+          BEFORE=$(read_locked)
+          cargo update --workspace --manifest-path backend/Cargo.toml
+          AFTER=$(read_locked)
+          if [ "$BEFORE" = "$AFTER" ]; then
+            echo "::error::Cargo.lock stayed at $BEFORE instead of syncing with the bump."
+            exit 1
+          fi
+          echo "Cargo.lock synced: $BEFORE -> $AFTER"
+
       - name: Read release version
         if: steps.state.outputs.action != 'skip'
         id: version
