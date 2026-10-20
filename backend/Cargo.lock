@@ -163,7 +163,7 @@ dependencies = [
  "http-body-util",
  "hyper",
  "hyper-util",
- "ipnetwork 0.20.0",
+ "ipnetwork",
  "jsonwebtoken",
  "maxminddb",
  "moka",
@@ -1173,15 +1173,6 @@ checksum = "6a756c3fac73139e83f14c2d742155dd2b78d3ee56597b419a0579b7bdd6dd78"
 
 [[package]]
 name = "ipnetwork"
-version = "0.20.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "bf466541e9d546596ee94f9f69590f89473455f88372423e0008fc1a7daf100e"
-dependencies = [
- "serde",
-]
-
-[[package]]
-name = "ipnetwork"
 version = "0.21.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "cf370abdafd54d13e54a620e8c3e1145f28e46cc9d704bc6d94414559df41763"
@@ -1332,7 +1323,7 @@ version = "0.27.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "76371bd37ce742f8954daabd0fde7f1594ee43ac2200e20c003ba5c3d65e2192"
 dependencies = [
- "ipnetwork 0.21.1",
+ "ipnetwork",
  "log",
  "memchr",
  "serde",
