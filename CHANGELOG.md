@@ -1,4 +1,14 @@
 # Changelog
+## [0.15.4] - 2026-10-20
+
+### Documentation
+
+- *(git-flow)* Fix release PR direction and warn against --delete-branch
+
+### Other
+
+- *(release)* Fail with the cause when develop is missing
+- *(dependabot)* Target develop and group patch and minor bumps
 ## [0.15.3] - 2026-10-20
 
 ### Bug Fixes
@@ -16,6 +26,7 @@
 - *(openspec)* Archive journald-no-history-replay
 - *(openspec)* Archive journal-error-source-chain
 - Sync Cargo.lock with 0.15.2
+- Release v0.15.3
 
 ### Refactor
 
