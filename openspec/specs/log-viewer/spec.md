@@ -1,7 +1,7 @@
 # log-viewer Specification
 
 ## Purpose
-TBD - created by archiving change persist-log-viewer-state. Update Purpose after archive.
+Defines how the Log Viewer page persists its view configuration: the event-type filter (`hiddenEvents`) and the auto-refresh toggle (`autoRefresh`) are stored in `localStorage` so they survive navigation to other admin pages and back. On mount the page restores them, falling back to sensible defaults when nothing has been persisted.
 
 ## Requirements
 

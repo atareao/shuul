@@ -98,6 +98,27 @@ Shuul talks to gatewayd over one of **two transports**, with the same HTTP reque
 
 Precedence is **socket → URL → default**: `SHUUL_JOURNALD_SOCKET` wins whenever it is set, `SHUUL_JOURNALD_URL` is used otherwise, and `http://localhost:19531` is the last resort.
 
+### At a glance: end-to-end checklist
+
+The whole Jail feed, in the order it has to be done. Commands are abbreviated; the `Detail` column points to the section that explains them.
+
+| # | What | Command | Expected | Detail |
+|---|---|---|---|---|
+| 1 | Traefik writes JSON access logs to stdout, log driver `journald` | `docker inspect -f '{{.HostConfig.LogConfig.Type}}' traefik` | `journald` | 2.1 |
+| 2 | Install the gateway package | `sudo apt install -y systemd-journal-remote` | `.socket`/`.service` units present | 2.2 |
+| 3 | Serve gatewayd on the Unix socket | drop-in + `systemctl restart …gatewayd.socket` | `active (listening)` | 2.3 |
+| 4 | Verify the socket | `ls -ln …/gatewayd.sock`, `curl … /machine` | `srw-rw---- … <gid>`, JSON | 2.3 |
+| 5 | Verify the live stream | `curl -sN --unix-socket … "…/entries?follow&CONTAINER_NAME=traefik"` | one JSON object per line | 2.4 |
+| 6 | *(optional)* Journal in RAM, drop the leftovers | `Storage=volatile` + `journalctl --vacuum-time=1s` | `/run/log/journal/…` | 2.6 |
+| 7 | Mount the socket and add the group in the stack | `volumes:` + `group_add:` | — | 2.7 |
+| 8 | **Recreate** the container, check the group | `docker compose up -d --force-recreate shuul` | gid listed in `groups=` | 2.7 |
+| 9 | Confirm which endpoint the reader chose | `docker compose logs shuul \| grep "journald reader"` | `… from unix:/run/…` | 2.8 |
+| 10 | Confirm end to end | Admin → Logs, event toggles `registered` / `pending` / `banned` | `jail` rows, tagged orange | 2.11 |
+| 11 | TCP mode, only if the socket cannot be mounted | `SHUUL_JOURNALD_URL=http://…:19531` | `… from http://…` | 2.9 |
+| 12 | Roll back | — | — | 2.12 |
+
+Steps 1–6 belong to the **host** and are done once; steps 7–10 belong to the **stack** and are repeated on every deployment. **Recreating is not restarting:** `group_add` and `volumes` are fixed when the container is created, so a `restart` never picks up a change to either.
+
 ### 2.1 Prerequisites: Traefik access logs in JSON over journald
 
 Traefik must emit access logs in JSON, and its container logs must reach the systemd journal. In Traefik's static configuration:
@@ -118,6 +139,44 @@ services:
 ```
 
 With the `journald` log driver, every access-log line becomes a journal entry tagged with `CONTAINER_NAME=traefik` — the field shuul filters on. If your Traefik container is named differently, set `SHUUL_JOURNALD_CONTAINER` accordingly (see 2.8).
+
+**Confirm the field shuul matches.** Docker prints the container name with a leading slash in some places and without it in others, so check both sides instead of assuming:
+
+```bash
+docker inspect -f '{{.Name}} {{.HostConfig.LogConfig.Type}}' traefik
+# /traefik journald        ← the name carries a leading slash; the journal field does not
+
+journalctl CONTAINER_NAME=traefik -n 3 --no-pager -o cat
+```
+
+Shuul compares `CONTAINER_NAME`, which is the **container name without the leading slash**. If `docker inspect` prints `/edge-proxy`, then the value to configure is `SHUUL_JOURNALD_CONTAINER=edge-proxy` — not `/edge-proxy`.
+
+The `journalctl` output must be one JSON line per request. If it is plain text, `accessLog.format: json` is missing from Traefik's static configuration.
+
+Two fields decide whether an entry is processed at all:
+
+- **`ClientHost`** — the client IP. If it is missing or empty, the reader falls back to **`ClientAddr`** and strips the port (`[::1]:54321` becomes `::1`). If neither of them yields an address there is no IP to attribute the request to, and the entry is discarded.
+- **`OriginStatus`** — the status code. If it is absent, cannot be converted to `u16`, or is `0`, the entry is discarded. `0` means Traefik never reached the backend, usually because the WAF already cut the request.
+
+Everything else is mapped onto the fields a Jail rule can match:
+
+| JSON field | Payload field / rule filter |
+|---|---|
+| `ClientHost` (or `ClientAddr`) | `ip_address` |
+| `OriginStatus` | `status_code`, checked against the profile's `fail_codes` |
+| `RequestPath` | split into `path` and `query` |
+| `RequestMethod` | `method` |
+| `RequestHost` | `fqdn` |
+| `RequestScheme` | `protocol` |
+| `request_User-Agent` | `user_agent` |
+| `request_Referer` | `referer` |
+| `request_Content-Type` | `content_type` |
+| `request_Accept-Language` | `accept_language` |
+| `request_X-Request-Id` | `x_request_id` |
+
+The `request_*` keys keep that literal prefix — case and hyphen included — because those are exactly the keys Traefik writes in its JSON. They cover the per-request filters a Jail rule can use (`user_agent`, `referer`, `content_type`, `accept_language`, `x_request_id`), alongside `fqdn`, `protocol`, `path` and `method`; a header Traefik does not put in the access log simply cannot be matched by a rule.
+
+**Note:** if Traefik runs as a systemd unit instead of a container there is no `CONTAINER_NAME` field. This design assumes the Docker/Podman `journald` log driver and is **not** supported in that case.
 
 ### 2.2 Install the gateway package
 
@@ -232,7 +291,60 @@ sudo systemctl restart systemd-journald
 
 With `Storage=volatile`, the journal lives in `/run/log/journal` — a **tmpfs mount, i.e. RAM** — and nothing is persisted. `RuntimeMaxUse` caps how much RAM it may consume; raise it (e.g. `256M`) for high-traffic deployments.
 
+**Is the volatile journal actually active?** `journalctl --disk-usage` does not answer this: it also adds up the files persisted *before* the change. The proof is the header of the journal in use:
+
+```bash
+journalctl --header | head -3
+# File path: /run/log/journal/<machine-id>/system.journal    ← RAM, correct
+# File path: /var/log/journal/<machine-id>/system.journal    ← disk, the volatile drop-in did not apply
+```
+
+`systemd-analyze cat-config systemd/journald.conf` shows which file contributes each value (it prints `# /path` before each one); if a later `[Journal]` section redefines `Storage=`, the last one wins.
+
+**Delete the persisted files left behind.** When you switch to `Storage=volatile`, journald stops writing to `/var/log/journal` **but does not delete what was already there**, and since it no longer manages that directory it does not vacuum it either. Measured on a real host: with `Storage=volatile` and `RuntimeMaxUse=64M` active, `journalctl --disk-usage` still reported `Archived and active journals take up 2.0G in the file system`, because 2.1 GB sat in `/var/log/journal` frozen at the instant of the change. Those are access logs with paths, query strings and headers: if the point was not writing them to disk, they are still there.
+
+```bash
+# Confirm first that the ACTIVE journal is in /run (previous check), then release the old files:
+sudo journalctl --vacuum-time=1s
+sudo du -sh /var/log/journal        # must drop to kB
+```
+
+**Warning:** if the host had `Storage=auto` and `/var/log/journal` exists, that directory reappears on the next start of journald if the drop-in is lost — an update that moves it somewhere else, for instance. Re-run the header check above after updating systemd.
+
+**Note:** `RuntimeMaxUse` is a target, not a hard wall — with `64M` configured, roughly 72 MB were observed in `/run/log/journal`, because journald rotates in 8 MB files and overshoots a little between rotations.
+
+**journald rate limiting (this is the important one).** journald **drops messages** by default: `RateLimitBurst` is **10 000 messages per `RateLimitIntervalSec` = 30 s, per service**, and whatever is dropped is gone — a single `Suppressed N messages from …` warning is emitted and logging continues. For the Jail pipeline that is a silent blind spot: if a scan produces more than that volume, Traefik's access logs are thrown away and the rate limiter stops seeing real traffic for the rest of the interval.
+
+Two details worth writing down:
+
+1. **The bucket is shared by every container.** The limit applies per *sending service*, and with the `journald` log driver the sender is the Docker daemon: every container using that driver competes for the same quota, not one quota each.
+2. **The effective burst is multiplied** by a factor that depends on the space available to the journal (table in `journald.conf(5)`: ≤1 MB → ×1, ≤16 MB → ×2, ≤256 MB → ×3, ≤4 GB → ×4, ≤64 GB → ×5, ≤1 TB → ×6). With `RuntimeMaxUse=64M` the factor is ×3, so the real cut is around 30 000 messages per 30 s — and that covers **every** log on the host, not just Traefik's.
+
+How to detect it:
+
+```bash
+sudo journalctl --since "-1h" --no-pager | grep -i "Suppressed.*messages"
+```
+
+How to avoid it, in the same drop-in (two options, each with its trade-off):
+
+```ini
+[Journal]
+Storage=volatile
+RuntimeMaxUse=64M
+# Option A: raise the quota (keeps the limit as a safety net)
+RateLimitBurst=200000
+# Option B: disable it altogether (0 in either value turns it off)
+#RateLimitBurst=0
+```
+
+The honest trade-off: disabling rate limiting does not fill the disk — `RuntimeMaxUse` is still the real ceiling and the journal rotates — but a flood can fill the RAM reserved for the journal and evict useful entries earlier. Raising the quota is the reasonable compromise; disabling it is defensible when the journal lives in tmpfs and that tmpfs has a bounded size.
+
+Remember that this change affects the **whole** journal on the host, not only shuul: it is an operations decision, not an application setting.
+
 **Trade-off:** with volatile storage the journal is lost on host reboot, so there will be no Traefik access logs to read after a restart. This matches shuul's own behavior — its log viewer is an in-memory ring buffer that is dropped on container restart. Rate-limiting state itself lives in SQLite and is unaffected.
+
+With `Storage=volatile` the journal is a bounded RAM buffer: if the host reboots or the buffer rotates, those entries disappear and the reader simply never sees them. That is consistent with the restart cut-off in 2.5 and does not affect the WAF in any way.
 
 ### 2.7 Mount the socket into the shuul container
 
@@ -484,6 +596,65 @@ If that prints nothing, choose a gid and write the **same number** in both place
 **`curl --unix-socket` works on the host but shuul stays silent.** Compare the exact path: `SHUUL_JOURNALD_SOCKET` must be the path **inside the container** (`/run/systemd/journal/gatewayd.sock`), and the log line from 2.7 prints the endpoint the reader actually uses. A host-only path such as a custom `/run/mygatewayd.sock` outside the mounted directory will never be visible.
 
 **No entries after a host reboot.** With `Storage=volatile` (2.6) the journal lives in RAM and a reboot wipes it, so there is nothing to stream until new requests arrive. That is expected, not a reader failure.
+
+**Confirm the Jail pipeline is receiving traffic.**
+
+- **In the UI:** open **Admin → Logs** and use the **event toggle buttons** to hide everything except `registered` (add `pending` and `banned` if you want to watch the escalation). There is no filter by pipeline: the **Pipeline** column tags each row — blue for `waf`, orange for `jail` — so the Jail events are the orange ones. You should see `registered` events (a counted failure) and, once an IP crosses the threshold, `pending` followed by `banned`.
+- **On the host, without the UI:** count Traefik's journal entries over one minute and compare with the events registered in that same minute. They must be of the same order of magnitude; the event count may be lower because entries with `OriginStatus: 0` are discarded on purpose (2.1).
+- **If nothing appears at all:** go back to the `journald reader: streaming access logs from …` line (2.8). If it says `journald gateway not available`, the problem is the socket or its permissions, not your rules.
+
+**Confirm the startup backlog is not replayed.**
+
+This is the sibling of the check above: that one confirms traffic **arrives**; this one confirms the backlog **does not** — that the cut-off described in 2.5 is working in the build you are running. Measured on a real host with `Storage=volatile` (2.6, roughly 28 min of retention) running `ghcr.io/atareao/shuul:0.15.2`:
+
+- The container started at `17:13:34Z` and the reader opened its connection at `17:13:36.051Z`.
+- **2322** backlog entries were discarded, **all** of them between `17:13:36.135` and `17:13:37.414` — **1.3 s**.
+- Jail pipeline events per minute (UTC, taken from each log line's own timestamp): `17:13` → 28 `CLEARED` / 0 `REGISTERED` / 0 `BANNED` / 0 `PENDING`; `17:14` → 31 `CLEARED` / 19 `REGISTERED`; `17:15` → 73 `CLEARED`.
+
+Read it as: zero `BANNED` / `PENDING` / `REGISTERED` in the first seconds, the whole backlog drained and dropped at once, and live traffic then entering normally — no ban spike.
+
+The discards are emitted at `debug!` **on purpose** (at `INFO` they would flood the log on every start), so this procedure needs the level raised temporarily:
+
+```bash
+# In the stack, set RUST_LOG=backend=debug and recreate the container, then:
+
+docker logs shuul 2>&1 | grep -c "discarding entry from before this connection attempt"
+# 2322   ← the whole journal backlog, dropped
+
+# When did they happen? They must fit in one or two seconds:
+docker logs shuul 2>&1 | grep "discarding entry from before this connection attempt" | sed -n '1p;$p'
+# 2026-10-19T17:13:36.135…  …2026-10-19T17:13:37.414Z
+```
+
+Note the format of the mark: `docker logs --since/--until` works correctly here; the only thing to be careful about is the timestamp — **it must carry a `Z` suffix (UTC) or be a Unix timestamp**. A mark without `Z` is read as local time and hands you the wrong window: in the example, `--since "2026-10-19T17:13:34"` without `Z` returned **zero** events, whereas with `Z` it returns the 35 `CLEARED` that span genuinely holds.
+
+To see the per-minute breakdown without building windows at all, count from the timestamp each log line already carries:
+
+```bash
+# Per-minute breakdown, using the timestamp each log line already carries:
+docker logs shuul 2>&1 | sed -E 's/\x1b\[[0-9;]*m//g' \
+  | awk '/\[BANNED\]|\[PENDING\]|\[REGISTERED\]|\[CLEARED\]/ {
+      ev=""; if (index($0,"[BANNED]")) ev="BANNED";
+      else if (index($0,"[PENDING]")) ev="PENDING";
+      else if (index($0,"[REGISTERED]")) ev="REGISTERED";
+      else if (index($0,"[CLEARED]")) ev="CLEARED";
+      if (ev!="") print substr($1,12,5), ev }' | sort | uniq -c
+```
+
+What to look for: zero `BANNED`, `PENDING` and `REGISTERED` in the first minute; the discards concentrated in one or two seconds; and the live-traffic `CLEARED` events present, so it is clear the reader is not simply blind. When you are done, put `RUST_LOG` back to `backend=info`.
+
+**`Suppressed N messages from …` appears in the journal.** This is journald's rate limiting (2.6): access logs are being dropped and the Jail pipeline never sees them. Confirm with the `grep` shown there and raise `RateLimitBurst` in the same drop-in.
+
+**`curl --unix-socket` returns `000` (or `Permission denied`) on the host, but the container works.** The user you are testing with is not in `systemd-journal`; the socket is `root:systemd-journal 0660`. Check with `id` and use `sudo curl …`, or add your user to the group:
+
+```bash
+sudo usermod -aG systemd-journal "$USER"
+# log out and back in: supplementary groups are read when the session opens
+```
+
+A `000` from curl says nothing about the container's configuration — curl failing on the host while shuul keeps reading is exactly what the correct configuration looks like.
+
+**`journalctl --disk-usage` still shows gigabytes with `Storage=volatile`.** Those are the files left in `/var/log/journal` before the switch; see 2.6.
 
 ### 2.12 Rollback to TCP
 
