@@ -1,9 +1,34 @@
 # Changelog
+## [0.15.3] - 2026-10-20
+
+### Bug Fixes
+
+- *(jail)* Preserve the JournalError source chain (M-7)
+
+### Documentation
+
+- *(jail)* Complete end-to-end journal setup guide
+- *(jail)* Document the no-replay startup verification
+- *(openspec)* Fill the TBD purposes
+
+### Miscellaneous Tasks
+
+- *(openspec)* Archive journald-no-history-replay
+- *(openspec)* Archive journal-error-source-chain
+- Sync Cargo.lock with 0.15.2
+
+### Refactor
+
+- *(jail)* Apply the M-7 audit findings
 ## [0.15.2] - 2026-10-19
 
 ### Bug Fixes
 
 - *(jail)* Never feed the journal backlog to the rate limiter
+
+### Miscellaneous Tasks
+
+- Release v0.15.2
 ## [0.15.1] - 2026-10-19
 
 ### Miscellaneous Tasks
