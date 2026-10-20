@@ -65,23 +65,105 @@ use tokio::net::{TcpStream, UnixStream};
 use tracing::{debug, info, warn};
 
 /// Errors that can occur in the journald reader.
+///
+/// El primer campo es el contexto ya formateado que puebla `Display`; el
+/// segundo lleva la causa real como `#[source]` cuando existe, de modo que la
+/// cadena se puede recorrer con `std::error::Error::source()` y la causa se
+/// puede inspeccionar por tipo (`io::Error::kind()`,
+/// `serde_json::Error::line()`, `hyper::Error::is_incomplete_message()`, …).
 #[derive(Debug, Error)]
 pub enum JournalError {
     /// Error de E/S al conectar o leer del gateway
     #[error("Socket error: {0}")]
-    Socket(String),
+    Socket(
+        String,
+        #[source] Option<Box<dyn std::error::Error + Send + Sync>>,
+    ),
 
     /// Error al parsear el formato nativo del journal
     #[error("Journal entry parse error: {0}")]
-    Parse(String),
+    Parse(
+        String,
+        #[source] Option<Box<dyn std::error::Error + Send + Sync>>,
+    ),
 
     /// Error al parsear el JSON del access log de Traefik
     #[error("Traefik access log parse error: {0}")]
-    TraefikParse(String),
+    TraefikParse(
+        String,
+        #[source] Option<Box<dyn std::error::Error + Send + Sync>>,
+    ),
 
     /// Error de conexión (gateway no disponible)
     #[error("Connection error: {0}")]
-    Connection(String),
+    Connection(
+        String,
+        #[source] Option<Box<dyn std::error::Error + Send + Sync>>,
+    ),
+}
+
+impl JournalError {
+    /// `Socket` sin causa subyacente (fallo de contexto puro).
+    ///
+    /// Todo sitio de producción de `Socket` tiene hoy una causa, así que este
+    /// constructor sólo lo usan los tests; existe para que la pareja de cada
+    /// variante quede completa (spec `journald-reader`).
+    #[allow(dead_code)]
+    pub fn socket(ctx: impl Into<String>) -> Self {
+        Self::Socket(ctx.into(), None)
+    }
+
+    /// `Socket` con la causa subyacente adjunta como `#[source]`.
+    pub fn socket_from(
+        ctx: impl Into<String>,
+        e: impl std::error::Error + Send + Sync + 'static,
+    ) -> Self {
+        Self::Socket(ctx.into(), Some(Box::new(e)))
+    }
+
+    /// `Parse` sin causa subyacente (fallo de contexto puro).
+    pub fn parse(ctx: impl Into<String>) -> Self {
+        Self::Parse(ctx.into(), None)
+    }
+
+    /// `Parse` con la causa subyacente adjunta como `#[source]`.
+    pub fn parse_from(
+        ctx: impl Into<String>,
+        e: impl std::error::Error + Send + Sync + 'static,
+    ) -> Self {
+        Self::Parse(ctx.into(), Some(Box::new(e)))
+    }
+
+    /// `TraefikParse` sin causa subyacente (fallo de contexto puro).
+    ///
+    /// Todo sitio de producción de `TraefikParse` tiene hoy una causa, así que
+    /// este constructor sólo lo usan los tests; existe para que la pareja de
+    /// cada variante quede completa (spec `journald-reader`).
+    #[allow(dead_code)]
+    pub fn traefik_parse(ctx: impl Into<String>) -> Self {
+        Self::TraefikParse(ctx.into(), None)
+    }
+
+    /// `TraefikParse` con la causa subyacente adjunta como `#[source]`.
+    pub fn traefik_parse_from(
+        ctx: impl Into<String>,
+        e: impl std::error::Error + Send + Sync + 'static,
+    ) -> Self {
+        Self::TraefikParse(ctx.into(), Some(Box::new(e)))
+    }
+
+    /// `Connection` sin causa subyacente (fallo de contexto puro).
+    pub fn connection(ctx: impl Into<String>) -> Self {
+        Self::Connection(ctx.into(), None)
+    }
+
+    /// `Connection` con la causa subyacente adjunta como `#[source]`.
+    pub fn connection_from(
+        ctx: impl Into<String>,
+        e: impl std::error::Error + Send + Sync + 'static,
+    ) -> Self {
+        Self::Connection(ctx.into(), Some(Box::new(e)))
+    }
 }
 
 /// Cualquier flujo bidireccional de bytes sirve para `hyper`: `TcpStream` y
@@ -444,7 +526,7 @@ impl JournaldReader {
                 );
                 *last_cursor = None;
             }
-            return Err(JournalError::Connection(format!(
+            return Err(JournalError::connection(format!(
                 "gateway returned HTTP {status}"
             )));
         }
@@ -468,7 +550,7 @@ impl JournaldReader {
             let Some(frame) = frame else {
                 return Ok(StreamOutcome::Disconnected);
             };
-            let frame = frame.map_err(|e| JournalError::Socket(e.to_string()))?;
+            let frame = frame.map_err(|e| JournalError::socket_from(e.to_string(), e))?;
 
             // Trailer frames carry no NDJSON, so only data frames are appended.
             let Some(data) = frame.data_ref() else {
@@ -550,20 +632,23 @@ impl JournaldReader {
             let io = self.connect().await?;
             let (mut sender, connection) =
                 http1::handshake(TokioIo::new(io)).await.map_err(|e| {
-                    JournalError::Connection(format!("HTTP handshake with {endpoint} failed: {e}"))
+                    JournalError::connection_from(
+                        format!("HTTP handshake with {endpoint} failed: {e}"),
+                        e,
+                    )
                 })?;
 
             let connection_task = ConnectionTask::spawn(connection);
 
             let response = sender.send_request(request).await.map_err(|e| {
-                JournalError::Connection(format!("request to {endpoint} failed: {e}"))
+                JournalError::connection_from(format!("request to {endpoint} failed: {e}"), e)
             })?;
 
             Ok::<_, JournalError>((connection_task, response))
         })
         .await
         .map_err(|_| {
-            JournalError::Connection(format!(
+            JournalError::connection(format!(
                 "connecting to {endpoint} timed out after {}s",
                 CONNECT_TIMEOUT.as_secs()
             ))
@@ -577,10 +662,10 @@ impl JournaldReader {
         match &self.transport {
             JournaldTransport::UnixSocket { path } => {
                 let stream = UnixStream::connect(path).await.map_err(|e| {
-                    JournalError::Connection(format!(
-                        "failed to connect to unix:{}: {e}",
-                        path.display()
-                    ))
+                    JournalError::connection_from(
+                        format!("failed to connect to unix:{}: {e}", path.display()),
+                        e,
+                    )
                 })?;
                 Ok(Box::new(stream))
             },
@@ -589,10 +674,10 @@ impl JournaldReader {
                 let stream = TcpStream::connect((endpoint.connect_host.as_str(), endpoint.port))
                     .await
                     .map_err(|e| {
-                        JournalError::Connection(format!(
-                            "failed to connect to {}: {e}",
-                            endpoint.authority()
-                        ))
+                        JournalError::connection_from(
+                            format!("failed to connect to {}: {e}", endpoint.authority()),
+                            e,
+                        )
                     })?;
                 Ok(Box::new(stream))
             },
@@ -613,9 +698,9 @@ impl JournaldReader {
             builder = builder.header(header::RANGE, format!("entries={cursor}:1"));
         }
 
-        builder
-            .body(Empty::<Bytes>::new())
-            .map_err(|e| JournalError::Connection(format!("failed to build the request: {e}")))
+        builder.body(Empty::<Bytes>::new()).map_err(|e| {
+            JournalError::connection_from(format!("failed to build the request: {e}"), e)
+        })
     }
 
     /// Valor de la cabecera `Host`: `host:puerto` en TCP (con corchetes si es
@@ -687,23 +772,23 @@ fn tcp_endpoint(base_url: &str) -> Result<TcpEndpoint, JournalError> {
     };
 
     let uri: Uri = base_url.parse().map_err(|e| {
-        JournalError::Connection(format!("invalid gateway URL {base_url}: {e}{hint}"))
+        JournalError::connection_from(format!("invalid gateway URL {base_url}: {e}{hint}"), e)
     })?;
 
     match uri.scheme_str() {
         Some("http") => {},
         Some("https") => {
-            return Err(JournalError::Connection(format!(
+            return Err(JournalError::connection(format!(
                 "https is not supported for the gateway URL ({base_url}); use http or a unix socket"
             )));
         },
         Some(other) => {
-            return Err(JournalError::Connection(format!(
+            return Err(JournalError::connection(format!(
                 "unsupported scheme {other} in gateway URL {base_url}"
             )));
         },
         None => {
-            return Err(JournalError::Connection(format!(
+            return Err(JournalError::connection(format!(
                 "gateway URL {base_url} has no scheme{hint}"
             )));
         },
@@ -711,7 +796,7 @@ fn tcp_endpoint(base_url: &str) -> Result<TcpEndpoint, JournalError> {
 
     let host = uri
         .host()
-        .ok_or_else(|| JournalError::Connection(format!("gateway URL {base_url} has no host")))?;
+        .ok_or_else(|| JournalError::connection(format!("gateway URL {base_url} has no host")))?;
     let connect_host = host
         .strip_prefix('[')
         .and_then(|host| host.strip_suffix(']'))
@@ -764,16 +849,14 @@ fn warn_ignored_base_path(url: &str) {
 pub fn parse_journal_entry(line: &str) -> Result<HashMap<String, String>, JournalError> {
     let trimmed = line.trim();
     if trimmed.is_empty() {
-        return Err(JournalError::Parse("empty journal entry".to_string()));
+        return Err(JournalError::parse("empty journal entry"));
     }
 
     let value: serde_json::Value = serde_json::from_str(trimmed)
-        .map_err(|e| JournalError::Parse(format!("invalid journal JSON: {e}")))?;
+        .map_err(|e| JournalError::parse_from(format!("invalid journal JSON: {e}"), e))?;
 
     let serde_json::Value::Object(object) = value else {
-        return Err(JournalError::Parse(
-            "journal entry is not a JSON object".to_string(),
-        ));
+        return Err(JournalError::parse("journal entry is not a JSON object"));
     };
 
     let mut fields = HashMap::new();
@@ -784,9 +867,7 @@ pub fn parse_journal_entry(line: &str) -> Result<HashMap<String, String>, Journa
     }
 
     if fields.is_empty() {
-        return Err(JournalError::Parse(
-            "no usable fields in journal entry".to_string(),
-        ));
+        return Err(JournalError::parse("no usable fields in journal entry"));
     }
 
     Ok(fields)
@@ -862,25 +943,25 @@ mod tests {
 
     #[test]
     fn test_journal_error_types_exist() {
-        let err_socket = JournalError::Socket("connection refused".to_string());
+        let err_socket = JournalError::socket("connection refused");
         assert!(
             err_socket.to_string().contains("connection refused"),
             "Socket should contain the message"
         );
 
-        let err_parse = JournalError::Parse("invalid format".to_string());
+        let err_parse = JournalError::parse("invalid format");
         assert!(
             err_parse.to_string().contains("invalid format"),
             "Parse should contain the message"
         );
 
-        let err_traefik = JournalError::TraefikParse("bad json".to_string());
+        let err_traefik = JournalError::traefik_parse("bad json");
         assert!(
             err_traefik.to_string().contains("bad json"),
             "TraefikParse should contain the message"
         );
 
-        let err_conn = JournalError::Connection("socket not found".to_string());
+        let err_conn = JournalError::connection("socket not found");
         assert!(
             err_conn.to_string().contains("socket not found"),
             "Connection should contain the message"
@@ -939,7 +1020,7 @@ mod tests {
         let result = parse_journal_entry("this is not json");
         assert!(result.is_err(), "invalid JSON must return an error");
         match result {
-            Err(super::JournalError::Parse(msg)) => {
+            Err(super::JournalError::Parse(msg, ..)) => {
                 assert!(!msg.is_empty(), "error message should not be empty");
             },
             other => panic!("expected Parse error, got: {other:?}"),
@@ -1114,7 +1195,7 @@ fn split_path_query(request_path: &str) -> (String, Option<String>) {
 /// Devuelve [`JournalError::TraefikParse`] si el texto no es JSON válido.
 pub fn parse_traefik_access_log(json_str: &str) -> Result<Option<ReportPayload>, JournalError> {
     let log: TraefikAccessLog = serde_json::from_str(json_str)
-        .map_err(|e| JournalError::TraefikParse(format!("invalid JSON: {e}")))?;
+        .map_err(|e| JournalError::traefik_parse_from(format!("invalid JSON: {e}"), e))?;
 
     // ── Resolve client IP: ClientHost preferred, ClientAddr fallback ──
     let ip_address = log.client_host.filter(|s| !s.is_empty()).or_else(|| {
@@ -1298,7 +1379,7 @@ mod tests_task4 {
         let result = parse_traefik_access_log("this is not json");
         assert!(result.is_err(), "Invalid JSON must return an error");
         match result {
-            Err(super::JournalError::TraefikParse(msg)) => {
+            Err(super::JournalError::TraefikParse(msg, ..)) => {
                 assert!(!msg.is_empty(), "error message should not be empty");
             },
             other => panic!("expected TraefikParse error, got: {other:?}"),
@@ -1439,7 +1520,7 @@ mod tests_task6 {
         let entry = entry_with("traefik", Some("Traefik starting, version 3.7"));
         let result = extract_report_payload(&entry, "traefik");
         match result {
-            Err(JournalError::TraefikParse(msg)) => {
+            Err(JournalError::TraefikParse(msg, ..)) => {
                 assert!(!msg.is_empty(), "error message should not be empty");
             },
             other => panic!("expected TraefikParse error, got: {other:?}"),
@@ -2469,7 +2550,7 @@ mod tests_task7 {
         let reader = JournaldReader::unix(socket.path(), "traefik");
 
         match reader.connect().await {
-            Err(JournalError::Connection(msg)) => assert!(
+            Err(JournalError::Connection(msg, ..)) => assert!(
                 msg.contains("shuul-"),
                 "the error must name the socket path, got: {msg}"
             ),
@@ -2483,7 +2564,7 @@ mod tests_task7 {
         let reader = JournaldReader::new("https://remote:19531", "traefik");
 
         match reader.connect().await {
-            Err(JournalError::Connection(msg)) => {
+            Err(JournalError::Connection(msg, ..)) => {
                 let lower = msg.to_lowercase();
                 assert!(
                     lower.contains("https") && lower.contains("not supported"),
@@ -2499,7 +2580,7 @@ mod tests_task7 {
     async fn test_connect_rejects_invalid_url() {
         let reader = JournaldReader::new("not a url", "traefik");
         assert!(
-            matches!(reader.connect().await, Err(JournalError::Connection(_))),
+            matches!(reader.connect().await, Err(JournalError::Connection(..))),
             "an unparseable base URL is a Connection error"
         );
     }
@@ -2940,6 +3021,261 @@ mod tests_task7 {
         );
 
         handle.abort();
+    }
+
+    // ── JournalError source chain (M-7) ──
+
+    fn assert_send_sync_static<T: Send + Sync + 'static>() {}
+
+    #[test]
+    fn test_journal_error_stays_send_sync_static() {
+        assert_send_sync_static::<JournalError>();
+    }
+
+    #[test]
+    fn test_parse_failure_exposes_the_serde_json_error() {
+        let err = super::parse_journal_entry("this is not json")
+            .err()
+            .expect("invalid JSON must fail");
+        assert!(matches!(err, JournalError::Parse(..)));
+
+        let source = std::error::Error::source(&err)
+            .expect("the serde_json error must be attached as the source");
+        let json = source
+            .downcast_ref::<serde_json::Error>()
+            .expect("the source must be a serde_json::Error");
+        assert_eq!(json.line(), 1, "the single-line input is on line 1");
+        assert!(json.column() >= 1, "the column must be reported");
+        assert!(
+            err.to_string().contains("invalid journal JSON"),
+            "the Display must still name the context, got: {err}"
+        );
+    }
+
+    #[test]
+    fn test_traefik_parse_failure_exposes_the_serde_json_error() {
+        let err = super::parse_traefik_access_log("this is not json")
+            .err()
+            .expect("invalid JSON must fail");
+        assert!(matches!(err, JournalError::TraefikParse(..)));
+
+        let json = std::error::Error::source(&err)
+            .and_then(|source| source.downcast_ref::<serde_json::Error>())
+            .expect("the source must be a serde_json::Error");
+        assert_eq!(json.line(), 1);
+        assert!(json.column() >= 1);
+        assert!(
+            err.to_string().contains("invalid JSON"),
+            "the Display must still name the context, got: {err}"
+        );
+    }
+
+    #[test]
+    fn test_invalid_gateway_url_exposes_the_invalid_uri() {
+        let err = tcp_endpoint("not a url")
+            .err()
+            .expect("a value with spaces cannot be a URI");
+        assert!(matches!(err, JournalError::Connection(..)));
+
+        let source =
+            std::error::Error::source(&err).expect("the InvalidUri must be attached as the source");
+        assert!(
+            source.downcast_ref::<http::uri::InvalidUri>().is_some(),
+            "the source must be the http::uri::InvalidUri, got: {source}"
+        );
+        let message = err.to_string();
+        assert!(message.contains("invalid gateway URL"), "got: {message}");
+        assert!(message.contains("not a url"), "got: {message}");
+    }
+
+    #[tokio::test]
+    async fn test_missing_unix_socket_exposes_an_io_error_not_found() {
+        let socket = TempSocketPath::new();
+        let reader = JournaldReader::unix(socket.path(), "traefik");
+
+        let err = reader
+            .connect()
+            .await
+            .err()
+            .expect("connecting to a missing socket must fail");
+        assert!(matches!(err, JournalError::Connection(..)));
+
+        let io = std::error::Error::source(&err)
+            .and_then(|source| source.downcast_ref::<std::io::Error>())
+            .expect("the source must be the io::Error");
+        assert_eq!(
+            io.kind(),
+            std::io::ErrorKind::NotFound,
+            "a missing socket must be distinguishable from a gateway that is down"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_closed_tcp_port_exposes_an_io_error_connection_refused() {
+        let reader = JournaldReader::new("http://127.0.0.1:1", "traefik");
+
+        let err = reader
+            .connect()
+            .await
+            .err()
+            .expect("connecting to a closed port must fail");
+        assert!(matches!(err, JournalError::Connection(..)));
+
+        let io = std::error::Error::source(&err)
+            .and_then(|source| source.downcast_ref::<std::io::Error>())
+            .expect("the source must be the io::Error");
+        assert_eq!(
+            io.kind(),
+            std::io::ErrorKind::ConnectionRefused,
+            "a closed port must be distinguishable from a missing socket"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_truncated_response_body_exposes_a_hyper_error() {
+        // The gateway announces 100 bytes but only sends 10 and closes: the
+        // body stream must fail with a `hyper::Error`, not end cleanly.
+        let socket = TempSocketPath::new();
+        let listener =
+            tokio::net::UnixListener::bind(socket.path()).expect("bind truncating gateway");
+        tokio::spawn(async move {
+            if let Ok((mut stream, _)) = listener.accept().await {
+                let _ = read_request_head(&mut stream).await;
+                let header = "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: 100\r\nConnection: close\r\n\r\n";
+                let _ = stream.write_all(header.as_bytes()).await;
+                let _ = stream.write_all(b"0123456789").await;
+                let _ = stream.flush().await;
+                // Dropping the stream closes it: EOF before 100 bytes.
+            }
+        });
+
+        let reader = JournaldReader::unix(socket.path(), "traefik");
+        let app_state = build_test_app_state().await;
+        let (_shutdown_tx, mut shutdown_rx) = tokio::sync::watch::channel(false);
+        let mut cursor = None;
+
+        let err = reader
+            .stream_once(&app_state, &mut shutdown_rx, &mut cursor)
+            .await
+            .err()
+            .expect("a truncated body must be an error, not a clean disconnect");
+        assert!(
+            matches!(err, JournalError::Socket(..)),
+            "the frame error must surface as Socket, got: {err:?}"
+        );
+
+        // The `hyper::Error` must be reachable by type instead of being
+        // flattened. No assertion on its wording: that belongs to hyper.
+        assert!(
+            std::error::Error::source(&err)
+                .and_then(|source| source.downcast_ref::<hyper::Error>())
+                .is_some(),
+            "the source must be the hyper::Error"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_send_request_exposes_a_hyper_error_when_the_peer_closes_early() {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("bind");
+        let addr = listener.local_addr().expect("local addr");
+        tokio::spawn(async move {
+            if let Ok((mut stream, _)) = listener.accept().await {
+                let _ = read_request_head(&mut stream).await;
+                // Close without ever writing a response.
+            }
+        });
+
+        let reader = JournaldReader::new(&format!("http://{addr}"), "traefik");
+        let err = reader
+            .send_request(None)
+            .await
+            .err()
+            .expect("a peer that closes early must produce an error");
+        assert!(matches!(err, JournalError::Connection(..)));
+
+        let source = std::error::Error::source(&err)
+            .expect("the hyper::Error must be attached as the source");
+        assert!(
+            source.downcast_ref::<hyper::Error>().is_some(),
+            "the source must be the hyper::Error, got: {source}"
+        );
+    }
+
+    #[test]
+    fn test_context_only_errors_have_no_source_and_keep_their_display() {
+        let parse = super::parse_journal_entry("")
+            .err()
+            .expect("an empty line must fail");
+        assert!(matches!(parse, JournalError::Parse(..)));
+        assert!(
+            std::error::Error::source(&parse).is_none(),
+            "a context-only failure must not carry a source"
+        );
+        assert_eq!(
+            parse.to_string(),
+            "Journal entry parse error: empty journal entry",
+            "the Display of a context-only failure must not change"
+        );
+
+        let conn = tcp_endpoint("localhost:19531")
+            .err()
+            .expect("a scheme-less host:port must fail");
+        assert!(matches!(conn, JournalError::Connection(..)));
+        assert!(std::error::Error::source(&conn).is_none());
+        assert_eq!(
+            conn.to_string(),
+            "Connection error: gateway URL localhost:19531 has no scheme",
+            "the Display of a context-only failure must not change"
+        );
+    }
+
+    #[derive(Debug, thiserror::Error)]
+    #[error("outer wrapper")]
+    struct OuterWrapper(#[source] std::io::Error);
+
+    #[test]
+    fn test_the_source_chain_is_walkable_end_to_end() {
+        let root = std::io::Error::new(std::io::ErrorKind::Other, "root cause");
+        let err = JournalError::connection_from("ctx", OuterWrapper(root));
+
+        let first = std::error::Error::source(&err).expect("the source must be present");
+        assert_eq!(first.to_string(), "outer wrapper");
+        let second =
+            std::error::Error::source(first).expect("the source of the source must be present");
+        assert_eq!(second.to_string(), "root cause");
+        assert!(
+            std::error::Error::source(second).is_none(),
+            "the chain must end after the root cause"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_gateway_error_status_keeps_its_variant_and_text() {
+        let socket = TempSocketPath::new();
+        spawn_recording_unix_gateway(socket.path(), vec![(400, String::new())]).await;
+
+        let reader = JournaldReader::unix(socket.path(), "traefik");
+        let app_state = build_test_app_state().await;
+        let (_shutdown_tx, mut shutdown_rx) = tokio::sync::watch::channel(false);
+        let mut cursor = None;
+
+        let err = reader
+            .stream_once(&app_state, &mut shutdown_rx, &mut cursor)
+            .await
+            .err()
+            .expect("a non-success status must be an error");
+        match err {
+            JournalError::Connection(msg, source) => {
+                assert_eq!(msg, "gateway returned HTTP 400 Bad Request");
+                assert!(
+                    source.is_none(),
+                    "a context-only failure must not carry a source"
+                );
+            },
+            other => panic!("expected a Connection error, got: {other:?}"),
+        }
     }
 }
 
