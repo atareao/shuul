@@ -1,854 +1,315 @@
-# Log Viewer Implementation Plan
+# PLAN — Deuda técnica de Shuul: transporte por socket de Docker, limpieza de dependencias y majors
 
-> **Goal:** Add an in-memory log viewer to the Shuul frontend so the user can see real-time WAF/Jail events without SSH/terminal access.
-
-**Architecture:** Ring buffer (VecDeque) in the backend with configurable capacity (1000/5000/10000/20000). A shared `audit_log!` macro pushes to both stdout (existing tracing) and the ring buffer. Frontend polls `GET /api/v1/logs` and renders a paginated table with expandable JSON detail rows and event-type filter buttons.
-
-**Tech Stack:** Rust/Axum, React 19/Ant Design 6, TypeScript, no DB/persistence.
+> **Estado: PENDIENTE DE APROBACIÓN.** No se escribe ni una línea de código hasta que el usuario apruebe este plan (protocolo SDD del proyecto).
+>
+> **Base:** `develop` @ `b4e57f0` (árbol limpio) · **Fecha:** 2026-10-20
 
 ---
 
-## Files to Modify
+## Resumen
 
-| File | Action | Responsibility |
+| Fase | Contenido | Riesgo | Cierra |
+|---|---|---|---|
+| **0** | Transporte de logs por la **API de Docker** (socket directo o proxy) — paso previo | Alto en el **despliegue**, no en el código | deuda del lector de logs |
+| **1** | Limpieza de **8 dependencias muertas** | Bajo | PR #74 (borrando, no subiendo) |
+| **2** | `tower-http` 0.6 → 0.7 | Bajo-medio | PR #70 |
+| **3** | `maxminddb` 0.27 → 0.32 | **Alto** (GeoIP real) | PR #71 |
+| **4** | `react-router` 7 → 8 | Medio (toda la navegación) | PR #75 |
+| **5** | Infraestructura: `Dockerfile` y `@types/node` | Bajo | deuda de despliegue |
+| **6** | 3 alertas de Dependabot transitivas | Bajo | alertas abiertas |
+
+---
+
+## 1. Estado de partida (verificado, no supuesto)
+
+- `develop` limpio en `b4e57f0`. Release **0.15.4** publicada (tag `91e0402`): imagen en GHCR, GitHub Release *Latest*, `Cargo.lock` sincronizado.
+- **4 PRs de Dependabot abiertas:** #70 `tower-http` 0.6.8 → 0.7.1, #71 `maxminddb` 0.27.3 → 0.32.0, #74 `ipnetwork` 0.20.0 → 0.21.1, #75 `react-router` 7.18.4 → 8.4.0.
+- #75 ya se rebasó sola y está `MERGEABLE`. #70, #71 y #74 arrastran el `Cargo.lock` anterior y necesitan `update-branch`.
+- **3 alertas abiertas**, todas transitivas: `brace-expansion` ×2 (media) y `rand` (baja).
+
+Hallazgos verificados hoy y que motivan las fases:
+
+| Dependencia | Declarada en | Usos reales | Detalle |
+|---|---|---|---|
+| `ipnetwork` 0.20.0 | `backend/Cargo.toml:32` | **0** | ya está en el árbol como transitiva de `maxminddb` (0.21.1) |
+| `axum-extra` 0.10.3 (feature `cookie`) | `backend/Cargo.toml:8` | **0** | cero `use axum_extra`, cero `CookieJar` |
+| `cookie` 0.18.1 | `backend/Cargo.toml:10` | **0** | cero `use cookie`, cero `cookie::` |
+| `time` 0.3.47 | `backend/Cargo.toml:25` | **0** | el código cronometra con `tokio::time` y fecha con `chrono` (9 `use chrono`) |
+| `class-variance-authority` | `frontend/package.json` | **0** | sin `cva(` |
+| `react-highlight-words` | `frontend/package.json` | **0** | sin `Highlighter` |
+| `@testing-library/react` | `frontend/package.json` | **0** | el único test usa `vitest` y mockea `loadData` |
+| `@testing-library/user-event` | `frontend/package.json` | **0** | ídem |
+
+`@testing-library/jest-dom` **sí** se usa (`src/test/setup.ts`) y `depcheck` no lo marca: eso es lo que da confianza en los otros cuatro.
+
+---
+
+## FASE 0 — Transporte de logs por la API de Docker (socket directo o proxy) (paso previo)
+
+### 0.1 Por qué
+
+Hoy el pipeline **Jail** lee los access logs de Traefik de `systemd-journal-gatewayd` (socket Unix de journald, o TCP como alternativa). Eso obliga a tener gatewayd habilitado, `Storage=volatile`, montar `/run/systemd/journal` (el directorio, no el fichero), `group_add` con el gid de `systemd-journal` y un cliente HTTP propio contra el socket.
+
+Con **Docker** el mismo dato está detrás de una API estándar que ya viene con el motor: no hay que habilitar nada en systemd ni depender de que el socket de journald esté donde se espera.
+
+> ⚠️ **Esto revierte una decisión anterior.** En su momento se rechazó explícitamente montar `/var/run/docker.sock`. La reversión es deliberada y consciente: ver §0.4 antes de tocar el `compose.yaml`.
+
+**Un transporte, dos formas de llegar.** El acceso directo al socket y el acceso a través de un proxy **no son dos implementaciones distintas**. La API de logs de Docker es la misma; lo único que cambia es por dónde se entra, y el cliente que ya existe (`hyper` sobre `AsyncRead + AsyncWrite`, genérico a propósito) sirve para los dos sin tocar una línea:
+
+| | Cómo se llega | Variable |
 |---|---|---|
-| `backend/src/models/log_collector.rs` | Create | LogEntry, LogCollector, shared audit_log! macro, global push_log() |
-| `backend/src/models/mod.rs` | Modify | Export log_collector, add LogCollector to AppState |
-| `backend/src/http/log.rs` | Create | GET /api/v1/logs + PUT /api/v1/logs/capacity handlers |
-| `backend/src/http/mod.rs` | Modify | Add mod log, pub use log_router |
-| `backend/src/http/shuul.rs` | Modify | Remove local audit_log! macro, import from models |
-| `backend/src/http/report.rs` | Modify | Remove local audit_log! macro, import from models |
-| `backend/src/main.rs` | Modify | Init LogCollector, add /logs to protected_routes |
-| `frontend/src/pages/admin/logs_page.tsx` | Create | LogsPage component |
-| `frontend/src/layouts/admin_layout.tsx` | Modify | Add "Logs" menu item |
-| `frontend/src/App.tsx` | Modify | Add /admin/logs route |
+| **Socket directo** | `AF_UNIX` contra `/var/run/docker.sock` | `SHUUL_DOCKER_SOCKET` |
+| **Proxy** | TCP contra el proxy interno | `SHUUL_DOCKER_URL` |
+
+Es el mismo patrón que el lector de journald ya usa hoy para elegir entre socket Unix y TCP. Por eso **se implementan las dos entradas** y la elección se hace en el `compose.yaml`: se puede empezar por el socket y pasar al proxy —o al revés— sin recompilar ni tocar Rust. Lo que sí es una decisión de despliegue con consecuencias de seguridad es **cuál se monta**, y de eso va §0.4.
+
+### 0.2 Verificación previa (antes de escribir código)
+
+En `co1`, y **antes** de decidir nada:
+
+```bash
+# ¿Con qué driver escribe Traefik sus logs? Determina si la API los ve.
+docker inspect -f '{{.HostConfig.LogConfig.Type}}' traefik
+
+# Versión de la API del motor (Docker 28.2.2 → v1.49+). Decide si `since` está disponible.
+docker version --format '{{.Server.APIVersion}}'
+
+# gid del grupo docker en el host (NO hardcodear: varía por máquina).
+getent group docker
+```
+
+Si el driver no es `json-file`, `local` o `journald`, este transporte no sirve y hay que replantear.
+
+**Resultados de la verificación en `co1` (2026-10-20).** Ejecutada contra el host real, con el stack en marcha:
+
+| Comprobación | Resultado | Consecuencia |
+|---|---|---|
+| Driver de logging de Traefik | **`journald`** | La API de Docker lo sirve igualmente (soporta `json-file`, `local` y `journald`), pero **el journal sigue estando debajo**. Ver aviso. |
+| Driver de logging de Shuul | `journald` | Lo mismo para el propio contenedor. |
+| API del motor | **1.50** (Docker 28.2.2) | `since` está disponible: el no-replay se puede implementar tal y como está previsto. |
+| gid del grupo `docker` | **999** | Es el que necesita `group_add` en la opción A. **No hardcodear**: en desarrollo es otro número. |
+| gid del grupo `systemd-journal` | **101** | El que usa hoy el servicio para leer el journal. |
+
+> ⚠️ **Consecuencia que hay que tener clara antes de invertir en esta fase.** Con el driver en `journald`, `docker logs` es una capa sobre el journal: el daemon de Docker (que corre como root) lee el journal y lo sirve por su API. La ganancia real es **quitar `systemd-journal-gatewayd`**, el montaje de `/run/systemd/journal` y el `group_add` de `systemd-journal`; **no** es independizarse del journal. Si algún día se cambiara el driver de logging de Traefik a `json-file`, entonces sí desaparecería journald del camino.
+>
+> En la implementación hay que confirmar en `co1` que `follow` y `since` se comportan igual con driver `journald` que con `json-file`, antes de dar la fase por buena.
 
 ---
 
-### Task 1: Backend — LogCollector + shared macro
+### 0.3 Contratos
 
-**Files:**
-- Create: `backend/src/models/log_collector.rs`
-- Modify: `backend/src/models/mod.rs` (add `pub mod log_collector;`, add field to AppState)
+**Variables de entorno**
 
-**Interfaces:**
-- Produces: `LogEntry` struct, `LogCollector`, `audit_log!` macro, `push_log()` fn, `LOG_COLLECTOR` global
+| Variable | Default | Descripción |
+|---|---|---|
+| `SHUUL_DOCKER_SOCKET` | sin definir | Path del socket de Docker (p. ej. `/var/run/docker.sock`). Acceso **directo** por `AF_UNIX`. |
+| `SHUUL_DOCKER_URL` | sin definir | URL base de un **proxy** de la API de Docker (p. ej. `http://docker-socket-proxy:2375`). Acceso por **TCP**. |
+| `SHUUL_DOCKER_CONTAINER` | `traefik` | Contenedor cuyos logs se leen. |
 
-- [ ] **Step 1: Create `backend/src/models/log_collector.rs`**
+`SHUUL_DOCKER_SOCKET` o `SHUUL_DOCKER_URL` —cualquiera de las dos, definida y no vacía— activan el **transporte Docker**. El código soporta las dos a la vez; cuál se usa lo decide el despliegue.
 
-```rust
-//! # Log Collector — In-memory ring buffer for frontend log viewer
-//!
-//! Provides a global ring buffer (`LOG_COLLECTOR`) that captures WAF/Jail events
-//! emitted by the `audit_log!` macro. Capacity is configurable at runtime.
-//!
-//! The macro both logs to `tracing::info!` (stdout, existing behavior) and pushes
-//! a `LogEntry` to the ring buffer for the frontend.
+**Precedencia del transporte:** `SHUUL_DOCKER_SOCKET` → `SHUUL_DOCKER_URL` → `SHUUL_JOURNALD_SOCKET` → `SHUUL_JOURNALD_URL` → default TCP. Los valores vacíos cuentan como no definidos. Si llegan varios, gana el de más prioridad y se emite un `warn!` nombrando los ignorados. Dentro del transporte Docker, el socket gana a la URL por el mismo criterio que ya aplica journald.
 
-use chrono::{DateTime, Utc};
-use serde::Serialize;
-use std::collections::VecDeque;
-use std::sync::Mutex;
+**Petición HTTP** (reutiliza el cliente `hyper` sobre `AsyncRead + AsyncWrite` que ya existe para gatewayd; da igual que el extremo sea un socket Unix o un TCP, la abstracción es la misma y ya está probada con ambos):
 
-/// A single log entry captured from the WAF/Jail pipelines.
-#[derive(Debug, Clone, Serialize)]
-pub struct LogEntry {
-    pub ts: String,
-    pub event: String,
-    pub pipeline: String,
-    pub ip: Option<String>,
-    pub country: Option<String>,
-    pub rule_id: Option<i32>,
-    pub rule_name: Option<String>,
-    pub path: Option<String>,
-    pub method: Option<String>,
-    pub query: Option<String>,
-    pub ua: Option<String>,
-    pub fqdn: Option<String>,
-    pub referer: Option<String>,
-    pub status_code: Option<i32>,
-    pub profile: Option<String>,
-    pub reason: Option<String>,
-}
-
-/// Ring buffer collector with configurable capacity.
-pub struct LogCollector {
-    buffer: VecDeque<LogEntry>,
-    capacity: usize,
-}
-
-impl LogCollector {
-    pub fn new(capacity: usize) -> Self {
-        Self {
-            buffer: VecDeque::with_capacity(capacity),
-            capacity,
-        }
-    }
-
-    pub fn push(&mut self, entry: LogEntry) {
-        if self.buffer.len() >= self.capacity {
-            self.buffer.pop_front();
-        }
-        self.buffer.push_back(entry);
-    }
-
-    /// Returns all entries (front-to-back, oldest first).
-    pub fn all(&self) -> Vec<LogEntry> {
-        self.buffer.iter().cloned().collect()
-    }
-
-    pub fn set_capacity(&mut self, new_cap: usize) {
-        self.capacity = new_cap;
-        while self.buffer.len() > self.capacity {
-            self.buffer.pop_front();
-        }
-    }
-
-    pub fn capacity(&self) -> usize {
-        self.capacity
-    }
-
-    pub fn len(&self) -> usize {
-        self.buffer.len()
-    }
-}
-
-// ── Global singleton ──
-
-use std::sync::LazyLock;
-
-pub static LOG_COLLECTOR: LazyLock<Mutex<LogCollector>> =
-    LazyLock::new(|| Mutex::new(LogCollector::new(1000)));
-
-/// Push a log entry into the global ring buffer (fire-and-forget).
-pub fn push_log(entry: LogEntry) {
-    if let Ok(mut collector) = LOG_COLLECTOR.lock() {
-        collector.push(entry);
-    }
-}
-
-/// Build a LogEntry from raw fields (used by the macro).
-#[macro_export]
-macro_rules! audit_log {
-    ($category:expr, $($key:ident : $value:expr),* $(,)?) => {{
-        // 1. Build JSON for tracing (existing behavior)
-        let json_value = serde_json::json!({
-            "event": $category,
-            "ts": chrono::Utc::now().to_rfc3339(),
-            $($key: $value,)*
-        });
-        tracing::info!("[{}] {}", stringify!($category).to_uppercase(), json_value);
-
-        // 2. Push to frontend ring buffer
-        let entry = $crate::models::log_collector::LogEntry {
-            ts: chrono::Utc::now().to_rfc3339(),
-            event: stringify!($category).to_lowercase(),
-            pipeline: json_value.get("pipeline").and_then(|v| v.as_str()).unwrap_or("").to_string(),
-            ip: json_value.get("ip").and_then(|v| v.as_str()).map(|s| s.to_string()),
-            country: json_value.get("country").and_then(|v| v.as_str()).map(|s| s.to_string()),
-            rule_id: json_value.get("rule_id").and_then(|v| v.as_i64()).map(|n| n as i32),
-            rule_name: json_value.get("rule_name").and_then(|v| v.as_str()).map(|s| s.to_string()),
-            path: json_value.get("path").and_then(|v| v.as_str()).map(|s| s.to_string()),
-            method: json_value.get("method").and_then(|v| v.as_str()).map(|s| s.to_string()),
-            query: json_value.get("query").and_then(|v| v.as_str()).map(|s| s.to_string()),
-            ua: json_value.get("ua").and_then(|v| v.as_str()).map(|s| s.to_string()),
-            fqdn: json_value.get("fqdn").and_then(|v| v.as_str()).map(|s| s.to_string()),
-            referer: json_value.get("referer").and_then(|v| v.as_str()).map(|s| s.to_string()),
-            status_code: json_value.get("status_code").and_then(|v| v.as_i64()).map(|n| n as i32),
-            profile: json_value.get("profile").and_then(|v| v.as_str()).map(|s| s.to_string()),
-            reason: json_value.get("reason").and_then(|v| v.as_str()).map(|s| s.to_string()),
-        };
-        $crate::models::log_collector::push_log(entry);
-    }};
-}
+```http
+GET /v1.44/containers/traefik/logs?follow=1&stdout=1&stderr=1&tail=0&since=<epoch>
+Host: docker
+Accept: application/json
 ```
 
-- [ ] **Step 2: Modify `backend/src/models/mod.rs`**
+- **No** enviar `Upgrade` ni `Connection: Upgrade`: si se piden, el motor contesta `101 UPGRADED` en lugar de servir el stream. Sin esas cabeceras devuelve `200 OK` con `Content-Type: application/vnd.docker.raw-stream`.
+- `since=<epoch>` cumple la misma función que hoy cumple el corte por `__REALTIME_TIMESTAMP`: **no reproducir histórico al arrancar**. Un histórico reproducido banearía IPs con escaneos viejos.
+- Con `SHUUL_DOCKER_SOCKET` la cabecera `Host` es `docker` (como ya se hace con gatewayd); con `SHUUL_DOCKER_URL` se usa el host del endpoint, igual que hoy en el modo TCP de journald. El path y la query son idénticos en los dos casos.
+- `endpoint_display()` debe distinguir las dos entradas (`docker:unix:/var/run/docker.sock (traefik)` o `docker:http://docker-socket-proxy:2375 (traefik)`) para la línea de arranque.
 
-Add:
-```rust
-pub mod log_collector;
+**Demultiplexado del stream (el punto delicado)**
+
+La respuesta del motor viene en **frames de 8 bytes de cabecera** cuando el contenedor no tiene TTY:
+
+```
+byte 0      : stream id (1 = stdout, 2 = stderr)
+bytes 1-3   : ceros
+bytes 4-7   : tamaño del payload, big-endian u32
 ```
 
-- [ ] **Step 3: Verify compilation**
+El parser debe ser **incremental**: un frame puede llegar partido entre dos chunks, y un chunk puede traer varios frames. Nada de `split` sobre líneas antes de desmultiplexar.
 
-Run: `cd /data/rust/shuul/backend && cargo check 2>&1 | head -20`
+**Parseo de la línea**
+
+Cada payload es una línea JSON del access log de Traefik (la API ya extrae el campo `log` del envoltorio del driver `json-file`). Se parsea igual que hoy y desemboca en la misma función `run_jail_pipeline(app_state, payload)`: **no se duplica la lógica del pipeline**.
+
+**Comportamiento en fallo**
+
+- Socket ausente, proxy inalcanzable o contenedor inexistente → `warn!` (`docker api not available`) y reintento cada 30 s. **Fail-open**: el WAF nunca se ve afectado.
+- Reconexión → dedupe de la última línea procesada, igual que hoy se hace por `__CURSOR`.
+
+### 0.4 Seguridad (leer antes de tocar el `compose.yaml`)
+
+La documentación oficial de Docker es explícita: montar el socket da **control sobre el Docker Engine**, y eso equivale a root en el host.
+
+> "By default, ECI blocks bind mounting the Docker Engine socket (/var/run/docker.sock) as this would grant containers control over Docker Engine."
+
+Consecuencias que hay que asumir:
+
+- `:ro` **no** limita la API. El socket es un canal de comunicación, no un fichero: el montaje en solo-lectura no impide emitir peticiones de escritura por él.
+- Nunca exponer el socket por TCP en red pública. La propia doc lo prohíbe sin TLS y avisa de escalada de privilegios.
+
+Lo que se elige **no es qué se implementa** —eso está cerrado: las dos entradas, §0.1— sino **qué se monta en producción**. Y ahí el riesgo de cada opción no se parece en nada:
+
+| | Opción A — socket directo | Opción B — proxy (recomendada) |
+|---|---|---|
+| Configuración | `SHUUL_DOCKER_SOCKET=/var/run/docker.sock` + `-v /var/run/docker.sock:/var/run/docker.sock:ro` + `group_add` con el gid de `docker` | `SHUUL_DOCKER_URL=http://docker-socket-proxy:2375` + un `docker-socket-proxy` con `CONTAINERS=1` y el resto a `0`, en una red interna |
+| Permisos que exige | El grupo `docker` del host | Ninguno del host: sólo hablar con el proxy por la red interna |
+| Riesgo real | El contenedor puede hablar con **todo** el Engine | Sólo pasa lo permitido; el resto se queda fuera |
+| Coste | Cero piezas nuevas | Un contenedor más en el stack |
+| Cómo se revoca | Quitar el montaje y recrear | Apagar el proxy |
+
+En la opción A, `group_add` es obligatorio porque la imagen corre como `app` (uid 1000, `USER app`), no como root: el socket es `root:docker 0660`. El gid se fija al crear el contenedor — cambiarlo exige `--force-recreate`, no `restart`. Y en Podman hay que dar el **gid numérico** (resuelve el nombre contra la imagen, no contra el host).
+
+Pasar de A a B (o al revés) es cambiar dos variables de entorno y un bloque del `compose.yaml`: **nunca recompilar**.
+
+### 0.5 Tareas
+
+- [ ] **0.5.1** Ejecutar las tres comprobaciones de §0.2 en `co1` y anotar el resultado aquí.
+- [ ] **0.5.2** Decidir si journald se queda como *fallback* o se retira (mantener dos transportes tiene un coste de test que hay que reconocer) y **qué se despliega en `co1`**, A o B (§0.4). El código soporta las dos entradas, así que esta elección **no bloquea** la implementación.
+- [ ] **0.5.3** Change proposal de OpenSpec: `openspec new change docker-logs-transport`, con la spec delta (contratos de §0.3 y escenarios Given/When/Then de: stream normal, frame partido entre chunks, dos frames en un chunk, stderr descartado, socket ausente, reconexión sin duplicar).
+- [ ] **0.5.4** Tests en **RED**, cubriendo **las dos entradas**: servidor `hyper` de prueba sobre un socket Unix temporal **y** sobre TCP, emitiendo en ambos los mismos frames multiplexados construidos a mano, incluyendo a propósito un frame partido entre dos chunks y un chunk con dos frames.
+- [ ] **0.5.5** Implementación en **GREEN**: transporte Docker detrás de la abstracción de transporte que ya existe en `backend/src/journald_reader.rs`, con el extremo (socket o URL) resuelto por la misma lógica de precedencia que journald.
+- [ ] **0.5.6** **REFACTOR**: `cargo clippy -- -D warnings` y `cargo fmt --check` limpios.
+- [ ] **0.5.7** Documentación: `SELF-HOSTING.md` §2 (las dos entradas, precedencia, tabla de seguridad A frente a B y la reversión de la decisión) y `AGENTS.md` §V (tabla de transporte del `JournaldReader`, variables de entorno y cómo pasar de A a B).
+- [ ] **0.5.8** `compose.yaml` de `co1`: lo ejecuta el usuario, no el agente. Runbook acordado: imagen `:0.15.x`, `RUST_LOG: backend=info`, `RUST_BACKTRACE: full`, `docker compose up -d --force-recreate shuul`. Hay que dejar preparados **los dos bloques** (A y B) para poder cambiar de uno a otro sin tocar el código.
+- [ ] **0.5.9** Verificación en `co1`: contar entradas leídas, confirmar que **no** se reprocesa histórico al arrancar (cero `BANNED` en el primer minuto) y que el WAF sigue intacto.
+
+### 0.6 Gates de la fase
+
+- `cargo test` (baseline actual: **284 tests**), `cargo clippy -- -D warnings`, `cargo fmt --check`.
+- Prueba real en `co1`, que es donde se ve el comportamiento de verdad.
+- El camino del **WAF no se toca**: sigue siendo forwardAuth síncrono y no depende de este transporte.
+
+### 0.7 Decisiones abiertas de la fase
+
+1. **Decidido (2026-10-20): se implementan las dos entradas.** No hay que elegir en código; el extremo se resuelve por variable de entorno.
+2. **Decidido:** qué se monta en `co1` no bloquea nada, el código soporta A y B. Se elegirá con los datos de §0.2 y la recomendación sigue siendo el **proxy**.
+3. ¿El transporte Docker pasa a ser el **preferido** y journald queda como alternativa, o al revés? **Pendiente.**
+4. ¿Se retira el soporte de `systemd-journal-gatewayd` o se mantiene indefinidamente? Mantener dos transportes tiene un coste de test que hay que reconocer.
 
 ---
 
-### Task 2: Backend — HTTP handler (log.rs)
+## FASE 1 — Limpieza de dependencias muertas
 
-**Files:**
-- Create: `backend/src/http/log.rs`
-- Modify: `backend/src/http/mod.rs` (add mod and pub use)
+Ocho dependencias declaradas y **nunca usadas** (§1). `ipnetwork` es una de ellas y es justo lo que pretende subir la PR #74: **la PR se resuelve borrando la línea, no subiéndola**. Borrar además quita ruido de futuras alertas.
 
-**Interfaces:**
-- Produces: `log_router() -> Router<Arc<AppState>>`
-- Consumes: `LOG_COLLECTOR` global
+- [ ] **1.1** Quitar de `backend/Cargo.toml`: `ipnetwork`, `axum-extra`, `cookie`, `time`.
+- [ ] **1.2** Quitar de `frontend/package.json`: `class-variance-authority`, `react-highlight-words`, `@testing-library/react`, `@testing-library/user-event`.
+- [ ] **1.3** Regenerar `Cargo.lock` y `pnpm-lock.yaml` (el lock **debe** cambiar: quitar dependencias lo modifica).
+- [ ] **1.4** Gates backend: `cargo test`, `cargo clippy -- -D warnings`, `cargo fmt --check`.
+- [ ] **1.5** Gates frontend: `pnpm install --frozen-lockfile`, `pnpm run lint` (0 errores), `pnpm run build`, `pnpm test` (5 tests).
+- [ ] **1.6** `cargo machete backend` y `npx depcheck` deben salir **sin hallazgos nuevos**.
+- [ ] **1.7** Cerrar #74 explicando que se elimina en lugar de subirse.
 
-- [ ] **Step 1: Create `backend/src/http/log.rs`**
+**Riesgo y cómo se cubre:** `cargo-machete` puede tener falsos positivos (usos vía macro, `build.rs` o features). Aquí se comprobó uno a uno con `grep` que los usos son **cero**, incluso en `tests/`. El gate `cargo test` es la red final: si alguna estuviera usada de forma indirecta, falla ahí y se devuelve.
 
-```rust
-//! # Log viewer endpoint
-//!
-//! Provides access to the in-memory ring buffer for the frontend log viewer.
-//! No persistence — all data is lost on restart.
-//!
-//! ## Endpoints
-//!
-//! - `GET /api/v1/logs` — Returns all log entries (client-side pagination).
-//!   Optional query param `?event=block,report_ban` to filter by event type.
-//! - `PUT /api/v1/logs/capacity` — Changes ring buffer capacity at runtime.
-//!   Body: `{ "capacity": 5000 }`
-
-use axum::{
-    Json, Router,
-    extract::{Query, State},
-    http::StatusCode,
-    response::IntoResponse,
-    routing,
-};
-use serde::{Deserialize, Serialize};
-use std::sync::Arc;
-
-use crate::models::{
-    AppState, EmptyResponse,
-    log_collector::{LOG_COLLECTOR, LogEntry},
-};
-
-pub fn log_router() -> Router<Arc<AppState>> {
-    Router::new()
-        .route("/", routing::get(list_logs))
-        .route("/capacity", routing::put(set_capacity))
-}
-
-#[derive(Deserialize)]
-struct LogFilter {
-    event: Option<String>,
-}
-
-/// GET /api/v1/logs — Get all buffered log entries.
-async fn list_logs(
-    State(_app_state): State<Arc<AppState>>,
-    Query(filter): Query<LogFilter>,
-) -> impl IntoResponse {
-    let entries = match LOG_COLLECTOR.lock() {
-        Ok(collector) => {
-            let all = collector.all();
-            if let Some(event_filter) = filter.event {
-                let events: Vec<&str> = event_filter.split(',').map(|s| s.trim()).collect();
-                all.into_iter()
-                    .filter(|e| events.contains(&e.event.as_str()))
-                    .collect::<Vec<_>>()
-            } else {
-                all
-            }
-        },
-        Err(_) => return EmptyResponse::create(StatusCode::INTERNAL_SERVER_ERROR, "Log collector poisoned"),
-    };
-
-    let capacity = LOG_COLLECTOR.lock().map(|c| c.capacity()).unwrap_or(0);
-    let total = entries.len();
-
-    Json(serde_json::json!({
-        "status": 200,
-        "data": {
-            "entries": entries,
-            "total": total,
-            "capacity": capacity,
-        }
-    }))
-}
-
-#[derive(Deserialize)]
-struct CapacityRequest {
-    capacity: usize,
-}
-
-/// PUT /api/v1/logs/capacity — Update ring buffer capacity.
-async fn set_capacity(
-    State(_app_state): State<Arc<AppState>>,
-    Json(req): Json<CapacityRequest>,
-) -> impl IntoResponse {
-    let new_cap = match req.capacity {
-        1000 | 5000 | 10000 | 20000 => req.capacity,
-        other => {
-            return Json(serde_json::json!({
-                "status": 400,
-                "message": format!("Invalid capacity: {}. Valid values: 1000, 5000, 10000, 20000", other)
-            }));
-        },
-    };
-
-    match LOG_COLLECTOR.lock() {
-        Ok(mut collector) => {
-            collector.set_capacity(new_cap);
-            Json(serde_json::json!({
-                "status": 200,
-                "data": {
-                    "capacity": new_cap,
-                    "entries": collector.len(),
-                }
-            }))
-        },
-        Err(_) => Json(serde_json::json!({
-            "status": 500,
-            "message": "Log collector poisoned"
-        })),
-    }
-}
-```
-
-- [ ] **Step 2: Modify `backend/src/http/mod.rs`**
-
-Add:
-```rust
-mod log;
-// ...
-pub use log::log_router;
-```
-
-- [ ] **Step 3: Verify compilation**
-
-Run: `cd /data/rust/shuul/backend && cargo check 2>&1 | head -20`
+**Nota de proceso (decidido el 2026-10-20):** va como **mantenimiento**, sin change proposal. No añade ni cambia comportamiento observable —sólo quita dependencias declaradas sin uso— y los gates (`cargo test`, `pnpm test`) son la garantía.
 
 ---
 
-### Task 3: Backend — Remove duplicate macros + wire up routes
+## FASE 2 — `tower-http` 0.6.8 → 0.7.1 (PR #70)
 
-**Files:**
-- Modify: `backend/src/http/shuul.rs` (remove macro, import from models)
-- Modify: `backend/src/http/report.rs` (remove macro, import from models)
-- Modify: `backend/src/main.rs` (init LogCollector, add /logs route)
+Superficie pequeña y localizada: features `cors`, `fs` y `trace`, con `ServeDir` y `ServeFile` en `backend/src/main.rs`.
 
-- [ ] **Step 1: Remove macro from `shuul.rs`**
-
-In `backend/src/http/shuul.rs`:
-- Delete the `should_log()` function (it's only used by the macro)
-- Delete the `audit_log!` macro definition (lines 37-49)
-- The macro is now imported via `crate::audit_log!` automatically since it's `#[macro_export]` in `log_collector.rs`
-
-Note: `should_log()` is used by the macro itself, but also referenced directly in shuul.rs for conditions. Actually, looking at the code more carefully — `should_log` is used in `shuul.rs` at lines 107, 138, 167, 210, 268, 312, 343, 367. These are all the call sites of `audit_log!`. The `should_log` function is local to shuul.rs, so it stays.
-
-Wait — the `audit_log!` macro currently uses `should_log` and `tracing::info!`. The new macro in `log_collector.rs` uses `tracing::info!` but not `should_log` — the `should_log` check is done *before* calling the macro in the current code. So this is fine: we keep `should_log` in both files and just use the macro from the shared location. We just need to remove the `audit_log!` macro definition from both files.
-
-In `backend/src/http/shuul.rs`:
-```rust
-// DELETE these lines (37-49):
-/// Macro for structured audit logging with visible category tag.
-macro_rules! audit_log {
-    ($category:expr, $($arg:tt)*) => {
-        tracing::info!(
-            "[{}] {}",
-            $category.to_uppercase(),
-            serde_json::json!({
-                "event": $category,
-                "ts": chrono::Utc::now().to_rfc3339(),
-                $($arg)*
-            })
-        )
-    };
-}
-```
-
-The `audit_log!` calls (lines 108, 139, 168, 211, 269, 313, 344, 368) will use the shared macro from `crate::audit_log!` automatically (since `#[macro_export]` makes it available at crate root).
-
-- [ ] **Step 2: Remove macro from `report.rs`**
-
-Same deletion in `backend/src/http/report.rs`:
-- Delete the `audit_log!` macro (lines 37-49)
-
-- [ ] **Step 3: Modify `backend/src/main.rs`**
-
-Add `/logs` to protected routes:
-
-```rust
-// In protected_routes section, add:
-.nest("/logs", log_router())
-```
-
-And add `log_router` to the imports:
-```rust
-use http::{
-    auth_router, ban_router, health_router, log_router, rate_limit_profile_router,
-    report_router, require_auth, rule_router, settings_router, shuul_router,
-    stats_router, template_router, util_router,
-};
-```
-
-- [ ] **Step 4: Verify compilation**
-
-Run: `cd /data/rust/shuul/backend && cargo check 2>&1 | head -30`
+- [ ] **2.1** `gh pr update-branch 70` (su lock es anterior a los merges de hoy).
+- [ ] **2.2** Leer el changelog de `tower-http` 0.7 en busca de cambios de API en `ServeDir`, `ServeFile`, CORS y trace.
+- [ ] **2.3** Gates: `cargo test`, `clippy -D warnings`, `fmt --check`. CI verde.
+- [ ] **2.4** Fusionar y cerrar.
 
 ---
 
-### Task 4: Frontend — LogsPage
+## FASE 3 — `maxminddb` 0.27.3 → 0.32.0 (PR #71)
 
-**Files:**
-- Create: `frontend/src/pages/admin/logs_page.tsx`
-- Modify: `frontend/src/layouts/admin_layout.tsx` (add menu item)
-- Modify: `frontend/src/App.tsx` (add route)
+**La fase de más riesgo de dependencias.** Cinco minors de golpe sobre lógica de negocio real: GeoIP.
 
-- [ ] **Step 1: Create `frontend/src/pages/admin/logs_page.tsx`**
+- Puntos de uso verificados: `backend/src/models/ipdata.rs:9` (`use maxminddb::{Reader, geoip2}`), `backend/src/main.rs:235` (`Reader::open_readfile`), y lecturas en `journald_reader.rs`, `http/shuul.rs`, `http/report.rs` y `http/stats.rs`.
+- Los tests requieren una base GeoIP real (`backend/geo/`, `geo/` o `/tmp/test.mmdb`).
 
-The logs page follows the same class-component pattern as charts_page.tsx:
-
-```tsx
-import React from "react";
-import { useNavigate } from "react-router";
-import { useTranslation } from "react-i18next";
-import {
-  Table, Tag, Button, Flex, Typography, Select, Switch, message, Card, Spin,
-} from "antd";
-import {
-  EyeOutlined, ReloadOutlined, FilterOutlined,
-} from "@ant-design/icons";
-import { loadData } from "@/common/utils";
-import { BASE_URL } from "@/constants";
-import type { DebouncedFn } from "@/common/utils";
-
-const { Text } = Typography;
-
-// ── Event tag color map ──
-const EVENT_COLORS: Record<string, string> = {
-  safe_path: "green",
-  trusted_ip: "cyan",
-  trusted_ua: "geekblue",
-  banned: "red",
-  pass: "default",
-  allow: "success",
-  block: "error",
-  log_only: "warning",
-  report_received: "purple",
-  report_match: "orange",
-  report_block: "volcano",
-  report_ban: "red",
-  report_ok: "default",
-  report_skip: "gold",
-};
-const DEFAULT_EVENT_COLOR = "default";
-
-interface LogEntry {
-  ts: string;
-  event: string;
-  pipeline: string;
-  ip: string | null;
-  country: string | null;
-  rule_id: number | null;
-  rule_name: string | null;
-  path: string | null;
-  method: string | null;
-  query: string | null;
-  ua: string | null;
-  fqdn: string | null;
-  referer: string | null;
-  status_code: number | null;
-  profile: string | null;
-  reason: string | null;
-}
-
-interface LogResponse {
-  entries: LogEntry[];
-  total: number;
-  capacity: number;
-}
-
-interface Props {
-  navigate: any;
-  t: any;
-}
-
-interface State {
-  loading: boolean;
-  entries: LogEntry[];
-  capacity: number;
-  total: number;
-  filterEvent: string;
-  autoRefresh: boolean;
-}
-
-const CAPACITY_OPTIONS = [1000, 5000, 10000, 20000];
-
-class InnerPage extends React.Component<Props, State> {
-  private refreshTimer: ReturnType<typeof setInterval> | null = null;
-
-  constructor(props: Props) {
-    super(props);
-    this.state = {
-      loading: true,
-      entries: [],
-      capacity: 1000,
-      total: 0,
-      filterEvent: "",
-      autoRefresh: false,
-    };
-  }
-
-  loadLogs = async () => {
-    try {
-      const params = new Map<string, string>();
-      if (this.state.filterEvent) {
-        params.set("event", this.state.filterEvent);
-      }
-      const res = await loadData<LogResponse>("logs", params);
-      if (res.status === 200 && res.data) {
-        this.setState({
-          entries: (res.data as any).entries || [],
-          total: (res.data as any).total || 0,
-          capacity: (res.data as any).capacity || 1000,
-          loading: false,
-        });
-      } else {
-        this.setState({ loading: false });
-      }
-    } catch (e) {
-      console.error("Failed to load logs:", e);
-      this.setState({ loading: false });
-    }
-  };
-
-  componentDidMount = async () => {
-    await this.loadLogs();
-  };
-
-  componentWillUnmount = () => {
-    this.stopAutoRefresh();
-  };
-
-  startAutoRefresh = () => {
-    this.stopAutoRefresh();
-    this.refreshTimer = setInterval(() => {
-      this.loadLogs();
-    }, 3000);
-  };
-
-  stopAutoRefresh = () => {
-    if (this.refreshTimer) {
-      clearInterval(this.refreshTimer);
-      this.refreshTimer = null;
-    }
-  };
-
-  handleAutoRefreshChange = (checked: boolean) => {
-    this.setState({ autoRefresh: checked });
-    if (checked) {
-      this.startAutoRefresh();
-    } else {
-      this.stopAutoRefresh();
-    }
-  };
-
-  handleCapacityChange = async (value: number) => {
-    const token = localStorage.getItem("token");
-    try {
-      const response = await fetch(`${BASE_URL}/api/v1/logs/capacity`, {
-        method: "PUT",
-        headers: {
-          "Content-Type": "application/json",
-          ...(token ? { Authorization: `Bearer ${token}` } : {}),
-        },
-        body: JSON.stringify({ capacity: value }),
-      });
-      if (response.ok) {
-        this.setState({ capacity: value });
-        message.success(`Buffer capacity set to ${value}`);
-      } else {
-        if (response.status === 401) {
-          window.location.href = "/login";
-          return;
-        }
-        const err = await response.json();
-        message.error(`Failed to set capacity: ${err.message || "Unknown"}`);
-      }
-    } catch (e: any) {
-      message.error(`Error: ${e.message}`);
-    }
-  };
-
-  formatTime = (iso: string) => {
-    const d = new Date(iso);
-    return `${String(d.getDate()).padStart(2, "0")}/${String(d.getMonth() + 1).padStart(2, "0")} ${String(d.getHours()).padStart(2, "0")}:${String(d.getMinutes()).padStart(2, "0")}:${String(d.getSeconds()).padStart(2, "0")}`;
-  };
-
-  getEventColor = (event: string) => EVENT_COLORS[event] || DEFAULT_EVENT_COLOR;
-
-  setFilter = (event: string) => {
-    this.setState(
-      { filterEvent: this.state.filterEvent === event ? "" : event },
-      () => this.loadLogs(),
-    );
-  };
-
-  renderLogDetail = (record: LogEntry) => {
-    const detail = { ...record };
-    return (
-      <pre style={{ fontSize: 12, maxHeight: 300, overflow: "auto", margin: 0 }}>
-        {JSON.stringify(detail, null, 2)}
-      </pre>
-    );
-  };
-
-  render = () => {
-    const columns = [
-      {
-        title: "Timestamp",
-        dataIndex: "ts",
-        key: "ts",
-        width: 160,
-        render: (_: any, record: LogEntry) => this.formatTime(record.ts),
-      },
-      {
-        title: "Event",
-        dataIndex: "event",
-        key: "event",
-        width: 130,
-        render: (_: any, record: LogEntry) => (
-          <Tag color={this.getEventColor(record.event)}>{record.event}</Tag>
-        ),
-      },
-      {
-        title: "Pipeline",
-        dataIndex: "pipeline",
-        key: "pipeline",
-        width: 80,
-        render: (_: any, record: LogEntry) => (
-          <Tag color={record.pipeline === "jail" ? "orange" : "blue"}>
-            {record.pipeline || "-"}
-          </Tag>
-        ),
-      },
-      {
-        title: "IP",
-        dataIndex: "ip",
-        key: "ip",
-        width: 140,
-        render: (_: any, record: LogEntry) => record.ip || "-",
-      },
-      {
-        title: "Country",
-        dataIndex: "country",
-        key: "country",
-        width: 80,
-        render: (_: any, record: LogEntry) => record.country || "-",
-      },
-      {
-        title: "Rule",
-        dataIndex: "rule_name",
-        key: "rule_name",
-        width: 180,
-        ellipsis: true,
-        render: (_: any, record: LogEntry) => record.rule_name || "-",
-      },
-      {
-        title: "Path",
-        dataIndex: "path",
-        key: "path",
-        width: 250,
-        ellipsis: true,
-        render: (_: any, record: LogEntry) => record.path || "-",
-      },
-      {
-        title: "Method",
-        dataIndex: "method",
-        key: "method",
-        width: 80,
-        render: (_: any, record: LogEntry) => record.method ? (
-          <Tag color="magenta">{record.method}</Tag>
-        ) : "-",
-      },
-      {
-        title: "Status",
-        dataIndex: "status_code",
-        key: "status_code",
-        width: 70,
-        render: (_: any, record: LogEntry) =>
-          record.status_code ? (
-            <Tag color={record.status_code >= 400 ? "red" : "green"}>
-              {record.status_code}
-            </Tag>
-          ) : "-",
-      },
-    ];
-
-    // Collect unique event types for filter buttons
-    const eventTypes = Array.from(
-      new Set(this.state.entries.map((e) => e.event)),
-    ).sort();
-
-    return (
-      <Flex vertical gap="middle" style={{ padding: 24 }}>
-        {/* Header: title, capacity, auto-refresh, refresh button */}
-        <Flex justify="space-between" align="center" wrap gap="middle">
-          <Flex gap="small" align="center">
-            <EyeOutlined style={{ fontSize: 20 }} />
-            <Text strong style={{ fontSize: 18 }}>
-              Log Viewer
-            </Text>
-            <Tag>{this.state.total} entries</Tag>
-            <Tag color="blue">Buffer: {this.state.capacity}</Tag>
-          </Flex>
-          <Flex gap="small" align="center">
-            <Text>Buffer capacity:</Text>
-            <Select
-              value={this.state.capacity}
-              onChange={this.handleCapacityChange}
-              options={CAPACITY_OPTIONS.map((c) => ({
-                value: c,
-                label: c.toLocaleString(),
-              }))}
-              style={{ width: 120 }}
-            />
-            <Text>Auto-refresh:</Text>
-            <Switch
-              checked={this.state.autoRefresh}
-              onChange={this.handleAutoRefreshChange}
-            />
-            <Button
-              icon={<ReloadOutlined />}
-              onClick={() => this.loadLogs()}
-              loading={this.state.loading}
-            >
-              Refresh
-            </Button>
-          </Flex>
-        </Flex>
-
-        {/* Event type filter buttons */}
-        <Flex wrap gap="small" align="center">
-          <Text type="secondary">Filter by event:</Text>
-          <Button
-            size="small"
-            type={this.state.filterEvent === "" ? "primary" : "default"}
-            onClick={() => this.setFilter("")}
-          >
-            All
-          </Button>
-          {eventTypes.map((event) => (
-            <Button
-              key={event}
-              size="small"
-              type={this.state.filterEvent === event ? "primary" : "default"}
-              onClick={() => this.setFilter(event)}
-            >
-              {event}
-            </Button>
-          ))}
-        </Flex>
-
-        {/* Table */}
-        <Table<LogEntry>
-          dataSource={this.state.entries}
-          columns={columns}
-          rowKey={(record, index) => `${record.ts}-${index}`}
-          loading={this.state.loading}
-          size="small"
-          pagination={{
-            pageSize: 50,
-            showSizeChanger: true,
-            pageSizeOptions: ["20", "50", "100"],
-            showTotal: (total, range) =>
-              `${range[0]}-${range[1]} of ${total} entries`,
-          }}
-          expandable={{
-            expandedRowRender: this.renderLogDetail,
-          }}
-          scroll={{ x: 1200 }}
-          locale={{
-            emptyText: "No log entries yet. Logs appear when traffic flows through the WAF/Jail pipelines.",
-          }}
-        />
-      </Flex>
-    );
-  };
-}
-
-export default function LogsPage() {
-  const navigate = useNavigate();
-  const { t } = useTranslation();
-  return <InnerPage navigate={navigate} t={t} />;
-}
-```
-
-- [ ] **Step 2: Modify `frontend/src/layouts/admin_layout.tsx`**
-
-Add import:
-```tsx
-import { ..., EyeOutlined } from "@ant-design/icons";
-```
-
-Add menu item after Charts (key "6"):
-```tsx
-getItem("Logs", "7", <EyeOutlined />),
-```
-
-And shift the remaining items' keys:
-```tsx
-// Old:
-// 7 -> /admin/settings
-// New:
-// 8 -> /admin/settings
-```
-
-Update `navigations`:
-```tsx
-const navigations: { [key: string]: string } = {
-  1: "/admin/dashboard",
-  2: "/admin/rules",
-  3: "/admin/rate-limit-profiles",
-  4: "/admin/bans",
-  5: "/admin/templates",
-  6: "/admin/charts",
-  7: "/admin/logs",
-  8: "/admin/settings",
-};
-```
-
-Update `items`:
-```tsx
-const items: MenuItem[] = [
-  getItem("Dashboard", "1", <HomeOutlined />),
-  getItem("Rules", "2", <OrderedListOutlined />),
-  getItem("Rate Limit Profiles", "3", <RocketOutlined />),
-  getItem("Bans", "4", <StopOutlined />),
-  getItem("Templates", "5", <AppstoreOutlined />),
-  getItem("Charts", "6", <PieChartOutlined />),
-  getItem("Logs", "7", <EyeOutlined />),
-  getItem("Settings", "8", <SettingOutlined />),
-];
-```
-
-- [ ] **Step 3: Modify `frontend/src/App.tsx`**
-
-Add import:
-```tsx
-const LogsPage = lazy(() => import("@/pages/admin/logs_page"));
-```
-
-Add route (after `charts`):
-```tsx
-<Route path="logs" element={<LogsPage />} />
-```
-
-- [ ] **Step 4: Verify frontend compiles**
-
-Run: `cd /data/rust/shuul/frontend && npx tsc --noEmit 2>&1 | head -30`
+- [ ] **3.1** Leer el changelog de 0.28, 0.29, 0.30, 0.31 y 0.32 y anotar los cambios de API que afecten a `Reader::open_readfile` y a los tipos de `geoip2`.
+- [ ] **3.2** Identificar si el salto obliga a cambiar la firma de las búsquedas (`lookup`) y si el retorno pasa a ser `Result` de otra forma.
+- [ ] **3.3** `gh pr update-branch 71`.
+- [ ] **3.4** Gates completos + comprobación explícita de que una IP conocida resuelve al mismo país antes y después del salto.
+- [ ] **3.5** Si el cambio de API es grande, **PR propia con commit aislado** para poder revertirla sin arrastrar nada.
 
 ---
 
-### Task 5: Full verification
+## FASE 4 — `react-router` 7.18.4 → 8.4.0 (PR #75)
 
-- [ ] **Step 1: Build backend**
+Ya está `MERGEABLE` (Dependabot la rebasó sola). La superficie es más mansa de lo que asusta el salto de major — usos inventariados:
 
-Run: `cd /data/rust/shuul/backend && cargo build 2>&1 | tail -10`
+| Uso | Veces |
+|---|---|
+| `type { NavigateFunction }` | 11 |
+| `{ useNavigate }` | 10 |
+| `{ useNavigate, Navigate, Outlet }` | 1 |
+| `{ Outlet }` / `{ Navigate }` | 1 + 1 |
+| `{ BrowserRouter, Routes, Route }` | 1 (en `App.tsx`) |
 
-- [ ] **Step 2: Build frontend**
+No hay `loader`, `action` ni APIs de datos. Aun así, **es toda la navegación de la aplicación**.
 
-Run: `cd /data/rust/shuul/frontend && npx vite build 2>&1 | tail -10`
+- [ ] **4.1** Leer la guía de migración de react-router 7 → 8 y confirmar que `BrowserRouter`, `Routes`, `Route`, `useNavigate`, `Navigate`, `Outlet` y `NavigateFunction` siguen existiendo con la misma forma.
+- [ ] **4.2** Gates: `tsc --noEmit`, `lint`, `build`, `test`.
+- [ ] **4.3** **No basta con la CI**: levantar la aplicación y recorrer las rutas de admin (dashboard, rules, rate-limit-profiles, bans, templates, charts, logs, settings) más el redirect a `/login` cuando no hay token.
+- [ ] **4.4** Fusionar y cerrar.
 
-- [ ] **Step 3: End-to-end check**
+---
 
-Start the backend, call:
-```
-curl -s http://localhost:3000/api/v1/logs | head -20
-curl -s -X PUT http://localhost:3000/api/v1/logs/capacity -H 'Content-Type: application/json' -d '{"capacity":5000}' | head -20
-```
+## FASE 5 — Infraestructura
+
+- [ ] **5.1** `Dockerfile:29`: `node:23-alpine` → **`node:22-alpine`**. Node 23 es release impar y **está EOL**; además queda fuera del `engines` de `vite-plugin-static-copy@4.1.1` (`^22.0.0 || >=24.0.0`), que acabamos de subir. Node 22 es lo que corre la CI y es LTS.
+- [ ] **5.2** Verificar el cambio de verdad con el `podman` local: `podman build --target frontend-builder -t shuul-frontend-check .` (compila el stage con Node 22, hace `pnpm install` y el build de Vite).
+- [ ] **5.3** **`@types/node` → `^22` (decidido el 2026-10-20).** La PR #77 proponía subirlo a 26 y se cerró: aquí el runtime es **Node 22**, y unos tipos por delante del runtime dejan pasar código que compila y falla en ejecución. Se **alinea** con el runtime en lugar de perseguir a Dependabot.
+- [ ] **5.4** Revisar si `AGENTS.md` sigue diciendo `node:23-alpine` en la sección de Docker y corregirlo.
+
+---
+
+## FASE 6 — Alertas transitivas
+
+3 alertas abiertas, ninguna con PR propia: `brace-expansion` ×2 (media) y `rand` (baja).
+
+- [ ] **6.1** `pnpm why brace-expansion` → identificar el paquete padre que la arrastra.
+- [ ] **6.2** `cargo tree -i rand` → identificar quién depende de `rand` (el lock muestra `rand 0.8.5`).
+- [ ] **6.3** Subir el **padre** (o añadir un `override` de pnpm si el padre no se puede mover) y volver a mirar las alertas.
+- [ ] **6.4** Si un padre no se puede subir sin romper, **documentar por qué** queda abierta en lugar de silenciarla.
+
+---
+
+## Protocolo de trabajo
+
+- **SDD:** no hay código nuevo sin change proposal aprobado en `openspec/changes/<feature>/`.
+- **TDD:** RED → GREEN → REFACTOR, verificando con CLI (`cargo test`, `cargo clippy -- -D warnings`, `cargo fmt --check`, `pnpm run lint`, `pnpm test`, `npx tsc --noEmit`).
+- **Nunca** asumir que algo pasa sin verlo en la CLI.
+- Prohibido `eslint-disable`, tocar `eslint.config.js`/`tsconfig*.json` o relajar reglas.
+- Todo el trabajo va a `develop`. **`main` es rama de release**: cualquier push a ella con HEAD distinto de un tag dispara `release-prepare` y publica versión.
+- Las PRs `develop → main` **no** se fusionan con `--delete-branch` (la rama *head* es `develop`).
+- El `compose.yaml` de `co1` vive en `/home/lorenzo/docker/dockge/stacks/shuul/compose.yaml`, fuera del repo, y lo ejecuta el usuario.
+
+---
+
+## Registro de lo ya hecho (2026-10-20)
+
+- Fusionadas: **#69** (grupo Rust: `hyper` 1.8.1 → 1.12.0, `tokio` 1.50, `uuid` 1.28, `regex` 1.13.1, `base64` 0.23.1, `time` 0.3.55; hubo que hacer `update-branch` porque su lock arrastraba `backend 0.15.3`), **#73** (`serial_test` 4), **#79** (grupo npm sin el plugin de lint: `react`/`react-dom` 19.3.1, `antd` 6.6.6, `jsdom` 30.1.3, `typescript-eslint` 8.71.2, `vitest` 5.0.5, `vite` 7.3.7), **#80** (`globals` 17.13.0 + `vite-plugin-static-copy` 4.1.1).
+- Cerradas con motivo: **#72** (rompía el lint: `eslint-plugin-react-refresh` 0.5.7 marca 26 errores en 13 ficheros por los componentes de clase con `withTranslation`; queda fijado en 0.4.26 y excluido del grupo en `dependabot.yml`), **#76** y **#78** (sustituidas por #80), **#77** (`@types/node` 26, ver §5.3).
+- Hallazgo que casi se cuela: `vite-plugin-static-copy` v4 **elimina el aplanado por defecto** y el asset pasaba a `dist/images/src/assets/logo.svg` **sin romper el build**. Se dejó idéntico a v3 con `rename: { stripBase: 2 }`.
+- Bundle medido contra `develop` antes y después de #79: total 2761.3 → 2784.1 kB (**+0.8 %**), chunk de entrada 382.8 → 412.9 kB (**+7.9 %**), vendors sin cambios, React en una sola versión. No bloqueante, pero anotado.
+
+---
+
+## Decisiones tomadas (2026-10-20)
+
+1. **Fase 0 — se implementan las dos entradas** (socket directo y proxy): no es una disyuntiva de código. Lo que se monte en `co1` se cambia con variables de entorno y un bloque del `compose.yaml`, **sin recompilar**. La reversión de la decisión anterior sobre el socket queda **aprobada**.
+2. **Fase 1 — mantenimiento**, sin change proposal de OpenSpec.
+3. **Fase 5.3 — `@types/node` se alinea a `^22`** y el `Dockerfile` migra a `node:22-alpine`.
+
+## Pendiente
+
+1. ¿El transporte Docker pasa a ser el **preferido** y journald queda como alternativa, o al revés? Se puede decidir con §0.2 delante.
+2. ¿Se retira el soporte de `systemd-journal-gatewayd` o se mantiene? Mantener dos transportes tiene un coste de test que hay que reconocer.
+3. Ajeno a este plan: no existe directorio `locales` ni JSON de traducción pese a ~88 llamadas a `t()`; i18next recibe 404 y devuelve la clave.
