@@ -275,16 +275,16 @@ Lo que la medición añade a lo que ya se creía:
 
 ## FASE 3 — `maxminddb` 0.27.3 → 0.32.0 (PR #71)
 
-**La fase de más riesgo de dependencias.** Cinco minors de golpe sobre lógica de negocio real: GeoIP.
+Cinco minors de golpe sobre lógica de negocio real: GeoIP. **Se entró pensando que era la fase de más riesgo y la investigación previa demostró lo contrario**: ninguna de las roturas del salto nos alcanza (ver el final de la sección).
 
 - Puntos de uso verificados: `backend/src/models/ipdata.rs:9` (`use maxminddb::{Reader, geoip2}`), `backend/src/main.rs:235` (`Reader::open_readfile`), y lecturas en `journald_reader.rs`, `http/shuul.rs`, `http/report.rs` y `http/stats.rs`.
 - Los tests requieren una base GeoIP real (`backend/geo/`, `geo/` o `/tmp/test.mmdb`).
 
 - [x] **3.1** Leer el changelog de 0.28, 0.29, 0.30, 0.31 y 0.32 y anotar los cambios de API que afecten a `Reader::open_readfile` y a los tipos de `geoip2`.
 - [x] **3.2** Identificar si el salto obliga a cambiar la firma de las búsquedas (`lookup`) y si el retorno pasa a ser `Result` de otra forma.
-- [ ] **3.3** `gh pr update-branch 71`.
-- [ ] **3.4** Gates completos + comprobación explícita de que una IP conocida resuelve al mismo país antes y después del salto.
-- [ ] **3.5** Si el cambio de API es grande, **PR propia con commit aislado** para poder revertirla sin arrastrar nada.
+- [x] **3.3** `gh pr update-branch 71`.
+- [x] **3.4** Gates completos + comprobación explícita de que una IP conocida resuelve al mismo país antes y después del salto.
+- [x] **3.5** Si el cambio de API es grande, **PR propia con commit aislado** para poder revertirla sin arrastrar nada.
 
 **Investigación previa — hecha el 2026-10-20** (cubre 3.1 y 3.2 de antemano).
 
@@ -305,6 +305,31 @@ Además **hay bases MaxMind reales en local** (`./data/GeoLite2-City.mmdb` y `./
 
 **Conclusión: esta fase deja de ser «la de más riesgo».** Por la evidencia de arriba debería salir como las anteriores.
 
+**Resultado — hecho y fusionado (PR #71, `develop` en `7148754`).** No hizo falta rama propia ni tocar una sola línea de código: el `update-branch` rebasó el `Cargo.lock` sin conflicto y los gates salieron verdes tal cual — `cargo build` **0**, **284 tests** (exacto al baseline), clippy y fmt `EXIT=0`.
+
+**Y la comprobación de 3.4 se hizo con medida diferencial, no con fe.** Probe fuera del repositorio con las **dos versiones declaradas a la vez** (`maxminddb` 0.27.3 y 0.32.0, renombradas dentro del mismo `Cargo.toml`) y el cuerpo escrito una sola vez en un `macro_rules!`, replicando la lógica de `IPData::complete` con sus `is_empty()`, contra las **bases GeoLite2-City reales**:
+
+```
+$ diff diff-027.txt diff-032.txt && echo IDENTICOS
+IDENTICOS
+```
+
+Las 17 IPs salen **byte a byte iguales**, incluida la columna que importa (`country_code`): las españolas (`81.35.0.1` → Albacete, `80.24.0.1` → Cádiz, `92.186.0.1` → Las Palmas, `213.0.0.1`) dan **ES** en las dos versiones, y coinciden también `US`, `DE` y la IPv6. Los casos sin datos —privadas, multicast, broadcast, cadena inválida— siguen devolviendo los tres campos a `None`, cada uno por su rama distinta del `match`.
+
+**El riesgo que de verdad quedaba era el peor de todos: silencioso.** El límite de 32 subdivisiones de 0.31 es un error de **decodificación**, así que se dispara aunque nosotros nunca leamos `subdivisions` —serde deserializa la struct entera— y de saltar, el `_ =>` de `ipdata.rs` devolvería **los tres campos a `None`**: geolocalización perdida sin un solo error en el log. Se acotó con un muestreo de **1 048 576 direcciones IPv4** (stride 4096, sobre los 4.290 millones del espacio):
+
+```
+0.27.3: no_data=147821 ok_some=900755 err=0 max_subdivisions=2
+0.32.0: no_data=147821 ok_some=900755 err=0 max_subdivisions=2
+sweep differences: 0
+```
+
+Cero errores en ambas y un máximo de **2 subdivisiones** frente al límite de **32**: la regla es inalcanzable con esta base. Es la diferencia entre «no falla en mis cuatro pruebas» y «el modo de fallo que no habríamos visto no está a nuestro alcance».
+
+Efecto en el árbol: `ipnetwork` sigue en **0.21.1** como transitiva, sin cambios. Lo único que desaparece del árbol es `log`, que ya no cuelga de `maxminddb`.
+
+**3.5 no aplicó:** el cambio de API era inexistente, así que no hubo nada que aislar en una PR propia.
+
 ---
 
 ## FASE 4 — `react-router` 7.18.4 → 8.4.0 (PR #75)
@@ -322,9 +347,9 @@ Ya está `MERGEABLE` (Dependabot la rebasó sola). La superficie es más mansa d
 No hay `loader`, `action` ni APIs de datos. Aun así, **es toda la navegación de la aplicación**.
 
 - [x] **4.1** Leer la guía de migración de react-router 7 → 8 y confirmar que `BrowserRouter`, `Routes`, `Route`, `useNavigate`, `Navigate`, `Outlet` y `NavigateFunction` siguen existiendo con la misma forma.
-- [ ] **4.2** Gates: `tsc --noEmit`, `lint`, `build`, `test`.
-- [ ] **4.3** **No basta con la CI**: levantar la aplicación y recorrer las rutas de admin (dashboard, rules, rate-limit-profiles, bans, templates, charts, logs, settings) más el redirect a `/login` cuando no hay token.
-- [ ] **4.4** Fusionar y cerrar.
+- [x] **4.2** Gates: `tsc --noEmit`, `lint`, `build`, `test`.
+- [x] **4.3** **No basta con la CI**: levantar la aplicación y recorrer las rutas de admin (dashboard, rules, rate-limit-profiles, bans, templates, charts, logs, settings) más el redirect a `/login` cuando no hay token.
+- [x] **4.4** Fusionar y cerrar.
 
 **Investigación previa — hecha el 2026-10-20** (cubre 4.1 de antemano), leyendo la guía oficial de migración v7 → v8.
 
@@ -344,7 +369,23 @@ Lo demás tampoco aplica, porque **no estamos en framework ni en data mode**: no
 
 Los siete símbolos que usamos (`BrowserRouter`, `Routes`, `Route`, `Outlet`, `Navigate`, `useNavigate`, `NavigateFunction`) siguen en la entrada principal de `react-router`; sólo `RouterProvider` y `HydratedRouter` se mueven a `react-router/dom`, y no los usamos. El gate `tsc --noEmit` es precisamente la comprobación de que siguen existiendo: si alguno se hubiera movido, falla ahí.
 
-Queda en pie **4.3**: la CI no recorre rutas, así que la verificación de navegación sigue siendo manual.
+**Resultado — hecho y fusionado (PR #75, `develop` en `99a24fb`).** La PR estaba `CLEAN` y la CI verde (corriendo sobre el merge commit, es decir, validando ya `develop` + el bump), así que no hubo que rebasar nada. Gates con los tres baselines intactos: `tsc --noEmit` **0**, lint **0 errores**, `pnpm test` **5 passed**, build ✓. Y el chunk `index` **baja** de 412.92 a **411.23 kB** (**−1.69 kB**), coherente con que v8 haya absorbido el paquete `react-router-dom`.
+
+**4.3 se resolvió sin navegador, y sin rebajar la exigencia.** En esta sesión no hay navegador disponible, así que la navegación real se verificó con el entorno de tests del propio proyecto (`vitest` + `jsdom`), **montando la `<App />` real** —sin caer a un enrutado de juguete— y dejando que el enrutado se resolviera dentro de `act`:
+
+```
+[DIAG sin-token]  pathname=/login         → guard + <Navigate> OK
+[DIAG con-token]  pathname=/admin/rules   → 42.295 chars; contenido del <Outlet>: "ExportImportAdd RuleAll Pipelines…"
+[DIAG publica]    pathname=/             → layout público + HomePage
+[DIAG tras-click] pathname=/admin/charts  → useNavigate vía Menu, sin recarga
+[DIAG 5]          react-router version=8.4.0 → los 6 símbolos de runtime exportados como function
+```
+
+Cubre los cuatro flujos que importan: el redirect a `/login` sin token, una ruta de admin renderizando su hija **dentro del `Outlet`** (no sólo el layout), una ruta pública sin redirect, y la navegación por código con `useNavigate`. **El test era temporal y se borró**: el repositorio no gana ni un test de aquí, y el diff de la PR son exactamente `frontend/package.json` y `frontend/pnpm-lock.yaml`.
+
+Lo que la prueba **no** cubre, para que conste: `fetch` iba rechazado a propósito, así que las páginas se pintan en estado vacío/error. El enrutado está verificado; el pintado con datos reales, no.
+
+**Nota para el futuro:** la suite permanente sigue sin recorrer ninguna ruta, así que esto habrá que volver a verificarlo a mano en el siguiente salto de `react-router`.
 
 ---
 
@@ -399,7 +440,9 @@ Queda en pie **4.3**: la CI no recorre rutas, así que la verificación de naveg
 - **Fase 1 fusionada** (PR #81): ocho dependencias declaradas sin uso fuera, 125 líneas menos, y **#74 cerrada** por la vía de borrar (la `ipnetwork` directa sobraba y la 0.21.1 ya viajaba como transitiva de `maxminddb`).
 - **Fase 5 fusionada** (PR #82): el frontend se compila en **Node 22** —verificado con Podman, `v22.23.3`— y `@types/node` alineado en **`^22.20.5`**.
 - **Fase 2 fusionada** (PR #70): `tower-http` 0.7.1 **sin tocar código**, y el `update-branch` funcionó contra lo previsto.
-- Sigue **#75** (`react-router` 8.4.0) abierta, `MERGEABLE` y con CI verde; **#71** (`maxminddb` 0.32.0) sin rebasar todavía.
+- **Fase 3 fusionada** (PR #71): `maxminddb` 0.32.0 **sin tocar código**, y la geolocalización **idéntica bit a bit** sobre las bases reales —17 IPs y un muestreo de un millón de direcciones—. Queda demostrado que el único riesgo real, el límite de 32 subdivisiones, es **inalcanzable** con `GeoLite2-City` (máximo observado: 2).
+- **Fase 4 fusionada** (PR #75): `react-router` 8.4.0, con la navegación real verificada montando la `<App />` en jsdom (guard, redirect a `/login`, `Outlet` anidado y `useNavigate`). El chunk `index` **baja** de 412.92 a **411.23 kB**.
+- **Con esto quedan cerradas las cuatro PRs de Dependabot del día y no hay ninguna abierta en el repositorio.**
 
 ---
 
