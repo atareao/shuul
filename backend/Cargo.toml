@@ -12,7 +12,7 @@ http-body-util = "0.1"
 hyper = { version = "1", features = ["client", "http1"] }
 hyper-util = { version = "0.1", features = ["tokio"] }
 jsonwebtoken = { version = "10.2.0", features = ["rust_crypto"] }
-maxminddb = "0.27.0"
+maxminddb = "0.32.0"
 rand = "0.8"
 regex = "1.12.2"
 reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls"] }
