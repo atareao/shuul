@@ -200,17 +200,35 @@ Pasar de A a B (o al revés) es cambiar dos variables de entorno y un bloque del
 
 Ocho dependencias declaradas y **nunca usadas** (§1). `ipnetwork` es una de ellas y es justo lo que pretende subir la PR #74: **la PR se resuelve borrando la línea, no subiéndola**. Borrar además quita ruido de futuras alertas.
 
-- [ ] **1.1** Quitar de `backend/Cargo.toml`: `ipnetwork`, `axum-extra`, `cookie`, `time`.
-- [ ] **1.2** Quitar de `frontend/package.json`: `class-variance-authority`, `react-highlight-words`, `@testing-library/react`, `@testing-library/user-event`.
-- [ ] **1.3** Regenerar `Cargo.lock` y `pnpm-lock.yaml` (el lock **debe** cambiar: quitar dependencias lo modifica).
-- [ ] **1.4** Gates backend: `cargo test`, `cargo clippy -- -D warnings`, `cargo fmt --check`.
-- [ ] **1.5** Gates frontend: `pnpm install --frozen-lockfile`, `pnpm run lint` (0 errores), `pnpm run build`, `pnpm test` (5 tests).
-- [ ] **1.6** `cargo machete backend` y `npx depcheck` deben salir **sin hallazgos nuevos**.
-- [ ] **1.7** Cerrar #74 explicando que se elimina en lugar de subirse.
+- [x] **1.1** Quitar de `backend/Cargo.toml`: `ipnetwork`, `axum-extra`, `cookie`, `time`.
+- [x] **1.2** Quitar de `frontend/package.json`: `class-variance-authority`, `react-highlight-words`, `@testing-library/react`, `@testing-library/user-event`.
+- [x] **1.3** Regenerar `Cargo.lock` y `pnpm-lock.yaml` (el lock **debe** cambiar: quitar dependencias lo modifica).
+- [x] **1.4** Gates backend: `cargo test`, `cargo clippy -- -D warnings`, `cargo fmt --check`.
+- [x] **1.5** Gates frontend: `pnpm install --frozen-lockfile`, `pnpm run lint` (0 errores), `pnpm run build`, `pnpm test` (5 tests).
+- [x] **1.6** `cargo machete backend` y `npx depcheck` deben salir **sin hallazgos nuevos**.
+- [x] **1.7** Cerrar #74 explicando que se elimina en lugar de subirse.
 
 **Riesgo y cómo se cubre:** `cargo-machete` puede tener falsos positivos (usos vía macro, `build.rs` o features). Aquí se comprobó uno a uno con `grep` que los usos son **cero**, incluso en `tests/`. El gate `cargo test` es la red final: si alguna estuviera usada de forma indirecta, falla ahí y se devuelve.
 
 **Nota de proceso (decidido el 2026-10-20):** va como **mantenimiento**, sin change proposal. No añade ni cambia comportamiento observable —sólo quita dependencias declaradas sin uso— y los gates (`cargo test`, `pnpm test`) son la garantía.
+
+**Resultado — hecho y fusionado (PR #81, `develop` en `10badce`).** 4 ficheros, **125 líneas fuera**, y **ni una línea de código fuente tocada**:
+
+| Gate | Baseline | Resultado |
+|---|---|---|
+| `cargo test` | 284 | **284 passed / 0 failed** |
+| `pnpm test` | 5 | **5 passed** |
+| `cargo clippy -- -D warnings` | — | exit **0** |
+| `cargo fmt --check` | — | exit **0** |
+| `pnpm run lint` | 0 errores | **0 errores, 0 warnings** |
+| `pnpm run build` | — | exit **0** |
+| `pnpm install --frozen-lockfile` | — | exit **0** |
+| `cargo machete backend` | 4 hallazgos | **sin hallazgos** |
+| `npx depcheck` | 4 hallazgos | **sin hallazgos** |
+
+Dos que podían haber sido trampa y no lo fueron: **`time`** parecía usarse en `main.rs`, pero era todo `tokio::time` y `std::time` (el proyecto fecha con `chrono`); y **`cookie`** tenía un único match textual, `document.cookie` dentro de un **string de regex** de la plantilla de detección de XSS en `templates.rs`. **Ninguna de las ocho volvió a su sitio.**
+
+En los locks: `axum-extra` y `cookie` desaparecen por completo; `ipnetwork` deja de ser dependencia directa (la **0.21.1** se queda como transitiva de `maxminddb`); `time` también, pero sigue en el lock como transitiva de `simple_asn1` (vía `jsonwebtoken`) y `tracing-subscriber`. En `pnpm-lock.yaml`, 69 líneas fuera y `@testing-library/jest-dom` **intacto**.
 
 ---
 
@@ -218,10 +236,40 @@ Ocho dependencias declaradas y **nunca usadas** (§1). `ipnetwork` es una de ell
 
 Superficie pequeña y localizada: features `cors`, `fs` y `trace`, con `ServeDir` y `ServeFile` en `backend/src/main.rs`.
 
-- [ ] **2.1** `gh pr update-branch 70` (su lock es anterior a los merges de hoy).
-- [ ] **2.2** Leer el changelog de `tower-http` 0.7 en busca de cambios de API en `ServeDir`, `ServeFile`, CORS y trace.
-- [ ] **2.3** Gates: `cargo test`, `clippy -D warnings`, `fmt --check`. CI verde.
-- [ ] **2.4** Fusionar y cerrar.
+- [x] **2.1** `gh pr update-branch 70` (su lock es anterior a los merges de hoy).
+- [x] **2.2** Leer el changelog de `tower-http` 0.7 en busca de cambios de API en `ServeDir`, `ServeFile`, CORS y trace.
+- [x] **2.3** Gates: `cargo test`, `clippy -D warnings`, `fmt --check`. CI verde.
+- [x] **2.4** Fusionar y cerrar.
+
+**Resultado — hecho y fusionado (PR #70, `develop` en `1cf7212`).** El `update-branch` **sí funcionó** esta vez (no hubo conflicto con el `Cargo.lock`, al contrario de lo que se preveía), así que no hizo falta rama propia: la de Dependabot ya traía el bump y **no se tocó ni una línea de código fuente**. Gates locales verdes con el baseline intacto (284 tests, clippy y fmt `EXIT=0`) y CI verde.
+
+Lo que la CI **no** puede ver, y por eso queda escrito aquí:
+
+1. **`CorsLayer` deja de emitir `Vary`.** En 0.6 el default era una lista fija (`origin, access-control-request-method, access-control-request-headers`); en 0.7 se **calcula** según las cabeceras de las que la respuesta depende de verdad. Nuestra configuración (`allow_origin(Any)`, `allow_methods([...])`, `allow_headers([...])`) es toda constante, así que el cálculo sale vacío y la cabecera no se emite. **Se acepta el default nuevo**: con `Allow-Origin: *` y sin credenciales la respuesta es idéntica para cualquier origen, luego no hay variante que cachear. Recuperar el comportamiento anterior sería una línea (`.vary(preflight_request_headers())`), y hoy no hay **ni un test de CORS** en el repo que lo cubra.
+2. **`ServeDir` rechaza la barra final sobre un fichero real** (breaking): `/assets/app.js/` antes servía el fichero y ahora devuelve `FileNotFound`, que con fallback configurado se convierte en **`static/index.html` con 200** en vez del asset. Cambio silencioso de contenido para una URL con una barra de más. `ServeFile`, que es el fallback del SPA, no se ve afectado.
+3. **Aditivo:** `ServeDir`/`ServeFile` emiten `ETag` y soportan `If-Match`/`If-None-Match`.
+4. **`TraceLayer` ancla los eventos a su span**: cambio observable en la salida de logs, sin riesgo funcional.
+
+Detalle del lock: conviven `tower-http` **0.7.1** (nuestra) y **0.6.11** (la que arrastra `reqwest`). Es correcto y no se toca.
+
+**Los cuatro puntos están medidos, no leídos.** Un probe fuera del repositorio (`/tmp/opencode/httpprobe`, con las dos versiones declaradas a la vez y renombradas dentro de un mismo `Cargo.toml`) corre la misma batería contra `0.6.11` y `0.7.1` con nuestra configuración literal:
+
+| Caso | 0.6.11 | 0.7.1 | Veredicto |
+|---|---|---|---|
+| `OPTIONS` preflight con `Origin` | `vary: origin, access-control-request-method, access-control-request-headers` | **sin `Vary`**, y las otras tres cabeceras CORS idénticas byte a byte | ✅ |
+| `GET` simple con `Origin` | `Vary` + `ACAO` | **sólo `ACAO`** | ✅ |
+| `GET /assets/app.js` (**control**) | `200`, `text/javascript`, 26 B → el JS | `200`, `text/javascript`, 26 B → el JS | ✅ el control sale igual |
+| `GET /assets/app.js/` | `200`, `text/javascript`, **el JS** | `200`, `text/html`, **el `index.html` del SPA** | ✅ |
+| `GET /admin/` | `200`, `text/html`, el `index.html` | idéntico | ✅ sin cambios |
+
+El **control** es lo que da validez al resto: mismo binario, mismo fixture y misma ruta base, y sólo en la cuarta fila cambia el cuerpo servido; la discrepancia es real y no un artefacto del montaje.
+
+Lo que la medición añade a lo que ya se creía:
+
+- **El caso de la barra final no es un 404: es un `200` con el contenido cambiado.** Un 404 se ve en la consola del navegador; esto sirve en silencio el HTML del SPA a quien pidió un `.js`. El modo de fallo es peor que el que se supone al leer el código, y merecía quedar medido.
+- **En CORS sólo desaparece `Vary`**, nada más: `access-control-allow-origin`, `-methods` y `-headers` salen idénticas en las dos versiones.
+- **El `ETag` nuevo codifica `(tamaño, mtime)` en hexadecimal**: el del `index.html` termina en `39`, que es 57 B. En el caso de la barra final, el `ETag` devuelto es el del `index.html`, lo que **prueba por una vía independiente** que sirvió el fallback.
+- Trampa para el próximo que toque CORS: si algún día se añade `allow_credentials(true)` o se cambia `Any` por una lista de orígenes, `varies_with_origin()` pasa a `true` y **el `Vary` vuelve** (con sólo `origin`). Que hoy desaparezca es consecuencia de que nada varía, no de un olvido.
 
 ---
 
@@ -232,11 +280,30 @@ Superficie pequeña y localizada: features `cors`, `fs` y `trace`, con `ServeDir
 - Puntos de uso verificados: `backend/src/models/ipdata.rs:9` (`use maxminddb::{Reader, geoip2}`), `backend/src/main.rs:235` (`Reader::open_readfile`), y lecturas en `journald_reader.rs`, `http/shuul.rs`, `http/report.rs` y `http/stats.rs`.
 - Los tests requieren una base GeoIP real (`backend/geo/`, `geo/` o `/tmp/test.mmdb`).
 
-- [ ] **3.1** Leer el changelog de 0.28, 0.29, 0.30, 0.31 y 0.32 y anotar los cambios de API que afecten a `Reader::open_readfile` y a los tipos de `geoip2`.
-- [ ] **3.2** Identificar si el salto obliga a cambiar la firma de las búsquedas (`lookup`) y si el retorno pasa a ser `Result` de otra forma.
+- [x] **3.1** Leer el changelog de 0.28, 0.29, 0.30, 0.31 y 0.32 y anotar los cambios de API que afecten a `Reader::open_readfile` y a los tipos de `geoip2`.
+- [x] **3.2** Identificar si el salto obliga a cambiar la firma de las búsquedas (`lookup`) y si el retorno pasa a ser `Result` de otra forma.
 - [ ] **3.3** `gh pr update-branch 71`.
 - [ ] **3.4** Gates completos + comprobación explícita de que una IP conocida resuelve al mismo país antes y después del salto.
 - [ ] **3.5** Si el cambio de API es grande, **PR propia con commit aislado** para poder revertirla sin arrastrar nada.
+
+**Investigación previa — hecha el 2026-10-20** (cubre 3.1 y 3.2 de antemano).
+
+El salto 0.27.3 → 0.32.0 asusta por cinco minors, pero **no nos alcanza ninguna de las roturas**. Comprobado contra nuestro código, no deducido:
+
+| Rotura | ¿Nos afecta? | Por qué |
+|---|---|---|
+| **0.32.0 — se elimina la feature `simdutf8`** y su dependencia opcional | **No** | `backend/Cargo.toml:15` declara `maxminddb = "0.27.0"` **sin features**, y `grep -rn simdutf8` no devuelve nada en todo el backend. |
+| **0.29.0 — `Reader::metadata` pasa a ser privado** (hay que usar el método `metadata()`) | **No** | No hay ni un `.metadata` en `backend/src`: sólo usamos `open_readfile` y `lookup`. |
+| **0.29.0 — `Metadata::build_time()` pasa a devolver `Result`** | **No** | No se usa. |
+| **0.29.0 — `Reader::open_mmap` pasa a ser `unsafe`** | **No** | Usamos `Reader::open_readfile` en los seis sitios. |
+| **0.28.0 — deserializar un array en tupla con longitud distinta pasa a ser error** | **No** | Decodificamos `geoip2::City`, una struct, no tuplas. |
+| **0.31.0 — variante nuevo `ResourceLimit`; subdivisiones limitadas a 32** | **No, pero vigilar** | `MaxMindDbError` es `#[non_exhaustive]` desde 0.27 y el `match` de `ipdata.rs:86` termina en `_ =>`, así que un variante nuevo no rompe nada. El límite de 32 subdivisiones sí es un cambio de resultado posible en registros enormes: de ahí que 3.4 no sea un trámite. |
+
+Lo grande de 0.27 **ya está adoptado**: `lookup()` devuelve `LookupResult` desde `ipdata.rs:86` (`result.has_data()` + `result.decode::<geoip2::City>()`), no el `Option` antiguo. Y el salto trae endurecimiento real: 0.28.1, 0.30.x y 0.31.0 son **arreglos de DoS** al decodificar bases corruptas.
+
+Además **hay bases MaxMind reales en local** (`./data/GeoLite2-City.mmdb` y `./backend/geo/GeoLite2-City.mmdb`), así que la comprobación de 3.4 es ejecutable de verdad y no teórica.
+
+**Conclusión: esta fase deja de ser «la de más riesgo».** Por la evidencia de arriba debería salir como las anteriores.
 
 ---
 
@@ -254,19 +321,49 @@ Ya está `MERGEABLE` (Dependabot la rebasó sola). La superficie es más mansa d
 
 No hay `loader`, `action` ni APIs de datos. Aun así, **es toda la navegación de la aplicación**.
 
-- [ ] **4.1** Leer la guía de migración de react-router 7 → 8 y confirmar que `BrowserRouter`, `Routes`, `Route`, `useNavigate`, `Navigate`, `Outlet` y `NavigateFunction` siguen existiendo con la misma forma.
+- [x] **4.1** Leer la guía de migración de react-router 7 → 8 y confirmar que `BrowserRouter`, `Routes`, `Route`, `useNavigate`, `Navigate`, `Outlet` y `NavigateFunction` siguen existiendo con la misma forma.
 - [ ] **4.2** Gates: `tsc --noEmit`, `lint`, `build`, `test`.
 - [ ] **4.3** **No basta con la CI**: levantar la aplicación y recorrer las rutas de admin (dashboard, rules, rate-limit-profiles, bans, templates, charts, logs, settings) más el redirect a `/login` cuando no hay token.
 - [ ] **4.4** Fusionar y cerrar.
+
+**Investigación previa — hecha el 2026-10-20** (cubre 4.1 de antemano), leyendo la guía oficial de migración v7 → v8.
+
+**La rotura principal de v8 no nos toca.** v8 elimina el paquete `react-router-dom`, y `grep -rn "react-router-dom" frontend/src/` no devuelve **ni una coincidencia**: el paquete declarado es `react-router` y los 13 ficheros que lo usan importan de `"react-router"`.
+
+Lo demás tampoco aplica, porque **no estamos en framework ni en data mode**: no hay `loader`, `action`, `meta` ni middleware, que es justo donde viven el resto de roturas (`data` → `loaderData` en `meta`, `getLoadContext` devolviendo `RouterContextProvider`, `splitRouteModules` como opción de primer nivel, `hasErrorBoundary` fuera de `RouteObject`).
+
+**Requisitos mínimos de v8, comprobados uno a uno:**
+
+| Requisito | Nuestro valor | |
+|---|---|---|
+| Node **22.22+** | CI `node-version: 22`; imagen `node:22-alpine` → **v22.23.3** | ✅ |
+| React **19.2.7+** | **19.3.1**, una sola versión en el árbol | ✅ |
+| Vite **7+** | **7.3.7** | ✅ |
+| `target`/`lib` ES2022 | `tsconfig.app.json`: `target` ES2022, `lib` ES2022, `moduleResolution: bundler` | ✅ |
+| ESM-only | es lo que ya construye Vite | ✅ |
+
+Los siete símbolos que usamos (`BrowserRouter`, `Routes`, `Route`, `Outlet`, `Navigate`, `useNavigate`, `NavigateFunction`) siguen en la entrada principal de `react-router`; sólo `RouterProvider` y `HydratedRouter` se mueven a `react-router/dom`, y no los usamos. El gate `tsc --noEmit` es precisamente la comprobación de que siguen existiendo: si alguno se hubiera movido, falla ahí.
+
+Queda en pie **4.3**: la CI no recorre rutas, así que la verificación de navegación sigue siendo manual.
 
 ---
 
 ## FASE 5 — Infraestructura
 
-- [ ] **5.1** `Dockerfile:29`: `node:23-alpine` → **`node:22-alpine`**. Node 23 es release impar y **está EOL**; además queda fuera del `engines` de `vite-plugin-static-copy@4.1.1` (`^22.0.0 || >=24.0.0`), que acabamos de subir. Node 22 es lo que corre la CI y es LTS.
-- [ ] **5.2** Verificar el cambio de verdad con el `podman` local: `podman build --target frontend-builder -t shuul-frontend-check .` (compila el stage con Node 22, hace `pnpm install` y el build de Vite).
-- [ ] **5.3** **`@types/node` → `^22` (decidido el 2026-10-20).** La PR #77 proponía subirlo a 26 y se cerró: aquí el runtime es **Node 22**, y unos tipos por delante del runtime dejan pasar código que compila y falla en ejecución. Se **alinea** con el runtime en lugar de perseguir a Dependabot.
-- [ ] **5.4** Revisar si `AGENTS.md` sigue diciendo `node:23-alpine` en la sección de Docker y corregirlo.
+- [x] **5.1** `Dockerfile:29`: `node:23-alpine` → **`node:22-alpine`**. Node 23 es release impar y **está EOL**; además queda fuera del `engines` de `vite-plugin-static-copy@4.1.1` (`^22.0.0 || >=24.0.0`), que acabamos de subir. Node 22 es lo que corre la CI y es LTS.
+- [x] **5.2** Verificar el cambio de verdad con el `podman` local: `podman build --target frontend-builder -t shuul-frontend-check .` (compila el stage con Node 22, hace `pnpm install` y el build de Vite).
+- [x] **5.3** **`@types/node` → `^22` (decidido el 2026-10-20).** La PR #77 proponía subirlo a 26 y se cerró: aquí el runtime es **Node 22**, y unos tipos por delante del runtime dejan pasar código que compila y falla en ejecución. Se **alinea** con el runtime en lugar de perseguir a Dependabot.
+- [x] **5.4** Revisar si `AGENTS.md` sigue diciendo `node:23-alpine` en la sección de Docker y corregirlo.
+
+**Resultado — hecho y fusionado (PR #82, `develop` en `e2e252a`).** Verificado **con Podman 6.1.4**, no con la esperanza de que funcionara. Tres comprobaciones reales:
+
+- `podman build --target frontend-builder -t shuul-frontend-check .` → **`✓ built in 7.80s`**, `BUILD_EXIT=0`.
+- `podman run --rm shuul-frontend-check node --version` → **`v22.23.3`**, con pnpm 12.14.0.
+- `podman run --rm shuul-frontend-check ls dist/` → `assets`, `images`, `index.html`, `logo.svg`.
+
+`@types/node` quedó en **22.20.5**, una sola versión en el árbol, y la bajada **no destapó nada**: `tsc --noEmit` limpio, que era exactamente lo que se quería comprobar. El único arrastre en el lock es `undici-types` 7.24.6 → **6.21.0**, el par que corresponde a `@types/node` 22.x. Gates: lint 0 errores, 5 tests, build ✓ y bundle **idéntico** (412.92 kB). `AGENTS.md:514` corregido; no hay `.nvmrc`, `.node-version` ni config de Volta, y la CI ya estaba en 22.
+
+**Consecuencia práctica:** el cambio del `Dockerfile` sólo surte efecto **al construir la imagen**, así que el próximo release saldrá ya con el frontend compilado en Node 22.
 
 ---
 
@@ -299,6 +396,10 @@ No hay `loader`, `action` ni APIs de datos. Aun así, **es toda la navegación d
 - Cerradas con motivo: **#72** (rompía el lint: `eslint-plugin-react-refresh` 0.5.7 marca 26 errores en 13 ficheros por los componentes de clase con `withTranslation`; queda fijado en 0.4.26 y excluido del grupo en `dependabot.yml`), **#76** y **#78** (sustituidas por #80), **#77** (`@types/node` 26, ver §5.3).
 - Hallazgo que casi se cuela: `vite-plugin-static-copy` v4 **elimina el aplanado por defecto** y el asset pasaba a `dist/images/src/assets/logo.svg` **sin romper el build**. Se dejó idéntico a v3 con `rename: { stripBase: 2 }`.
 - Bundle medido contra `develop` antes y después de #79: total 2761.3 → 2784.1 kB (**+0.8 %**), chunk de entrada 382.8 → 412.9 kB (**+7.9 %**), vendors sin cambios, React en una sola versión. No bloqueante, pero anotado.
+- **Fase 1 fusionada** (PR #81): ocho dependencias declaradas sin uso fuera, 125 líneas menos, y **#74 cerrada** por la vía de borrar (la `ipnetwork` directa sobraba y la 0.21.1 ya viajaba como transitiva de `maxminddb`).
+- **Fase 5 fusionada** (PR #82): el frontend se compila en **Node 22** —verificado con Podman, `v22.23.3`— y `@types/node` alineado en **`^22.20.5`**.
+- **Fase 2 fusionada** (PR #70): `tower-http` 0.7.1 **sin tocar código**, y el `update-branch` funcionó contra lo previsto.
+- Sigue **#75** (`react-router` 8.4.0) abierta, `MERGEABLE` y con CI verde; **#71** (`maxminddb` 0.32.0) sin rebasar todavía.
 
 ---
 
