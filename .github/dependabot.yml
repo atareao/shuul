@@ -36,6 +36,13 @@ updates:
     open-pull-requests-limit: 5
     commit-message:
       prefix: "chore(deps)"
+    ignore:
+      # 0.5.x convierte `react-refresh/only-export-components` en 26 errores
+      # sobre los componentes de clase con `withTranslation` de este frontend.
+      # Levantarlo exige partir fichero a fichero los exports que no son
+      # componentes, y la regla sólo afecta a HMR en desarrollo: no compra nada
+      # en runtime. Quitar esta entrada si el frontend deja de usar clases.
+      - dependency-name: "eslint-plugin-react-refresh"
     groups:
       npm-patch-minor:
         applies-to: version-updates

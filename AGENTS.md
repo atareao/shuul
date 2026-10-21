@@ -147,23 +147,27 @@ Shuul opera **dos pipelines** sobre un mismo conjunto de reglas:
 | Pipeline | Endpoint/Fuente | Rol | Comportamiento |
 |---|---|---|---|
 | **WAF** | `ANY /api/v1/shuul` | ForwardAuth — interceptar, matchear, allow/deny | Primera regla que matchea gana (break por weight ASC) |
-| **Jail** | `JournaldReader` (background, socket Unix) + `POST /api/v1/report` (HTTP) | Rate limiter post-factum (fail2ban-style) | TODAS las reglas que matchean cuentan |
+| **Jail** | `JournaldReader` (background; API de Docker o gatewayd) + `POST /api/v1/report` (HTTP) | Rate limiter post-factum (fail2ban-style) | TODAS las reglas que matchean cuentan |
 
 #### Flujo completo
 
-```
-Request → WAF rules (first match wins, weight ASC)
-            ├─ allow → 200 OK (pasa, sin ban check)
-            ├─ deny  → 403 FORBIDDEN
-            └─ no match → ¿IP baneada?
-                            ├─ sí → 403 FORBIDDEN
-                            └─ no → 200 OK
-        → Backend responde
-        → Traefik accessLog JSON → stdout → journald
-        → systemd-journal-gatewayd → JournaldReader (background task)
-            · AF_UNIX /run/systemd/journal/gatewayd.sock  ← por defecto
-            · TCP http://host:19531                       ← alternativa
-        → run_jail_pipeline → Jail rules (ALL match) → rate limit → ban si excede
+```mermaid
+flowchart TD
+  R["Request"] --> W["WAF rules (first match wins, weight ASC)"]
+  W -->|"allow"| A1["200 OK (sin ban check)"]
+  W -->|"deny"| D1["403 FORBIDDEN"]
+  W -->|"no match"| B{"IP baneada?"}
+  B -->|"sí"| D2["403 FORBIDDEN"]
+  B -->|"no"| A2["200 OK"]
+  A1 --> BE["Backend responde"]
+  A2 --> BE
+  BE --> LOG["Traefik accessLog JSON en stdout"]
+  LOG --> RD["JournaldReader (background task)"]
+  RD -->|"API de Docker"| DK["GET /v1.44/containers/.../logs?follow"]
+  RD -->|"gatewayd"| GW["GET /entries?follow"]
+  DK --> JP["run_jail_pipeline (Jail rules, ALL match)"]
+  GW --> JP
+  JP --> LM["rate limit, ban si excede"]
 ```
 
 Ambos caminos (el reader de journald y el endpoint HTTP) llaman a la **misma** función
@@ -171,42 +175,101 @@ Ambos caminos (el reader de journald y el endpoint HTTP) llaman a la **misma** f
 
 #### JournaldReader — transporte
 
-`backend/src/journald_reader.rs` habla HTTP/1.1 contra `systemd-journal-gatewayd` con
-`hyper` (`client::conn::http1`), que es genérico sobre `AsyncRead + AsyncWrite`. El mismo
-código sirve para los dos transportes de [`JournaldTransport`]:
+`backend/src/journald_reader.rs` habla HTTP/1.1 con `hyper`
+(`client::conn::http1`), que es genérico sobre `AsyncRead + AsyncWrite`. El mismo
+cliente sirve para **cuatro** transportes repartidos en **dos backends**:
 
-| Transporte | Cuándo | Variable |
-|---|---|---|
-| **Socket Unix** (`AF_UNIX`) | Recomendado y **por defecto en `compose.yml`**. gatewayd en el mismo host: sin puerto, sin regla de firewall | `SHUUL_JOURNALD_SOCKET` |
-| **TCP** | Sólo para un gatewayd en otra máquina o cuando no se puede montar el socket | `SHUUL_JOURNALD_URL` |
+- la **API de Docker**, por socket Unix `AF_UNIX` o por TCP contra un proxy;
+- **`systemd-journal-gatewayd`**, por socket Unix `AF_UNIX` o por TCP.
 
-**Precedencia: socket → URL → default** (`http://localhost:19531`). Los valores vacíos
-cuentan como no definidos. Si llegan socket y URL a la vez gana el socket y se emite un
-`warn!` nombrando la URL ignorada. `SHUUL_JOURNALD_CONTAINER` (default `traefik`) es común
-a ambos transportes.
+El backend y el transporte se eligen por variable de entorno; no hay dos
+implementaciones de la petición ni del parseo.
 
-- La petición es idéntica en los dos: `GET /entries?follow&CONTAINER_NAME={container}`
-  en **forma origen** (`path?query`) más cabecera `Host`, `Accept: application/json` y un
-  `Range` de reanudación (`entries=<cursor>:…`) tras una reconexión. El `Range` es sólo una
-  **pista**: la corrección no depende de él (ver más abajo).
-- `endpoint_display()` produce el endpoint que aparece en los logs:
-  `unix:/run/systemd/journal/gatewayd.sock` o `scheme://host:port` del endpoint
-  **efectivo** en TCP, no la URL cruda (su path se ignora y se avisa con un
-  `warn!` al arrancar). Es la línea `journald reader: streaming access logs from …`.
-- El contenedor ve el socket porque `compose.yml` monta el **directorio**
+| Backend | Transporte | Cuándo | Variable |
+|---|---|---|---|
+| **API de Docker** | Socket Unix (`AF_UNIX`) | Sin proxy. Solo si aceptas montar el socket de Docker (equivale a root en el host). Motor y Shuul en el mismo host | `SHUUL_DOCKER_SOCKET` |
+| **API de Docker** | TCP (proxy) | **Recomendado.** Un `docker-socket-proxy` delante del socket, en red interna. No exige permisos del host | `SHUUL_DOCKER_URL` |
+| **gatewayd** | Socket Unix (`AF_UNIX`) | Backend de menor prioridad: sólo si mantienes gatewayd. Sin puerto, sin regla de firewall | `SHUUL_JOURNALD_SOCKET` |
+| **gatewayd** | TCP | Sólo para un gatewayd en otra máquina o cuando no se puede montar el socket | `SHUUL_JOURNALD_URL` |
+
+**Precedencia completa** (primer valor definido y no vacío gana; un valor en
+blanco equivale a no definido):
+
+`SHUUL_DOCKER_SOCKET` → `SHUUL_DOCKER_URL` → `SHUUL_JOURNALD_SOCKET` →
+`SHUUL_JOURNALD_URL` → `http://localhost:19531`.
+
+Dentro de cada backend el socket gana a su URL y se emite un `warn!` nombrando la
+URL ignorada. El backend de más prioridad gana sin llegar a evaluar las variables
+de los otros como transporte.
+
+- **Contenedor (D1):** `SHUUL_DOCKER_CONTAINER` → si falta o está en blanco,
+  `SHUUL_JOURNALD_CONTAINER` → si también falta, `traefik`. El fallback hace que quien
+  ya apuntaba al contenedor correcto con la variable de journald siga apuntando al
+  mismo contenedor al cambiar de backend.
+- **Petición — gatewayd:** `GET /entries?follow&CONTAINER_NAME={container}` en **forma
+  origen** (`path?query`) más cabecera `Host`, `Accept: application/json` y un `Range` de
+  reanudación (`entries=<cursor>:…`) tras una reconexión. El filtrado por contenedor lo
+  delega el servidor (`KEY=match`). El `Range` es sólo una **pista**: la corrección no
+  depende de él.
+- **Petición — API de Docker:**
+  `GET /v1.44/containers/{container}/logs?follow=1&stdout=1&stderr=1&tail=0&timestamps=1&since={epoch}`
+  más `Host` y `Accept: application/json`. **Nunca** se envían `Upgrade` ni
+  `Connection: Upgrade`: con esas cabeceras el motor contesta `101 UPGRADED` en lugar de
+  servir el stream (sin ellas, `200 OK` con `application/vnd.docker.raw-stream`). La
+  versión `v1.44` frente a un motor 1.50 es deliberada: el motor negocia hacia abajo, así
+  que la misma imagen vale para motores más antiguos. El filtrado por contenedor lo delega
+  el servidor por el segmento `{container}` del path; con socket la cabecera `Host` vale
+  `docker`, con TCP es la autoridad del endpoint. El path y la query son idénticos en los
+  dos transportes.
+- **Parser y asunción de TTY:** el motor multiplexa el stream en **frames** de 8 bytes
+  (byte de stream, 3 de relleno, longitud big-endian de 4) **sólo** en contenedores sin
+  TTY. El parser es **incremental** —mantiene el estado entre chunks—: un frame partido
+  entre dos chunks se decodifica al completarse y un chunk con varios frames los decodifica
+  todos. `stdout` va al pipeline; `stderr` se descarta a nivel `debug`. Un identificador de
+  stream fuera de `{0,1,2}` —un JSON crudo empieza por `{`— **descarta la conexión** con un
+  warning que **nombra** la causa probable (un contenedor con TTY), de modo que el síntoma
+  deja de ser una avería muda. **`tty: true` está prohibido** en el contenedor de Traefik.
+- **`timestamps=1`** hace que cada carga llegue como `<instante RFC3339Nano> <línea JSON>`:
+  el lector extrae el instante, descarta el prefijo y entrega el resto a
+  `parse_traefik_access_log` sin cambiar el parseo de la línea. El camino de Docker va
+  **directo** a esa función: **no** pasa por `extract_report_payload` ni por
+  `is_traefik_entry`, que **exigen el campo `CONTAINER_NAME`** —que las cargas del stream no
+  traen— y descartarían el **100 %** de las líneas en silencio.
+- **Corte por intento de conexión:** cada intento fija su corte en el instante en que
+  empieza (µs) y sólo se entrega al pipeline lo **estrictamente posterior**. `since` es el
+  **filtro grueso del servidor** —granularidad de segundo— y una mera **pista**, con el
+  mismo papel que el `Range` de gatewayd; la corrección la da la comparación **exacta** con
+  el instante que precede a cada carga. Lo escrito mientras shuul estaba caído —o entre dos
+  intentos— **no** cuenta para el rate limiting: `RateLimiter::record()` sella con
+  `Instant::now()`, así que reproducir el histórico al arrancar banearía IPs con historial
+  de escaneo. Es un fail-open **deliberado**, idéntico al de journald; el WAF sigue
+  protegiendo porque es síncrono y no depende de este transporte.
+- **Limitación de reloj (heredada de journald, `journald_reader.rs:40-43`):** la
+  comparación asume que el emisor y Shuul comparten reloj. Con el daemon en la **misma
+  máquina** —los modos A y B, mismo-host por definición— se cumple; un daemon de Docker en
+  **otra** máquina queda **fuera del contrato** (emisor atrasado → tráfico legítimo
+  descartado en silencio; emisor adelantado → replay del backlog proporcional al desfase).
+- **Descarte y dedupe:** gatewayd descarta por `__REALTIME_TIMESTAMP` y, tras reconectar,
+  por `__CURSOR` (evita reprocesar la entrada de la reanudación); Docker descarta por el
+  instante de la carga. Un descarte es silencioso a nivel `INFO` (a lo sumo `DEBUG`) y no
+  cuenta como error. En Docker el descarte **no** se basa en el contenido de la línea: dos
+  peticiones reales pueden compartir IP, path, status y segundo.
+- **`endpoint_display()`** produce el endpoint de la línea de arranque, con un formato por
+  backend: `unix:/run/systemd/journal/gatewayd.sock` o `unix:/var/run/docker.sock` para los
+  sockets, y `scheme://host:port` para TCP. El backend de Docker añade el contenedor entre
+  paréntesis: `docker:unix:/var/run/docker.sock (traefik)` o
+  `docker:http://docker-socket-proxy:2375 (traefik)`. En TCP el **path base** de la URL se
+  ignora (se avisa con un `warn!`): el endpoint efectivo es siempre `scheme://host:port`.
+- **Fail-open:** si el backend no está disponible se emite un `warn!` que **nombra el
+  backend y el endpoint** —`journald gateway not available` o `docker api not available`—
+  y se reintenta cada 30 s. El WAF nunca se ve afectado.
+- **Compatibilidad:** `SHUUL_JOURNALD_*` sigue funcionando con la misma semántica, así que
+  el rollback es cambiar variables de entorno, no volver a una imagen anterior. journald se
+  **mantiene** como backend de menor prioridad; **no** se retira.
+- El contenedor ve el socket de gatewayd porque `compose.yml` monta el **directorio**
   `/run/systemd/journal:/run/systemd/journal:ro` (un bind de fichero se queda atado a un
-  inodo muerto cuando systemd recrea el socket). No hay `extra_hosts` ni puerto abierto.
-- Fallo de conexión = fail-open: `warn!` (`journald gateway not available`) y reintento
-  cada 30 s. El WAF nunca se ve afectado.
-- **Corte por intento de conexión:** sólo se procesan entradas cuyo `__REALTIME_TIMESTAMP`
-  (µs) es posterior al instante en que empezó el intento de conexión actual. Lo escrito
-  mientras shuul estaba caído **no** cuenta para el rate limiting: `RateLimiter::record()`
-  sella con `Instant::now()`, así que reproducir el histórico al arrancar banearía IPs con
-  historial de escaneo. Una entrada sin `__REALTIME_TIMESTAMP` numérico se descarta.
-- **Dedupe por `__CURSOR`:** tras una reconexión se descarta la entrada cuyo cursor coincide
-  con el último ya procesado. Por eso no se depende de `Range` para evitar reprocesar
-  histórico: con `?follow` gatewayd ignora `realtime`, y `entries=<cursor>:1` no aplica el
-  skip sin `num_entries` (la forma útil es `entries=<cursor>:1:N`).
+  inodo muerto cuando systemd recrea el socket). En el modo A de Docker se monta
+  `/var/run/docker.sock` y se añade el grupo del socket; ver la sección de Docker más abajo.
 
 #### WAF (`shuul.rs`)
 
@@ -225,7 +288,7 @@ a ambos transportes.
 - Itera TODAS las reglas (sin break). Cada regla con `rate_limit_profile_id` es un "jail" independiente.
 - Para cada match: carga perfil desde DB, si `status_code ∈ fail_codes` → `record()` + ban si excede.
 - Fire-and-forget: siempre devuelve 200 OK.
-- Recibe `ReportPayload` desde el plugin de Traefik (legacy) o desde el `JournaldReader` (socket Unix por defecto, TCP como alternativa); ambos caminos convergen en `run_jail_pipeline`.
+- Recibe `ReportPayload` desde el plugin de Traefik (legacy) o desde el `JournaldReader` (API de Docker o gatewayd); ambos caminos convergen en `run_jail_pipeline`.
 
 ### CacheRule
 
@@ -330,7 +393,7 @@ Nunca se adquiere un lock en orden inverso para evitar deadlocks. Este patrón s
 | OIDC init | Cada 30s (hasta éxito) | Fetch metadata + JWKS del proveedor OIDC |
 | Ban cleanup | Cada 60s | Eliminar bans expirados, limpiar rate limiters |
 | Stats persist | Cada 1800s (30 min) | Guardar snapshot de StatsCollector en SQLite |
-| JournaldReader | Streaming continuo (reintento cada 30s) | Leer access logs de Traefik vía gatewayd (socket Unix por defecto, TCP alternativo) y alimentar el pipeline Jail |
+| JournaldReader | Streaming continuo (reintento cada 30s) | Leer access logs de Traefik vía la API de Docker (socket o proxy TCP; gatewayd como backend alternativo de menor prioridad) y alimentar el pipeline Jail |
 
 ### LogCollector
 
@@ -511,15 +574,15 @@ Lógica: si tiene `rate_limit_profile_id` → jail. Si tiene algún filtro → w
 ### Multi-stage build
 
 1. **backend-builder**: `rust:alpine3.23` — compila el backend Rust
-2. **frontend-builder**: `node:23-alpine` — build del frontend con pnpm
+2. **frontend-builder**: `node:22-alpine` — build del frontend con pnpm
 3. **runtime**: `alpine:3.23` — copia binario + static + migrations, expone puerto 3000
 
 #### compose.yml
 
 - Imagen: `ghcr.io/atareao/shuul`
-- Volúmenes: `data` (SQLite), `geo` (MaxMind, external), `/run/systemd/journal:/run/systemd/journal:ro` (socket de gatewayd para el pipeline Jail; se monta el directorio, no el fichero, para sobrevivir a la recreación del socket por systemd)
-- `group_add: [${JOURNALD_GROUP:-systemd-journal}]`: el socket es `root:systemd-journal 0660` y la imagen corre como `app` (uid 1000, `USER app` en el `Dockerfile`), **no como root**; sin ese grupo suplementario `connect()` falla con `EACCES`. Se fija al crear el contenedor: cambiarlo exige `--force-recreate`, no `restart`. Docker resuelve el nombre contra el host, pero Podman lo resuelve contra la imagen (`alpine` no tiene el grupo) y falla al crear el contenedor: en Podman hay que dar el gid numérico con `JOURNALD_GROUP=<gid>` (`getent group systemd-journal`)
-- Red: `proxy` (external, para Traefik). Sin `extra_hosts`: el transporte por defecto es el socket Unix
+- Volúmenes: `data` (SQLite), `geo` (MaxMind, external). Para el pipeline Jail, según el transporte: `/var/run/docker.sock:/var/run/docker.sock:ro` (modo A, API de Docker por socket; `:ro` **no** limita la API, el socket es un canal de comunicación), nada (modo B, proxy TCP en red interna) o `/run/systemd/journal:/run/systemd/journal:ro` si se mantiene el backend de gatewayd (se monta el directorio, no el fichero, para sobrevivir a la recreación del socket por systemd)
+- `group_add`: obligatorio para leer un socket, porque la imagen corre como `app` (uid 1000, `USER app` en el `Dockerfile`), **no como root**; sin el grupo suplementario `connect()` falla con `EACCES`. Con gatewayd: `${JOURNALD_GROUP:-systemd-journal}` (socket `root:systemd-journal 0660`). Con la API de Docker por socket (modo A): el **gid numérico** del grupo `docker` del host (`getent group docker`; en el host de referencia `999`, distinto del `101` de `systemd-journal`) — **nunca hardcodearlo**. Se fija al **crear** el contenedor: cambiarlo exige `--force-recreate`, no `restart`. Docker resuelve el nombre del grupo contra el host, pero Podman lo resuelve contra la imagen (`alpine` no tiene el grupo) y falla al crear el contenedor: en Podman hay que dar el gid numérico. El modo B (proxy) no necesita `group_add` alguno
+- Red: `proxy` (external, para Traefik). Sin `extra_hosts`: el socket (gatewayd o Docker) no lo necesita y el proxy TCP del modo B vive en una red interna
 - Healthcheck: `curl -f http://localhost:3000/api/v1/health/` cada 60s
 - Labels Traefik: router rule, entrypoint https, loadbalancer port 3000
 
@@ -536,11 +599,14 @@ Lógica: si tiene `rate_limit_profile_id` → jail. Si tiene algún filtro → w
 | `PORT` | ❌ | Puerto (default: 3000) |
 | `MAXMIND_DB_PATH` | ❌ | Ruta a GeoIP database |
 | `RUST_LOG` | ❌ | Nivel de log |
-| `SHUUL_JOURNALD_SOCKET` | ❌ | Path del socket de gatewayd. Si está definida y no vacía **tiene prioridad** sobre la URL (default: sin definir). En `compose.yml`: `/run/systemd/journal/gatewayd.sock` |
-| `SHUUL_JOURNALD_URL` | ❌ | URL base de un gatewayd por TCP (default: `http://localhost:19531`). Sólo se usa si `SHUUL_JOURNALD_SOCKET` no está definida |
-| `SHUUL_JOURNALD_CONTAINER` | ❌ | Contenedor cuyos access logs se leen (default: `traefik`) |
+| `SHUUL_DOCKER_SOCKET` | ❌ | Path del socket de Docker (default: sin definir). Activa la **API de Docker** por `AF_UNIX`; **máxima prioridad** del transporte. En `compose.yml` modo A: `/var/run/docker.sock` |
+| `SHUUL_DOCKER_URL` | ❌ | URL base de un **proxy** de la API de Docker (default: sin definir). Activa la **API de Docker** por TCP. Sólo se usa si `SHUUL_DOCKER_SOCKET` no está definida; un path base en la URL se ignora (y se avisa con `warn!`) |
+| `SHUUL_DOCKER_CONTAINER` | ❌ | Contenedor cuyos access logs se leen. Si falta o está en blanco, cae en `SHUUL_JOURNALD_CONTAINER`; si tampoco, `traefik` |
+| `SHUUL_JOURNALD_SOCKET` | ❌ | Path del socket de gatewayd (default: sin definir). Backend de **menor prioridad** que la API de Docker. Si está definida y no vacía **tiene prioridad** sobre `SHUUL_JOURNALD_URL`. En `compose.yml`: `/run/systemd/journal/gatewayd.sock` |
+| `SHUUL_JOURNALD_URL` | ❌ | URL base de un gatewayd por TCP (default: `http://localhost:19531`). Sólo se usa si ni `SHUUL_DOCKER_*` ni `SHUUL_JOURNALD_SOCKET` están definidas |
+| `SHUUL_JOURNALD_CONTAINER` | ❌ | Contenedor cuyos access logs se leen (default: `traefik`). Fallback de `SHUUL_DOCKER_CONTAINER` |
 
-Precedencia del transporte del `JournaldReader`: **socket → URL → default**. El modo TCP sólo hace falta para un gatewayd remoto o cuando no se puede montar el socket; con gatewayd en el mismo host requiere `extra_hosts: host.docker.internal:host-gateway` y exponer `19531` únicamente a la subred del bridge.
+Precedencia del transporte del `JournaldReader`: `SHUUL_DOCKER_SOCKET` → `SHUUL_DOCKER_URL` → `SHUUL_JOURNALD_SOCKET` → `SHUUL_JOURNALD_URL` → `http://localhost:19531`. Un valor en blanco cuenta como no definido; dentro de cada backend el socket gana a su URL y se avisa con un `warn!`. Pasar del modo A (socket) al modo B (proxy) —o al revés— es cambiar dos variables y un bloque del `compose.yml`: **nunca recompilar**. El modo TCP de gatewayd sólo hace falta para un gatewayd remoto o cuando no se puede montar el socket; con gatewayd en el mismo host requiere `extra_hosts: host.docker.internal:host-gateway` y exponer `19531` únicamente a la subred del bridge.
 
 ## Templates
 
@@ -570,7 +636,7 @@ Auth Brute Force, Admin Guard, Path Scanning, API Abuse, Scraping, Global Shield
 
 ### Plugin Traefik: traefik-shuul-reporter
 
-**Deprecado.** El reader de journald (`backend/src/journald_reader.rs`, vía `systemd-journal-gatewayd`) es el camino recomendado para alimentar el pipeline Jail. El plugin `traefik-shuul-reporter` sigue funcionando para despliegues existentes y su configuración de abajo sigue siendo válida, pero ya no se recomienda para instalaciones nuevas. Ver `SELF-HOSTING.md` sección 2.
+**Deprecado.** El `JournaldReader` (`backend/src/journald_reader.rs`, vía la API de Docker o, como alternativa de menor prioridad, `systemd-journal-gatewayd`) es el camino recomendado para alimentar el pipeline Jail. El plugin `traefik-shuul-reporter` sigue funcionando para despliegues existentes y su configuración de abajo sigue siendo válida, pero ya no se recomienda para instalaciones nuevas. Ver `SELF-HOSTING.md` sección 2.
 
 Plugin externo en Go que captura el status code del backend y lo reporta a shuul vía `POST /api/v1/report`.
 
