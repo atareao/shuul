@@ -982,13 +982,11 @@ impl JournaldReader {
         })
     }
 
-    /// Valor de la cabecera `Host`: `host:puerto` en TCP (con corchetes si es
-    /// IPv6, como exige el RFC) y `localhost` en el socket Unix (donde no hay
-    /// autoridad real).
     /// Valor de la cabecera `Host`: la autoridad del endpoint en los dos
-    /// transportes TCP, `localhost` en el socket de gatewayd —donde no hay
-    /// autoridad real— y `docker` en el del motor, que es la convención de la
-    /// propia API de Docker.
+    /// transportes TCP —`host:puerto`, con corchetes si es IPv6, como exige el
+    /// RFC—, `localhost` en el socket de gatewayd —donde no hay autoridad
+    /// real— y `docker` en el del motor, que es la convención de la propia API
+    /// de Docker.
     fn host_header(&self) -> Result<String, JournalError> {
         match &self.transport {
             JournaldTransport::Tcp { base_url } | JournaldTransport::DockerTcp { base_url } => {
@@ -2479,7 +2477,11 @@ mod tests_docker_frames {
 
         let mut header = vec![STDOUT, 0, 0, 0];
         header.extend_from_slice(&DECLARED.to_be_bytes());
-        assert_eq!(header.len(), HEADER_LEN, "the fixture must be a bare header");
+        assert_eq!(
+            header.len(),
+            HEADER_LEN,
+            "the fixture must be a bare header"
+        );
 
         let mut decoder = DockerFrameDecoder::new();
         let err = decoder.push(&header).err().expect(
@@ -2619,13 +2621,17 @@ mod tests_docker_transport {
     const DOCKER_PROXY: &str = "http://docker-socket-proxy:2375";
     /// Corte de un intento de conexión. Lleva una parte sub-segundo a propósito:
     /// el `since` de la API tiene granularidad de segundo y tiene que truncarla.
-    const CUTOFF_MICROS: u64 = 1_792_571_467_123_456;
+    ///
+    /// `pub(super)`: el test del path base ignorado de `tests_task8` construye
+    /// la petición con este mismo corte para asertar su forma.
+    pub(super) const CUTOFF_MICROS: u64 = 1_792_571_467_123_456;
 
     /// Reader con el backend de Docker sobre socket Unix.
     ///
-    /// Se construye a mano porque `from_values` todavía no resuelve la
-    /// precedencia de Docker (tarea 4.2): los tests de la petición y del endpoint
-    /// no pueden pasar por él.
+    /// Se construye a mano para **no depender del entorno** —las variables de
+    /// proceso— al probar la petición y el endpoint: `from_values` sí resuelve
+    /// ya la precedencia de Docker, pero pasar por él obligaría a manipular el
+    /// entorno y a `#[serial]`.
     pub(super) fn docker_unix_reader(path: &str, container: &str) -> JournaldReader {
         JournaldReader {
             transport: JournaldTransport::DockerUnixSocket {
@@ -4098,8 +4104,14 @@ mod tests_task7 {
             "the reconnect must not travel further back than the first attempt \
              ({since_second} < {since_first})"
         );
+        // Margen de 2 s: `observed_seconds` se lee *después* de observar el
+        // bucle, así que un desalojo del hilo o un salto del reloj hacia atrás
+        // entre el instante del segundo intento y esa lectura lo desplazan; el
+        // contrato fino —que la carga del boundary no se cuente dos veces— ya lo
+        // cubre el `assert_eq!` del recuento, no esta aserción, que sólo exige
+        // que el segundo intento no viaje más atrás que «ahora».
         assert!(
-            since_second + 1 >= observed_seconds,
+            since_second + 2 >= observed_seconds,
             "the second request must carry the cutoff of the new attempt as a coarse hint \
              (since={since_second}, the reconnect was observed at {observed_seconds}), not a \
              stale one frozen at the last processed payload"
@@ -5400,7 +5412,9 @@ mod tests_task7 {
 
 #[cfg(test)]
 mod tests_task8 {
+    use super::tests_docker_transport::CUTOFF_MICROS;
     use super::{DEFAULT_GATEWAY_URL, JournaldReader, JournaldTransport};
+    use http::header;
     use serial_test::serial;
     use std::sync::{Arc, Mutex};
 
@@ -5775,6 +5789,24 @@ mod tests_task8 {
                 reader.endpoint_display(),
                 "docker:http://proxy:2375 (traefik)",
                 "the logs must show the effective endpoint, not a path the request never uses"
+            );
+
+            // El escenario promete dos THEN más sobre la **petición**: que va en
+            // forma origen —como el hermano de journald— y que su Host es la
+            // autoridad, sin el path base.
+            let request = reader
+                .build_request(None, CUTOFF_MICROS)
+                .expect("the Docker request must build");
+            assert_eq!(
+                request.uri().to_string(),
+                "/v1.44/containers/traefik/logs?follow=1&stdout=1&stderr=1&tail=0&timestamps=1\
+                 &since=1792571467",
+                "the request must go in origin form, without the base path the URL carried"
+            );
+            assert_eq!(
+                request.headers()[header::HOST],
+                "proxy:2375",
+                "the Host header must be the authority only, without the ignored base path"
             );
         });
         assert!(
