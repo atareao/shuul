@@ -1,9 +1,59 @@
 # Changelog
+## [0.16.0] - 2026-10-21
+
+### Bug Fixes
+
+- *(jail)* Mostrar el endpoint efectivo y avisar del path base ignorado
+
+### Documentation
+
+- *(plan)* Plan de deuda técnica y decisiones de la sesión
+- *(plan)* Registrar fases 1, 2 y 5 hechas, la investigación de 3 y 4, y las medidas de tower-http
+- *(plan)* Registrar las fases 3 y 4 con sus medidas
+- *(plan)* Cerrar la fase 6 y corregir la versión del motor de §0.2
+- *(openspec)* Add docker-logs-transport change proposal
+- *(jail)* Documentar el transporte de logs por la API de Docker
+- *(jail)* Alinear las referencias a gatewayd fuera de §2
+- *(openspec)* Declarar 4.8 y 6.7 y el escenario del path base
+- *(openspec)* Cerrar 4.8 y 4.9
+- *(jail)* Describir los dos backends en el comentario de módulo
+- *(jail)* Desambiguar los títulos de §2 y acotar el alcance del no-replay
+- *(openspec)* Cerrar el registro de tasks del change
+- *(plan)* Cerrar las tareas hechas de la fase 0
+
+### Features
+
+- *(jail)* Implementar la precedencia, la petición y el endpoint del backend de Docker
+- *(jail)* Decodificar los frames de la API de Docker
+- *(jail)* Entregar las cargas de Docker al pipeline Jail
+- *(jail)* Avisar del backend de Docker no disponible
+- *(jail)* Nombrar la causa del error de la API de Docker
+- *(jail)* Acotar la longitud declarada en la cabecera de un frame
+
+### Miscellaneous Tasks
+
+- *(docker)* Build the frontend on node 22
+
+### Other
+
+- *(dependabot)* Keep the react-refresh lint plugin out of the npm group
+
+### Refactor
+
+- *(jail)* Cerrar los cabos del RED y el gate del CI
+
+### Testing
+
+- *(jail)* Parsear la línea de la wire en el fixture de since
 ## [0.15.4] - 2026-10-20
 
 ### Documentation
 
 - *(git-flow)* Fix release PR direction and warn against --delete-branch
+
+### Miscellaneous Tasks
+
+- Release v0.15.4
 
 ### Other
 
