@@ -70,37 +70,60 @@ http:
 
 ---
 
-## 2. Reading Traefik Access Logs via systemd-journal-gatewayd
+## 2. Feeding the Jail pipeline with Traefik access logs
 
-The Jail pipeline (fail2ban-style rate limiting) needs to observe the status codes your backends return. The legacy `shuul-reporter` Traefik plugin pushed those observations to `POST /api/v1/report`; the current design **pulls** them instead, by streaming Traefik's access logs out of the systemd journal:
+The Jail pipeline (fail2ban-style rate limiting) needs to observe the status codes your backends return. The legacy `shuul-reporter` Traefik plugin pushed those observations to `POST /api/v1/report`; the current design **pulls** them instead, streaming Traefik's access logs straight from the Docker Engine log API — or, as a lower-priority alternative kept for existing deployments, from the systemd journal through `systemd-journal-gatewayd`:
 
+```mermaid
+flowchart TD
+  T["Traefik accessLog JSON (stdout)"] --> D{"container log driver"}
+  D -->|"journald"| J["systemd journal"]
+  D -->|"json-file / local"| F["container log files"]
+  J --> GW["systemd-journal-gatewayd"]
+  F --> E["Docker Engine logs API"]
+  J --> E
+  GW -->|"GET /entries?follow"| RD["Shuul (background task)"]
+  E -->|"GET /v1.44/containers/.../logs"| RD
+  RD --> JP["Jail pipeline"]
 ```
-Traefik ──accessLog JSON──► journald (Storage=volatile → tmpfs/RAM)
-                                 │
-                                 │  systemd-journal-gatewayd
-                                 │  AF_UNIX /run/systemd/journal/gatewayd.sock
-                                 ▼
-              GET /entries?follow&CONTAINER_NAME=traefik
-              Accept: application/json   (NDJSON, 1 JSON object per line)
-                                 │
-                                 ▼
-                    Shuul (background task) ──► Jail pipeline
-```
 
-This removes the extra HTTP call per request, the plugin's 500 ms timeout, and any continuous access-log write to disk (the runtime journal can live entirely in RAM). The WAF pipeline is unaffected.
+This removes the extra HTTP call per request, the plugin's 500 ms timeout, and any continuous access-log write to disk. The WAF pipeline is unaffected.
 
-Shuul talks to gatewayd over one of **two transports**, with the same HTTP request and response on both:
+> ⚠️ **What you gain and what you do not.** With the `journald` log driver — the one this guide has always assumed, see 2.1 — the Docker API serves the logs, but **the journal is still underneath**: the Engine reads the journal (as root) to answer the API. What disappears when you switch to the Docker backend is `systemd-journal-gatewayd`, the `/run/systemd/journal` mount and its `group_add`; it is **not** a way to get rid of the journal. Only if you also moved Traefik's log driver to `json-file` would journald leave the path entirely.
 
-| Transport | When to use | Where it is documented |
+### Two backends, four transports
+
+Shuul picks the transport from the environment, in this order — the first variable that is **defined and non-blank** wins, and a blank value counts as unset:
+
+1. `SHUUL_DOCKER_SOCKET` → **Docker API** over the Unix socket
+2. `SHUUL_DOCKER_URL` → **Docker API** over TCP (a proxy)
+3. `SHUUL_JOURNALD_SOCKET` → **gatewayd** over the Unix socket
+4. `SHUUL_JOURNALD_URL` → **gatewayd** over TCP
+5. otherwise → **gatewayd** over TCP at `http://localhost:19531`
+
+Within one backend the socket beats its own URL and shuul logs a warning naming the ignored URL. Because the Docker backend outranks the journald one, any `SHUUL_DOCKER_*` variable automatically disables the gatewayd path — which is what makes the rollback in 2.14 a matter of unsetting variables.
+
+The container whose logs are read is `SHUUL_DOCKER_CONTAINER`, falling back to `SHUUL_JOURNALD_CONTAINER` and then to `traefik`.
+
+#### Mode A (direct socket) versus mode B (TCP proxy)
+
+Both modes feed the same Docker API with the same request; they differ only in how shuul reaches it. Mounting the Docker socket is a **deliberate reversal** of an earlier decision in this project, which had rejected it as equivalent to root on the host; the risk is only accepted in the smaller-surface variant (the proxy), and the other is documented for whoever prefers to skip the extra container.
+
+| | Mode A — direct socket | Mode B — TCP proxy (recommended) |
 |---|---|---|
-| **Unix domain socket** (`AF_UNIX`) | Recommended, and the default in the shipped `compose.yml`. gatewayd runs on the same host. No port, no firewall rule | 2.3, 2.7 |
-| **TCP** (`http://host:19531`) | Only when gatewayd runs on another machine, or the socket cannot be mounted | 2.9 |
+| Configuration | `SHUUL_DOCKER_SOCKET=/var/run/docker.sock` + the socket bind mount + `group_add` with the host's `docker` gid | `SHUUL_DOCKER_URL=http://docker-socket-proxy:2375` + a `docker-socket-proxy` with `CONTAINERS=1` and everything else at `0`, on an internal network |
+| Permissions it needs | The host's `docker` group | None on the host: only talking to the proxy over the internal network |
+| Real risk | The container can talk to **the whole Engine** — mounting the socket is equivalent to root on the host | Only what the proxy allows; everything else is blocked |
+| Cost | No extra pieces | One more container in the stack |
+| How to revoke it | Remove the mount and recreate | Stop the proxy |
 
-Precedence is **socket → URL → default**: `SHUUL_JOURNALD_SOCKET` wins whenever it is set, `SHUUL_JOURNALD_URL` is used otherwise, and `http://localhost:19531` is the last resort.
+Both modes are documented in **2.13**; 2.1–2.12 keep documenting the gatewayd fallback. Switching between A and B — or back to gatewayd — is two environment variables and one `compose.yml` block: **never a rebuild**.
+
+> **Do not enable `tty: true` on the Traefik container.** Without a TTY the Engine multiplexes the stream into 8-byte frames that shuul decodes; with `tty: true` the stream arrives raw, without headers, so shuul would read JSON bytes as if they were a frame header. The reader detects it and drops the connection with a warning naming the cause, but the fix is simply not to set `tty`. See 2.13.
 
 ### At a glance: end-to-end checklist
 
-The whole Jail feed, in the order it has to be done. Commands are abbreviated; the `Detail` column points to the section that explains them.
+The whole Jail feed, in the order it has to be done. Commands are abbreviated; the `Detail` column points to the section that explains them. The steps below describe the **gatewayd fallback**; the Docker backend in **2.13** replaces steps 2–6 (the gateway package, the socket drop-in and the journal tweaks) with a single stack change, and reads the same access logs without touching systemd.
 
 | # | What | Command | Expected | Detail |
 |---|---|---|---|---|
@@ -272,6 +295,8 @@ The cut exists because the rate limiter does not use journal timestamps. `RateLi
 
 So the cut is enforced in the reader, by comparing each entry's `__REALTIME_TIMESTAMP` (microseconds) with the instant the connection attempt began and discarding anything older; re-delivered entries are dropped by comparing `__CURSOR` with the last cursor already processed. An entry without a numeric `__REALTIME_TIMESTAMP` is discarded as well.
 
+The **Docker backend enforces the same cut by different means** — a coarse `since` filter on the server plus an exact comparison, in the reader, with the instant that precedes each line — and the differences that matter (the `since` granularity, the clock assumption) are in **2.13**. In both backends the cut is fixed **on every connection attempt**: a failed attempt moves it forward, and everything written during the outage stays uncounted.
+
 ### 2.6 Keep the journal in RAM (`Storage=volatile`)
 
 By default journald uses `Storage=auto`: if `/var/log/journal` exists, it writes to disk as well. For a zero-disk-write setup, switch the runtime journal to volatile:
@@ -418,20 +443,25 @@ With this in place there is no `extra_hosts` entry, no published port and no fir
 
 | Variable | Default | Description |
 |---|---|---|
-| `SHUUL_JOURNALD_SOCKET` | — (unset) | Path of the gatewayd socket. If defined and non-empty it **takes precedence** over the URL |
+| `SHUUL_DOCKER_SOCKET` | — (unset) | Path of the Docker socket. Activates the **Docker API** over `AF_UNIX`; **highest priority** of the transport |
+| `SHUUL_DOCKER_URL` | — (unset) | Base URL of a **Docker API proxy** reached over TCP. Used only if `SHUUL_DOCKER_SOCKET` is unset; a base path in the URL is ignored |
+| `SHUUL_DOCKER_CONTAINER` | `SHUUL_JOURNALD_CONTAINER`, else `traefik` | Container whose logs are read |
+| `SHUUL_JOURNALD_SOCKET` | — (unset) | Path of the gatewayd socket. **Lower priority** than any `SHUUL_DOCKER_*`; if defined and non-empty it takes precedence over the journald URL |
 | `SHUUL_JOURNALD_URL` | `http://localhost:19531` | Base URL of a gatewayd reached over TCP |
-| `SHUUL_JOURNALD_CONTAINER` | `traefik` | Value matched against the journal's `CONTAINER_NAME` field |
+| `SHUUL_JOURNALD_CONTAINER` | `traefik` | Value matched against the journal's `CONTAINER_NAME` field; fallback for `SHUUL_DOCKER_CONTAINER` |
 
-Precedence is **socket → URL → default**. Blank values count as unset. If both `SHUUL_JOURNALD_SOCKET` and `SHUUL_JOURNALD_URL` are defined, the socket wins and shuul logs a one-time warning naming the ignored URL. Note that `localhost` inside a container is the container itself, so the default `SHUUL_JOURNALD_URL` is only meaningful when gatewayd shares shuul's network namespace.
+Precedence is `SHUUL_DOCKER_SOCKET` → `SHUUL_DOCKER_URL` → `SHUUL_JOURNALD_SOCKET` → `SHUUL_JOURNALD_URL` → `http://localhost:19531`. Blank values count as unset. Within one backend the socket wins over its URL and shuul logs a one-time warning naming the ignored URL. Note that `localhost` inside a container is the container itself, so the default `SHUUL_JOURNALD_URL` is only meaningful when gatewayd shares shuul's network namespace — and it is never reached at all while a `SHUUL_DOCKER_*` transport is set.
 
-**Confirm shuul picked the socket.** At startup the reader logs the endpoint it is about to use:
+**Confirm which endpoint shuul picked.** At startup the reader logs the endpoint it is about to use:
 
 ```bash
 docker compose logs shuul | grep "journald reader"
-# journald reader: streaming access logs from unix:/run/systemd/journal/gatewayd.sock
+# Docker backend:  journald reader: streaming access logs from docker:unix:/var/run/docker.sock (traefik)
+#                  journald reader: streaming access logs from docker:http://docker-socket-proxy:2375 (traefik)
+# gatewayd backend: journald reader: streaming access logs from unix:/run/systemd/journal/gatewayd.sock
 ```
 
-If you see `journald gateway not available` instead, the reader is retrying every 30 seconds: the socket is missing, was not mounted, or is not readable. See 2.11. The WAF keeps working either way.
+If you see `journald gateway not available` or `docker api not available` instead, the reader is retrying every 30 seconds: the socket is missing, was not mounted, or is not readable. See 2.11 for gatewayd and 2.13 for Docker. The WAF keeps working either way.
 
 ### 2.9 TCP mode (alternative)
 
@@ -692,6 +722,138 @@ The WAF pipeline is never involved: the transport only affects how the Jail pipe
    ```
 
 The SQLite database, the rules, the bans and the WAF behaviour are untouched in either direction.
+
+### 2.13 The Docker API backend (recommended)
+
+Shuul reads the container's logs from the Docker Engine log API. The request is the same in both modes — only the endpoint (socket or TCP) changes:
+
+```
+GET /v1.44/containers/traefik/logs?follow=1&stdout=1&stderr=1&tail=0&timestamps=1&since=<epoch>
+Accept: application/json
+```
+
+Shuul never sends `Upgrade` / `Connection: Upgrade`: with those headers the Engine answers `101 UPGRADED` instead of serving the stream. Without them it returns `200 OK` and the container's stdout/stderr, and shuul filters the container **server-side** through the `/v1.44/containers/{container}/logs` path segment, so the stream lines do not need a `CONTAINER_NAME` field.
+
+#### Mode A — direct socket
+
+Point shuul at the socket and mount it read-only (mount the **directory**, for the same reason as the journald socket in 2.7 — a single-file bind mount goes stale when the socket is recreated):
+
+```yaml
+services:
+  shuul:
+    environment:
+      - SHUUL_DOCKER_SOCKET=/var/run/docker.sock
+      - SHUUL_DOCKER_CONTAINER=traefik
+    group_add:
+      - "<docker-gid>"          # numeric gid — see below; never hardcode 999
+      # - docker                # Docker only: resolved from the host's /etc/group
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock:ro
+```
+
+**The `group_add` needs the numeric gid of the host's `docker` group.** The container runs as `app` (uid 1000), while the socket is `root:docker 0660`; without the supplementary group `connect()` fails with `EACCES`. Read the real value — it is **not** the same as `systemd-journal` (on the reference host `docker` is `999` and `systemd-journal` is `101`):
+
+```bash
+getent group docker            # docker:x:<gid>:  → the number to pass
+```
+
+```yaml
+    group_add:
+      - "<gid>"                # the number from getent; it differs from host to host
+```
+
+Docker resolves a group **name** against the host's `/etc/group`, but Podman resolves it against the **image**, and the `alpine` base has no `docker` entry — with the name, container creation fails outright:
+
+```
+$ podman run --rm --group-add docker alpine:3.23 id
+Error: unable to find group docker: no matching entries in group file
+```
+
+So on Podman pass the number. The group is fixed when the container is **created**: changing `group_add` needs a recreate, not a restart.
+
+```bash
+docker compose up -d --force-recreate shuul
+docker exec shuul id           # the gid must appear as a number in groups=
+```
+
+> **`:ro` does not limit the API.** The socket is a communication channel, not a file: a read-only mount still lets the container send write requests through it, so it can talk to **the whole Engine** — which is equivalent to root on the host. That is exactly the reason mode B exists.
+
+#### Mode B — TCP proxy (recommended)
+
+Run a `docker-socket-proxy` in front of the socket, allow only the containers endpoint, and point shuul at it over an internal network. Any such proxy works; the important parts are the `CONTAINERS=1` allow-list and that the port is never published on a public interface:
+
+```yaml
+services:
+  docker-socket-proxy:
+    image: <a docker-socket-proxy image of your choice>
+    environment:
+      - CONTAINERS=1            # only what the log API needs; leave the rest at 0
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock:ro
+    networks:
+      - internal
+  shuul:
+    environment:
+      - SHUUL_DOCKER_URL=http://docker-socket-proxy:2375
+      - SHUUL_DOCKER_CONTAINER=traefik
+    networks:
+      - internal
+      - proxy                   # the network Traefik shares with shuul
+```
+
+Mode B needs no `group_add` and no host permission beyond what the proxy itself holds. **A base path in `SHUUL_DOCKER_URL` is ignored** (shuul logs a warning naming it): the endpoint it actually uses is always `scheme://host:port`, so `http://docker-socket-proxy:2375/some/path` behaves exactly like `http://docker-socket-proxy:2375`.
+
+#### No historical replay
+
+Like the gatewayd backend, the Docker reader feeds the Jail pipeline only with lines written **after it starts its current connection attempt**. The cut is fixed on **every** attempt — a failed attempt moves it forward — so a restart, a reconnect or an outage never replays the backlog: those lines are not counted towards rate limiting and cannot ban anyone. This is deliberate: the rate limiter stamps every observation with its own `Instant::now()` (2.5), so replaying hours of old `404`s at startup would ban legitimate traffic in bulk.
+
+The Engine's `since=<epoch>` filter is only a **coarse hint** — it has **one-second granularity** — exactly as the `Range` header is for gatewayd. The correctness comes from the reader comparing, exactly, the timestamp that prefixes each line (requested with `timestamps=1`) against the attempt's cut and keeping only what is **strictly newer**. That is also why two lines with identical content but different timestamps are both counted.
+
+#### Clock assumption (a remote daemon is out of contract)
+
+That exact comparison faces a timestamp stamped by the **Engine** against a cut stamped by shuul on its **own host**, so it **assumes both clocks agree**. With the daemon on the **same machine** — both modes here are same-host by definition — the assumption holds, exactly as it does today with the journal's `__REALTIME_TIMESTAMP`. Pointing `SHUUL_DOCKER_URL` at a daemon on **another machine** is **outside this contract**: if the daemon's clock lags behind shuul's, live lines fall below the cut and are dropped silently (rate limiting goes blind); if it runs ahead, `since` — which the Engine reads in its own clock — lets the last seconds of the backlog through, and the exact comparison does not stop them, so a replay proportional to the skew comes back. Keep NTP synchronised on both hosts (`timedatectl show -p NTPSynchronized` must print `yes`) if you ever run it that way.
+
+#### TTY is forbidden
+
+**Do not set `tty: true` on the Traefik container.** Without a TTY the Engine multiplexes the stream into frames with an 8-byte header, which is what shuul decodes. With a TTY the stream arrives **raw, without headers**, and shuul would read JSON bytes as if they were a frame header — the container would be silently blind. So that this becomes a diagnosis and not a silent failure, an invalid stream identifier **drops the connection** with a warning that **names the likely cause**: the container has a TTY. The fix is to remove `tty: true` and recreate Traefik.
+
+#### When it fails
+
+If the socket is missing, the proxy is unreachable or the container does not exist, shuul logs `docker api not available` naming the endpoint and retries every 30 seconds. The process does not crash and the **WAF keeps working**: only the Jail pipeline stops receiving observations, matching the fail-open design of the reader.
+
+### 2.14 Rolling back from the Docker API to gatewayd
+
+The journald backend is **kept**, not removed, so the rollback is environment variables plus the gatewayd side of this guide — never an older image. The WAF is never involved.
+
+1. **Unset the Docker transport** so the reader falls through to journald:
+
+   ```yaml
+   services:
+     shuul:
+       environment:
+         - SHUUL_JOURNALD_SOCKET=/run/systemd/journal/gatewayd.sock   # or SHUUL_JOURNALD_URL
+         - SHUUL_JOURNALD_CONTAINER=traefik
+         # remove: SHUUL_DOCKER_SOCKET / SHUUL_DOCKER_URL / SHUUL_DOCKER_CONTAINER
+       group_add:
+         - systemd-journal            # or the numeric gid, see 2.7
+       volumes:
+         - /run/systemd/journal:/run/systemd/journal:ro
+       # remove: - /var/run/docker.sock:/var/run/docker.sock:ro
+   ```
+
+   A `SHUUL_DOCKER_*` variable left set wins over the journald ones (see the precedence in 2.8), so it **must** be removed, not merely superseded.
+
+2. **Bring gatewayd back up** (2.2, 2.3) and, if it was serving TCP, apply 2.9.
+
+3. **Recreate** the container and confirm the endpoint:
+
+   ```bash
+   docker compose up -d --force-recreate shuul
+   docker compose logs shuul | grep "journald reader"
+   # journald reader: streaming access logs from unix:/run/systemd/journal/gatewayd.sock
+   ```
+
+Database, rules, bans and WAF decisions do not change when the transport changes.
 
 ---
 
