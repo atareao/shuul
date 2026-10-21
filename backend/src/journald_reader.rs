@@ -1779,6 +1779,24 @@ fn split_timestamp_prefix(_payload: &str) -> Option<(u64, &str)> {
     None
 }
 
+/// Decide si una carga del backend de Docker cuenta en el intento de conexión
+/// en curso.
+///
+/// `instant_micros` es el instante de la carga (`None` si no trae un prefijo
+/// utilizable) y `cutoff_micros` el corte del intento, fijado cuando empezó.
+/// Sólo cuenta lo **estrictamente posterior** al corte: una carga con el instante
+/// exactamente igual al corte no es de este intento, y una sin instante no se
+/// puede situar en el tiempo. En los dos casos se descarta —mejor perder una
+/// carga que banear una IP por evidencia vieja—, y descartar una carga nunca
+/// aborta el stream.
+///
+/// Es una función **pura** a propósito: la frontera se prueba con dos números,
+/// sin reloj inyectado y sin servidor (tareas 3.5 (d) y (e) del change).
+#[allow(dead_code)] // La usa la tarea 4.5; ver el banner del bloque.
+fn payload_is_after_cutoff(_instant_micros: Option<u64>, _cutoff_micros: u64) -> bool {
+    false
+}
+
 #[cfg(test)]
 mod tests_docker_frames {
     use super::{
@@ -1790,7 +1808,10 @@ mod tests_docker_frames {
     // ── fixtures ──
 
     /// Identificador de stream `stdout` en la cabecera de un frame.
-    const STDOUT: u8 = 1;
+    ///
+    /// `pub(super)`: los tests del backend de Docker de `tests_task7` construyen
+    /// frames con el mismo formato de la wire.
+    pub(super) const STDOUT: u8 = 1;
     /// Identificador de stream `stderr` en la cabecera de un frame.
     const STDERR: u8 = 2;
     /// Tamaño de la cabecera de un frame: stream, relleno y longitud.
@@ -1798,7 +1819,7 @@ mod tests_docker_frames {
 
     /// Construye a mano un frame multiplexado: un byte de identificador de
     /// stream, tres de relleno y la longitud de la carga en big-endian.
-    fn docker_frame(stream: u8, payload: &str) -> Vec<u8> {
+    pub(super) fn docker_frame(stream: u8, payload: &str) -> Vec<u8> {
         let len = u32::try_from(payload.len()).expect("the fixture payload fits in u32");
         let mut frame = Vec::with_capacity(HEADER_LEN + payload.len());
         frame.push(stream);
@@ -1810,7 +1831,7 @@ mod tests_docker_frames {
 
     /// Línea del access log JSON de Traefik, con los campos que maneja el
     /// módulo.
-    fn access_log_line(status: u16, path: &str) -> String {
+    pub(super) fn access_log_line(status: u16, path: &str) -> String {
         serde_json::json!({
             "ClientHost": "10.0.0.1",
             "ClientAddr": "10.0.0.1:54321",
@@ -2130,7 +2151,10 @@ mod tests_docker_frames {
 
 #[cfg(test)]
 mod tests_docker_transport {
-    use super::{DEFAULT_RETRY_DELAY, JournaldReader, JournaldTransport};
+    use super::{
+        DEFAULT_RETRY_DELAY, JournaldReader, JournaldTransport, payload_is_after_cutoff,
+        split_timestamp_prefix,
+    };
     use http::{HeaderMap, header};
     use std::path::PathBuf;
 
@@ -2149,7 +2173,7 @@ mod tests_docker_transport {
     /// Se construye a mano porque `from_values` todavía no resuelve la
     /// precedencia de Docker (tarea 4.2): los tests de la petición y del endpoint
     /// no pueden pasar por él.
-    fn docker_unix_reader(path: &str, container: &str) -> JournaldReader {
+    pub(super) fn docker_unix_reader(path: &str, container: &str) -> JournaldReader {
         JournaldReader {
             transport: JournaldTransport::DockerUnixSocket {
                 path: PathBuf::from(path),
@@ -2160,7 +2184,7 @@ mod tests_docker_transport {
     }
 
     /// Reader con el backend de Docker sobre TCP.
-    fn docker_tcp_reader(base_url: &str, container: &str) -> JournaldReader {
+    pub(super) fn docker_tcp_reader(base_url: &str, container: &str) -> JournaldReader {
         JournaldReader {
             transport: JournaldTransport::DockerTcp {
                 base_url: base_url.to_string(),
@@ -2379,6 +2403,51 @@ mod tests_docker_transport {
             target.starts_with("/v1.44/containers/my%20traefik/logs?"),
             "the container travels in the path segment, URL-encoded, so the lines need no \
              CONTAINER_NAME field; got: {target}"
+        );
+    }
+
+    // ── 3.5 (d) y (e): la frontera del corte, con dos números y sin servidor ──
+
+    #[test]
+    fn test_a_payload_at_the_attempt_cutoff_is_discarded() {
+        assert!(
+            !payload_is_after_cutoff(Some(CUTOFF_MICROS), CUTOFF_MICROS),
+            "a payload dated exactly at the attempt cutoff is not strictly after it"
+        );
+        assert!(
+            !payload_is_after_cutoff(Some(CUTOFF_MICROS - 1), CUTOFF_MICROS),
+            "a payload dated before the attempt cutoff is history, not this attempt"
+        );
+        assert!(
+            payload_is_after_cutoff(Some(CUTOFF_MICROS + 1), CUTOFF_MICROS),
+            "one microsecond after the cutoff is the first payload of this attempt: the \
+             comparison is strictly greater, not greater-or-equal"
+        );
+    }
+
+    #[test]
+    fn test_a_payload_without_a_usable_timestamp_is_discarded_without_aborting() {
+        // Neither a payload without the prefix nor one whose prefix is not an
+        // instant can be placed in time.
+        for payload in [
+            r#"{"ClientHost":"10.0.0.1","OriginStatus":401}"#,
+            r#"not-an-instant {"ClientHost":"10.0.0.1","OriginStatus":401}"#,
+        ] {
+            let instant = split_timestamp_prefix(payload).map(|(instant, _)| instant);
+            assert!(
+                instant.is_none(),
+                "the payload {payload:?} has no usable instant prefix to split off"
+            );
+            assert!(
+                !payload_is_after_cutoff(instant, CUTOFF_MICROS),
+                "a payload that cannot be placed in time must be discarded, not counted"
+            );
+        }
+
+        assert!(
+            payload_is_after_cutoff(Some(CUTOFF_MICROS + 1), CUTOFF_MICROS),
+            "the well-formed payload that follows must still be processed: discarding one \
+             payload never aborts the stream"
         );
     }
 
@@ -3063,6 +3132,514 @@ mod tests_task7 {
             lower.contains("range:")
                 && lower.contains(&format!("entries={}:1", CURSOR.to_lowercase())),
             "the reconnect request must resume from the last cursor; got:\n{second_request}"
+        );
+    }
+
+    // ── Docker backend: servidor de prueba y fixtures ──
+    //
+    // El servidor de la API de Docker **reutiliza** lo que ya tienen los tests de
+    // gatewayd: `read_request_head` para leer la petición, el patrón de "una
+    // respuesta por conexión con la petición registrada", `TempSocketPath` para el
+    // socket temporal y `BoxedIo` —el mismo tipo borrado que usa el reader— para
+    // servir los dos transportes con **un solo** bucle de aceptación.
+
+    use super::tests_docker_frames::{STDOUT, access_log_line, docker_frame};
+    use super::tests_docker_transport::{docker_tcp_reader, docker_unix_reader};
+    use super::{BoxedIo, MICROS_PER_SECOND};
+    use tokio::io::AsyncWrite;
+
+    /// Servidor de prueba de la API de Docker sobre cualquiera de los dos
+    /// transportes del change.
+    enum DockerTestListener {
+        /// Socket `AF_UNIX` del sistema de ficheros.
+        Unix(tokio::net::UnixListener),
+        /// TCP en un puerto efímero de `127.0.0.1`.
+        Tcp(tokio::net::TcpListener),
+    }
+
+    impl DockerTestListener {
+        /// Acepta la siguiente conexión del transporte que sea, ya borrada de
+        /// tipo: `AF_UNIX` y TCP no comparten struct, pero sí los traits de I/O.
+        async fn accept_stream(&self) -> Option<BoxedIo> {
+            match self {
+                Self::Unix(listener) => listener
+                    .accept()
+                    .await
+                    .ok()
+                    .map(|(stream, _)| Box::new(stream) as BoxedIo),
+                Self::Tcp(listener) => listener
+                    .accept()
+                    .await
+                    .ok()
+                    .map(|(stream, _)| Box::new(stream) as BoxedIo),
+            }
+        }
+    }
+
+    /// Atiende `connections` conexiones: registra la cabecera de cada petición y
+    /// responde lo que devuelva `respond`, que recibe la petición recién leída y
+    /// el índice de la conexión. Así el fixture se fecha con el `since` que el
+    /// reader acaba de mandar, en vez de con un instante inventado.
+    ///
+    /// `respond` devuelve `(status, chunks)`: un intento fallido se sirve con un
+    /// status de error y sin cuerpo.
+    fn spawn_docker_api<R>(
+        listener: DockerTestListener,
+        connections: usize,
+        respond: R,
+    ) -> Arc<Mutex<Vec<String>>>
+    where
+        R: Fn(&str, usize) -> (u16, Vec<Vec<u8>>) + Send + 'static,
+    {
+        let recorded: Arc<Mutex<Vec<String>>> = Arc::new(Mutex::new(Vec::new()));
+        let sink = Arc::clone(&recorded);
+
+        tokio::spawn(async move {
+            for index in 0..connections {
+                let Some(mut stream) = listener.accept_stream().await else {
+                    return;
+                };
+                let request = read_request_head(&mut stream).await;
+                if let Ok(mut sink) = sink.lock() {
+                    sink.push(request.clone());
+                }
+                let (status, chunks) = respond(&request, index);
+                write_docker_stream(&mut stream, status, &chunks).await;
+            }
+        });
+
+        recorded
+    }
+
+    /// Escribe la respuesta de la API de Docker: el status pedido con el
+    /// content-type del stream multiplexado y el cuerpo chunk a chunk, con una
+    /// pausa entre ellos, para que las fronteras de chunk no coincidan con las de
+    /// los frames.
+    async fn write_docker_stream(
+        stream: &mut (impl AsyncWrite + Unpin),
+        status: u16,
+        chunks: &[Vec<u8>],
+    ) {
+        let total: usize = chunks.iter().map(Vec::len).sum();
+        let header = format!(
+            "HTTP/1.1 {status} X\r\nContent-Type: application/vnd.docker.raw-stream\r\n\
+             Content-Length: {total}\r\nConnection: close\r\n\r\n"
+        );
+        let _ = stream.write_all(header.as_bytes()).await;
+        let _ = stream.flush().await;
+
+        for chunk in chunks {
+            let _ = stream.write_all(chunk).await;
+            let _ = stream.flush().await;
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        }
+    }
+
+    /// Valor de `since` (segundos desde `UNIX_EPOCH`) de la petición que acaba de
+    /// recibir el servidor: es el corte del intento en curso, visto desde fuera.
+    fn since_from_request(request: &str) -> u64 {
+        let query = request
+            .lines()
+            .next()
+            .and_then(|line| line.split_once('?').map(|(_, query)| query))
+            .unwrap_or("");
+        query
+            .split('&')
+            .find_map(|pair| pair.strip_prefix("since="))
+            .and_then(|value| value.parse::<u64>().ok())
+            .expect("the Docker request must carry since=<epoch>")
+    }
+
+    /// Carga de un frame de la API de Docker —`<instante RFC3339Nano> <línea>`—
+    /// con el instante `offset_seconds` segundos por delante de `epoch_seconds`.
+    fn docker_payload_at(
+        epoch_seconds: u64,
+        offset_seconds: i64,
+        status: u16,
+        path: &str,
+    ) -> String {
+        let at = i64::try_from(epoch_seconds).expect("epoch fits in i64") + offset_seconds;
+        let instant = chrono::DateTime::from_timestamp(at, 0)
+            .expect("a valid instant")
+            .to_rfc3339_opts(chrono::SecondsFormat::Nanos, true);
+        format!("{instant} {}", access_log_line(status, path))
+    }
+
+    /// Los frames multiplexados de 3.4, los **mismos** en los dos transportes: un
+    /// frame partido entre dos chunks, un chunk que lleva dos frames y una carga
+    /// con el prefijo del instante.
+    fn docker_stream_chunks(since: u64) -> Vec<Vec<u8>> {
+        let split_frame = docker_frame(STDOUT, &docker_payload_at(since, 1, 404, "/wp-login.php"));
+        let (head, tail) = split_frame.split_at(split_frame.len() / 2);
+
+        let mut second_chunk = tail.to_vec();
+        second_chunk.extend(docker_frame(
+            STDOUT,
+            &docker_payload_at(since, 1, 429, "/api/v1/items"),
+        ));
+
+        vec![
+            head.to_vec(),
+            second_chunk,
+            docker_frame(STDOUT, &docker_payload_at(since, 2, 401, "/api/login")),
+        ]
+    }
+
+    /// Espera hasta que el pipeline haya registrado `expected` entradas con este
+    /// status y path, hasta ~2 s.
+    async fn wait_for_pipeline_count(status: i32, path: &str, expected: usize) -> bool {
+        for _ in 0..40 {
+            tokio::time::sleep(Duration::from_millis(50)).await;
+            if pipeline_entry_count(status, path) >= expected {
+                return true;
+            }
+        }
+        false
+    }
+
+    /// Manda la orden de parada y comprueba que `run()` termina limpiamente.
+    async fn shut_down(
+        shutdown_tx: tokio::sync::watch::Sender<bool>,
+        handle: tokio::task::JoinHandle<Result<(), JournalError>>,
+    ) {
+        let _ = shutdown_tx.send(true);
+        let result = tokio::time::timeout(Duration::from_secs(5), handle)
+            .await
+            .expect("run() must stop on shutdown, not hang")
+            .expect("run() task must not panic");
+        assert!(result.is_ok(), "run() must return Ok on shutdown");
+    }
+
+    /// Levanta el servidor de prueba sobre un socket `AF_UNIX` temporal y devuelve
+    /// el guard del path, el reader de Docker que lo ataca y la lista de
+    /// peticiones recibidas.
+    async fn docker_unix_fixture<R>(
+        socket: &TempSocketPath,
+        connections: usize,
+        respond: R,
+    ) -> (JournaldReader, Arc<Mutex<Vec<String>>>)
+    where
+        R: Fn(&str, usize) -> (u16, Vec<Vec<u8>>) + Send + 'static,
+    {
+        let listener = DockerTestListener::Unix(
+            tokio::net::UnixListener::bind(socket.path()).expect("bind the docker test server"),
+        );
+        let recorded = spawn_docker_api(listener, connections, respond);
+        let reader = docker_unix_reader(socket.path().to_string_lossy().as_ref(), "traefik")
+            .with_retry_delay(Duration::from_millis(50));
+        (reader, recorded)
+    }
+
+    // ── 3.4: el stream de frames del backend de Docker ──
+
+    #[tokio::test]
+    async fn test_run_streams_docker_frames_into_the_jail_pipeline_over_unix_socket() {
+        let _guard = TEST_LOCK.lock().await;
+        reset_log_collector();
+
+        let socket = TempSocketPath::new();
+        let (reader, recorded) = docker_unix_fixture(&socket, 1, |request, _| {
+            (200, docker_stream_chunks(since_from_request(request)))
+        })
+        .await;
+
+        let app_state = build_test_app_state().await;
+        let (shutdown_tx, shutdown_rx) = tokio::sync::watch::channel(false);
+        let handle = tokio::spawn(async move { reader.run(app_state, shutdown_rx).await });
+
+        let split_frame = wait_for_pipeline_entry(404, "/wp-login.php").await;
+        let two_frames = wait_for_pipeline_entry(429, "/api/v1/items").await;
+        let prefixed = wait_for_pipeline_entry(401, "/api/login").await;
+
+        shut_down(shutdown_tx, handle).await;
+
+        assert!(
+            recorded.lock().map_or(0, |r| r.len()) >= 1,
+            "the reader must have sent the Docker log request"
+        );
+        assert!(
+            split_frame,
+            "the payload of a frame split between two chunks must reach the Jail pipeline"
+        );
+        assert!(
+            two_frames,
+            "both frames of one chunk must reach the pipeline, each with its own status_code"
+        );
+        assert!(
+            prefixed,
+            "the payload must reach the pipeline after its timestamp prefix is stripped"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_run_streams_docker_frames_into_the_jail_pipeline_over_tcp() {
+        let _guard = TEST_LOCK.lock().await;
+        reset_log_collector();
+
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("bind the docker test server");
+        let addr = listener.local_addr().expect("local addr");
+        let recorded = spawn_docker_api(DockerTestListener::Tcp(listener), 1, |request, _| {
+            (200, docker_stream_chunks(since_from_request(request)))
+        });
+
+        let reader = docker_tcp_reader(&format!("http://{addr}"), "traefik")
+            .with_retry_delay(Duration::from_millis(50));
+        let app_state = build_test_app_state().await;
+        let (shutdown_tx, shutdown_rx) = tokio::sync::watch::channel(false);
+        let handle = tokio::spawn(async move { reader.run(app_state, shutdown_rx).await });
+
+        let split_frame = wait_for_pipeline_entry(404, "/wp-login.php").await;
+        let two_frames = wait_for_pipeline_entry(429, "/api/v1/items").await;
+        let prefixed = wait_for_pipeline_entry(401, "/api/login").await;
+
+        shut_down(shutdown_tx, handle).await;
+
+        assert!(
+            recorded.lock().map_or(0, |r| r.len()) >= 1,
+            "the reader must have sent the Docker log request"
+        );
+        assert!(
+            split_frame,
+            "the same frames must be decoded over TCP as over the Unix socket"
+        );
+        assert!(
+            two_frames,
+            "both frames of one chunk must reach the pipeline over TCP too"
+        );
+        assert!(
+            prefixed,
+            "the timestamp prefix must be stripped over TCP too"
+        );
+    }
+
+    // ── 3.5: no history replay en el backend de Docker ──
+
+    #[tokio::test]
+    async fn test_run_discards_docker_payloads_older_than_the_attempt() {
+        let _guard = TEST_LOCK.lock().await;
+        reset_log_collector();
+
+        let socket = TempSocketPath::new();
+        let (reader, _recorded) = docker_unix_fixture(&socket, 1, |request, _| {
+            let since = since_from_request(request);
+            (
+                200,
+                vec![
+                    docker_frame(STDOUT, &docker_payload_at(since, -3600, 407, "/history")),
+                    docker_frame(STDOUT, &docker_payload_at(since, 1, 408, "/live")),
+                ],
+            )
+        })
+        .await;
+
+        let app_state = build_test_app_state().await;
+        let (shutdown_tx, shutdown_rx) = tokio::sync::watch::channel(false);
+        let handle = tokio::spawn(async move { reader.run(app_state, shutdown_rx).await });
+
+        let live = wait_for_pipeline_entry(408, "/live").await;
+        // Both payloads travel one after the other: once the live one is in, any
+        // entry accepted from the historical one would already be there.
+        tokio::time::sleep(Duration::from_millis(200)).await;
+
+        shut_down(shutdown_tx, handle).await;
+
+        assert!(
+            live,
+            "a payload dated after the connection attempt must reach the pipeline"
+        );
+        assert_eq!(
+            pipeline_entry_count(407, "/history"),
+            0,
+            "a payload dated before the attempt cutoff is history: it must not reach the \
+             pipeline, whatever the server sent"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_run_counts_two_identical_docker_payloads_with_different_instants() {
+        let _guard = TEST_LOCK.lock().await;
+        reset_log_collector();
+
+        let socket = TempSocketPath::new();
+        let (reader, _recorded) = docker_unix_fixture(&socket, 1, |request, _| {
+            let since = since_from_request(request);
+            (
+                200,
+                vec![
+                    docker_frame(STDOUT, &docker_payload_at(since, 1, 401, "/dup")),
+                    docker_frame(STDOUT, &docker_payload_at(since, 2, 401, "/dup")),
+                ],
+            )
+        })
+        .await;
+
+        let app_state = build_test_app_state().await;
+        let (shutdown_tx, shutdown_rx) = tokio::sync::watch::channel(false);
+        let handle = tokio::spawn(async move { reader.run(app_state, shutdown_rx).await });
+
+        let both = wait_for_pipeline_count(401, "/dup", 2).await;
+        tokio::time::sleep(Duration::from_millis(200)).await;
+
+        shut_down(shutdown_tx, handle).await;
+
+        assert!(
+            both,
+            "two payloads with identical content and different instants are two events: the \
+             Docker backend has no cursor, so nothing may deduplicate them by content"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_run_moves_the_docker_cutoff_forward_after_a_failed_attempt() {
+        let _guard = TEST_LOCK.lock().await;
+        reset_log_collector();
+
+        let socket = TempSocketPath::new();
+        let outage_at: Arc<Mutex<Option<u64>>> = Arc::new(Mutex::new(None));
+        let outage_sink = Arc::clone(&outage_at);
+
+        let (reader, recorded) = docker_unix_fixture(&socket, 2, move |request, index| {
+            if index == 0 {
+                // The attempt fails; whatever the engine writes while the reader
+                // is down is dated here.
+                if let Ok(mut slot) = outage_sink.lock() {
+                    *slot = Some(now_micros());
+                }
+                return (500, Vec::new());
+            }
+
+            let during_outage = outage_sink
+                .lock()
+                .ok()
+                .and_then(|slot| *slot)
+                .map_or(0, |micros| micros / MICROS_PER_SECOND);
+            let since = since_from_request(request);
+            (
+                200,
+                vec![
+                    docker_frame(
+                        STDOUT,
+                        &docker_payload_at(during_outage, 0, 412, "/during-outage"),
+                    ),
+                    docker_frame(STDOUT, &docker_payload_at(since, 1, 413, "/after-outage")),
+                ],
+            )
+        })
+        .await;
+
+        let app_state = build_test_app_state().await;
+        let (shutdown_tx, shutdown_rx) = tokio::sync::watch::channel(false);
+        let handle = tokio::spawn(async move { reader.run(app_state, shutdown_rx).await });
+
+        let after_outage = wait_for_pipeline_entry(413, "/after-outage").await;
+        tokio::time::sleep(Duration::from_millis(200)).await;
+
+        shut_down(shutdown_tx, handle).await;
+
+        assert!(
+            recorded.lock().map_or(0, |r| r.len()) >= 2,
+            "the reader must retry after the failed attempt"
+        );
+        assert!(
+            after_outage,
+            "a payload dated after the new attempt must reach the pipeline"
+        );
+        assert_eq!(
+            pipeline_entry_count(412, "/during-outage"),
+            0,
+            "whatever was written while the reader was down is older than the new cutoff: each \
+             attempt fixes its own when it starts"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_run_reconnects_the_docker_stream_without_counting_a_payload_twice() {
+        let _guard = TEST_LOCK.lock().await;
+        reset_log_collector();
+
+        let socket = TempSocketPath::new();
+        let (reader, recorded) = docker_unix_fixture(&socket, 2, |request, index| {
+            let since = since_from_request(request);
+            if index == 0 {
+                // The whole payload travels first; then the stream is cut in the
+                // middle of the next frame (a header with more bytes promised
+                // than delivered), which the reader must not decode.
+                let frame = docker_frame(STDOUT, &docker_payload_at(since, 1, 401, "/boundary"));
+                let partial = docker_frame(STDOUT, &docker_payload_at(since, 2, 402, "/never"));
+                return (200, vec![frame, partial[..12].to_vec()]);
+            }
+
+            // `since` has second granularity, so the engine can hand back a
+            // payload dated inside the new cutoff's own second. It is not
+            // strictly after the cutoff, so it must be discarded: that is what
+            // keeps the boundary payload from being counted twice.
+            (
+                200,
+                vec![docker_frame(
+                    STDOUT,
+                    &docker_payload_at(since, 0, 401, "/boundary"),
+                )],
+            )
+        })
+        .await;
+
+        let app_state = build_test_app_state().await;
+        let (shutdown_tx, shutdown_rx) = tokio::sync::watch::channel(false);
+        let handle = tokio::spawn(async move { reader.run(app_state, shutdown_rx).await });
+
+        let delivered = wait_for_pipeline_count(401, "/boundary", 1).await;
+
+        // Wait until the reader has reconnected: the second request is in.
+        let mut second_request = None;
+        for _ in 0..60 {
+            tokio::time::sleep(Duration::from_millis(50)).await;
+            let requests = recorded.lock().map(|r| r.clone()).unwrap_or_default();
+            if requests.len() >= 2 {
+                second_request = Some(requests[1].clone());
+                break;
+            }
+        }
+        let observed_seconds = now_micros() / MICROS_PER_SECOND;
+        // Give the reader time to process (and discard) the second attempt's
+        // payload before counting.
+        tokio::time::sleep(Duration::from_millis(250)).await;
+        let counted = pipeline_entry_count(401, "/boundary");
+
+        let first_request = recorded
+            .lock()
+            .map(|r| r.first().cloned())
+            .unwrap_or_default();
+
+        shut_down(shutdown_tx, handle).await;
+
+        assert!(
+            delivered,
+            "the payload delivered before the stream was cut must reach the pipeline once"
+        );
+        assert_eq!(
+            counted, 1,
+            "no payload of the new cutoff's second may be counted twice: the exact comparison \
+             with the attempt cutoff is what discards it"
+        );
+
+        let first_request =
+            first_request.expect("the first Docker request must have been recorded");
+        let second_request =
+            second_request.expect("the reader must reconnect after the stream is cut");
+        let since_first = since_from_request(&first_request);
+        let since_second = since_from_request(&second_request);
+        assert!(
+            since_second >= since_first,
+            "the reconnect must not travel further back than the first attempt \
+             ({since_second} < {since_first})"
+        );
+        assert!(
+            since_second + 1 >= observed_seconds,
+            "the second request must carry the cutoff of the new attempt as a coarse hint \
+             (since={since_second}, the reconnect was observed at {observed_seconds}), not a \
+             stale one frozen at the last processed payload"
         );
     }
 

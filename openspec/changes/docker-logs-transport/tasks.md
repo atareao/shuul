@@ -68,14 +68,15 @@
 - [ ] 5.3 REFACTOR: comprobar que el gate único de construcción de la petición y el del bucle de streaming siguen siendo **uno solo** para los dos backends. Verificación: el diff no añade una segunda `send_request` ni un segundo `loop` de reconexión.
 - [ ] 5.4 REFACTOR: cerrar los dos cabos que deja el RED. (a) El estado RED
       **rompe a propósito** el gate estricto: `cargo clippy -- -D warnings` sale
-      con exit 101 y **17** avisos, todos en `journald_reader.rs` y todos del
+      con exit 101 y **18** avisos, todos en `journald_reader.rs` y todos del
       andamiaje neutro —**10** del decodificador de frames (medidos en el RED de
       2.1–2.4: `unused_self` ×4, `missing_const_for_fn` ×3,
-      `needless_pass_by_ref_mut` ×2, `unnecessary_wraps` ×1) y **7** del
-      andamiaje de transporte de 3.0 (`docker_request_target`:
+      `needless_pass_by_ref_mut` ×2, `unnecessary_wraps` ×1) y **8** del
+      andamiaje de transporte —**7** de 3.0 (`docker_request_target`:
       `unused_self`+`missing_const_for_fn`; `docker_host_header`:
       `unused_self`+`missing_const_for_fn`+`unnecessary_wraps`;
-      `docker_endpoint_display`: `unused_self`+`missing_const_for_fn`)—, que
+      `docker_endpoint_display`: `unused_self`+`missing_const_for_fn`) y **1** de
+      3.5 (`payload_is_after_cutoff`: `missing_const_for_fn`)—, que
       desaparecen solos cuando 4.1/4.3/4.4/4.5 escriban los cuerpos reales:
       **no se silencian** con `#[allow]`, porque el `#[allow]` seguiría ahí
       mintiendo después.
