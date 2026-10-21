@@ -233,6 +233,15 @@ impl Default for JournaldReader { /* gatewayd local por TCP + contenedor "traefi
 - **AND** en el transporte TCP la cabecera `Host` es la autoridad del endpoint configurado
 - **AND** el path y la query son idénticos en los dos transportes
 
+#### Scenario: A base path in the Docker URL is ignored
+- **GIVEN** `SHUUL_DOCKER_URL=http://docker-socket-proxy:2375/base` definida y no vacía
+- **AND** `SHUUL_DOCKER_SOCKET` sin definir o en blanco
+- **WHEN** se construye el reader y abre el stream con el backend de Docker
+- **THEN** la petición se envía en **forma origen** (`path?query`), sin el path base
+- **AND** la cabecera `Host` es la autoridad del endpoint configurado, sin el path base
+- **AND** el endpoint que aparece en los logs es el **efectivo**, `docker:http://docker-socket-proxy:2375 (traefik)`
+- **AND** se registra un warning que nombra el path base que se ignora
+
 #### Scenario: Container filtering is delegated to the Docker API
 - **GIVEN** un lector con el backend de Docker y contenedor `traefik`
 - **WHEN** el reader construye la petición
@@ -261,6 +270,14 @@ desplazarlo hacia delante.
 Sólo SHALL entregarse al pipeline Jail lo que cada backend acepte al compararlo
 con ese corte —la comparación exacta de cada uno se detalla abajo—; todo lo demás
 SHALL descartarse.
+
+El alcance de este requisito es la **entrega**: el lector garantiza que las
+entradas y cargas posteriores al corte llegan al pipeline Jail. La cuantificación
+de fallos y el baneo los hace `run_jail_pipeline` en `http/report.rs` —cubierto
+por sus propios tests (`rate_limiting`, `report_per_rule_ban`)—, de modo que
+cuando un escenario dice que el rate limiter «cuenta» o «no cuenta» una carga
+describe la consecuencia observable de esa entrega, no una responsabilidad del
+propio lector.
 
 La garantía SHALL ser la misma en los dos backends, y cada uno la consigue por
 medios distintos:
