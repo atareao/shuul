@@ -96,10 +96,10 @@
 
 ## 5. Refactor
 
-- [ ] 5.1 REFACTOR: sin `unwrap()`, `expect()` ni `panic!()` en el camino de producción; errores tipados en `JournalError` con la causa en `#[source]`, como el resto del módulo. Verificación: `grep -n 'unwrap()\|expect(\|panic!' backend/src/journald_reader.rs` no encuentra nada fuera de `#[cfg(test)]`.
-- [ ] 5.2 REFACTOR: `cargo clippy -- -D warnings` y `cargo fmt --check` en verde.
-- [ ] 5.3 REFACTOR: comprobar que el gate único de construcción de la petición y el del bucle de streaming siguen siendo **uno solo** para los dos backends. Verificación: el diff no añade una segunda `send_request` ni un segundo `loop` de reconexión.
-- [ ] 5.4 REFACTOR: cerrar los dos cabos que deja el RED. (a) El estado RED
+- [x] 5.1 REFACTOR: sin `unwrap()`, `expect()` ni `panic!()` en el camino de producción; errores tipados en `JournalError` con la causa en `#[source]`, como el resto del módulo. Verificación cumplida: `grep -n 'unwrap()\|expect(\|panic!' backend/src/journald_reader.rs` no encuentra nada antes del primer `#[cfg(test)]` (línea 502); **todas** las coincidencias caen dentro de módulos de test (`tests_cutoff`, `tests`, `tests_task3`…`tests_task8`). No hubo nada que arreglar.
+- [x] 5.2 REFACTOR: `cargo clippy -- -D warnings` y `cargo fmt --check` en verde. Verificación cumplida: los dos con exit 0 y **0** avisos (el gate estricto sobre el binario de producción; `fmt` sin reescrituras pendientes).
+- [x] 5.3 REFACTOR: comprobar que el gate único de construcción de la petición y el del bucle de streaming siguen siendo **uno solo** para los dos backends. Verificación cumplida: el diff de la rama no añade una segunda `send_request` (`grep -c 'async fn send_request\|async fn send_once'` = **1**) ni un segundo `loop` de reconexión; el bucle de `run()` (reconexión) y el de `stream_once` (troceado) son comunes a los dos backends, y las decisiones por backend tienen un único punto: `StreamFraming::for_transport`, `build_request`, `is_docker` y `docker_request_target()`/`docker_logs_path()`. No había duplicación real que eliminar.
+- [x] 5.4 REFACTOR: cerrar los dos cabos que deja el RED. (a) El estado RED
       **rompe a propósito** el gate estricto y el GREEN de 4.1–4.3 lo ha bajado de
       **18** a **11** avisos (exit 101 en los dos casos): los 7 del andamiaje de
       transporte se los llevó 4.3 al escribir sus cuerpos y unificar
@@ -113,9 +113,15 @@
       (b) Los **7 `#[allow(dead_code)]` transitorios** del decodificador —los 2 de
       las variantes `DockerTcp`/`DockerUnixSocket` los retiró 4.2— SHALL **no
       existir** al cerrar el REFACTOR.
-      Verificación: `cargo clippy -- -D warnings` sale con exit 0 y
+      Verificación cumplida: `cargo clippy -- -D warnings` sale con exit 0 y
       `grep -c 'allow(dead_code)' backend/src/journald_reader.rs` devuelve **3**
       (los tres heredados: `socket`, `traefik_parse` y `with_retry_delay`), no 10.
+      (c) Se cierra el `redundant_clone` de `journald_reader.rs:2577` —en código
+      de **test**— que tumbaba el paso (c) del CI (`cargo clippy --all-targets
+      --all-features`, exit 101 → **0**): `docker_socket` no se reusa en el test,
+      así que se **mueve** en vez de clonarse. Fue la única modificación de un
+      test existente en esta ronda, sin tocar aserciones ni intención, y el test
+      `test_docker_variables_win_over_every_journald_variable` sigue pasando.
 
 ## 6. Documentación
 

@@ -2573,8 +2573,10 @@ mod tests_docker_transport {
         let journald_url = Some("http://remote:19531".to_string());
 
         // The four transport variables set: Docker's socket must win.
+        // `docker_socket` no se vuelve a usar en este test, así que se mueve en
+        // vez de clonarse (clippy::redundant_clone está en `deny`).
         let reader = JournaldReader::from_values(
-            docker_socket.clone(),
+            docker_socket,
             docker_url.clone(),
             journald_socket.clone(),
             journald_url.clone(),
