@@ -1725,13 +1725,22 @@ impl DockerStream {
     ///
     /// Un byte inválido es el síntoma de un contenedor arrancado con TTY, cuyo
     /// stream llega crudo y sin cabeceras: un JSON empieza por `{` (`0x7B`).
-    const fn from_byte(_byte: u8) -> Option<Self> {
-        None
+    const fn from_byte(byte: u8) -> Option<Self> {
+        match byte {
+            0 => Some(Self::Stdin),
+            1 => Some(Self::Stdout),
+            2 => Some(Self::Stderr),
+            _ => None,
+        }
     }
 
     /// Nombre con el que aparece el stream en los descartes.
     const fn name(self) -> &'static str {
-        ""
+        match self {
+            Self::Stdin => "stdin",
+            Self::Stdout => "stdout",
+            Self::Stderr => "stderr",
+        }
     }
 }
 
@@ -1755,9 +1764,22 @@ impl DecodedFrame {
     /// `stdin`, que `logs` no emite— se descartan aquí, a nivel `debug`,
     /// nombrando el stream del que venían.
     fn into_pipeline_line(self) -> Option<String> {
-        None
+        match self.stream {
+            DockerStream::Stdout => Some(self.payload),
+            DockerStream::Stderr | DockerStream::Stdin => {
+                debug!(
+                    "journald reader: discarding {} payload from the Docker log stream",
+                    self.stream.name()
+                );
+                None
+            },
+        }
     }
 }
+
+/// Longitud de la cabecera de un frame de la API de Docker: un byte de
+/// identificador de stream, tres de relleno y cuatro de longitud big-endian.
+const DOCKER_FRAME_HEADER_LEN: usize = 8;
 
 /// Decodificador incremental de los frames del stream multiplexado.
 ///
@@ -1788,15 +1810,61 @@ impl DockerFrameDecoder {
     /// Devuelve [`JournalError::TtyStream`] si el primer byte de una cabecera
     /// no es un identificador de stream válido: el cuerpo llega crudo y quien
     /// llama SHALL descartar la conexión en vez de seguir decodificando.
-    fn push(&mut self, _chunk: &[u8]) -> Result<Vec<DecodedFrame>, JournalError> {
-        Ok(Vec::new())
+    fn push(&mut self, chunk: &[u8]) -> Result<Vec<DecodedFrame>, JournalError> {
+        self.buffer.extend_from_slice(chunk);
+
+        let mut frames = Vec::new();
+        while !self.buffer.is_empty() {
+            // El primer byte de la cabecera es el identificador de stream. Un
+            // valor fuera de {0,1,2} significa que el cuerpo no lleva cabeceras
+            // —un contenedor con TTY, cuyo stream llega crudo—: se diagnostica
+            // en vez de gastar el buffer descodificando bytes que nunca serán
+            // un frame.
+            let stream_byte = self.buffer[0];
+            let Some(stream) = DockerStream::from_byte(stream_byte) else {
+                return Err(JournalError::TtyStream(stream_byte));
+            };
+
+            // Cabecera truncada: se queda en el buffer hasta que el resto de los
+            // 8 bytes llegue en un chunk posterior.
+            if self.buffer.len() < DOCKER_FRAME_HEADER_LEN {
+                break;
+            }
+            let payload_len = u32::from_be_bytes([
+                self.buffer[4],
+                self.buffer[5],
+                self.buffer[6],
+                self.buffer[7],
+            ]);
+            let payload_len = usize::try_from(payload_len).unwrap_or(usize::MAX);
+
+            // Carga truncada: lo mismo, se espera al resto. El corte se decide
+            // por la longitud declarada, nunca por la frontera entre chunks.
+            let Some(frame_len) = DOCKER_FRAME_HEADER_LEN.checked_add(payload_len) else {
+                break;
+            };
+            if self.buffer.len() < frame_len {
+                break;
+            }
+
+            let payload = String::from_utf8_lossy(&self.buffer[DOCKER_FRAME_HEADER_LEN..frame_len])
+                .into_owned();
+            self.buffer.drain(..frame_len);
+
+            if payload.is_empty() {
+                continue;
+            }
+            frames.push(DecodedFrame { stream, payload });
+        }
+
+        Ok(frames)
     }
 
     /// El stream se cerró: descarta el frame que quedara a medias.
     ///
     /// Devuelve cuántos bytes se han descartado (`0` si no quedaba ninguno).
     fn finish(&mut self) -> usize {
-        0
+        std::mem::take(&mut self.buffer).len()
     }
 }
 
@@ -1810,8 +1878,11 @@ impl DockerFrameDecoder {
 /// un prefijo utilizable: sin instante no se puede situar la carga después del
 /// corte de la conexión en curso, así que se descarta.
 #[allow(dead_code)] // La usa la tarea 4.5; ver el banner del bloque.
-fn split_timestamp_prefix(_payload: &str) -> Option<(u64, &str)> {
-    None
+fn split_timestamp_prefix(payload: &str) -> Option<(u64, &str)> {
+    let (instant, line) = payload.split_once(' ')?;
+    let parsed = chrono::DateTime::parse_from_rfc3339(instant).ok()?;
+    let micros = u64::try_from(parsed.timestamp_micros()).ok()?;
+    Some((micros, line))
 }
 
 /// Decide si una carga del backend de Docker cuenta en el intento de conexión
@@ -1828,8 +1899,11 @@ fn split_timestamp_prefix(_payload: &str) -> Option<(u64, &str)> {
 /// Es una función **pura** a propósito: la frontera se prueba con dos números,
 /// sin reloj inyectado y sin servidor (tareas 3.5 (d) y (e) del change).
 #[allow(dead_code)] // La usa la tarea 4.5; ver el banner del bloque.
-fn payload_is_after_cutoff(_instant_micros: Option<u64>, _cutoff_micros: u64) -> bool {
-    false
+const fn payload_is_after_cutoff(instant_micros: Option<u64>, cutoff_micros: u64) -> bool {
+    match instant_micros {
+        Some(instant) => instant > cutoff_micros,
+        None => false,
+    }
 }
 
 #[cfg(test)]
