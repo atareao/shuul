@@ -1,46 +1,98 @@
 //! # Journald Reader
 //!
-//! Lee en streaming los access logs de Traefik desde `systemd-journal-gatewayd`
-//! (HTTP), los parsea a `ReportPayload` y los inyecta en el pipeline Jail.
+//! Lee en streaming los access logs de Traefik, los parsea a `ReportPayload` y
+//! los inyecta en el pipeline Jail. Un mismo cliente HTTP/1.1 (`hyper`, genérico
+//! sobre `AsyncRead + AsyncWrite`) sirve **dos backends** que sólo se diferencian
+//! en la **petición** y en cómo se trocea el cuerpo; el transporte, el bucle de
+//! streaming y la reconexión son comunes.
 //!
-//! ## Transportes
+//! ## Backends y transportes
 //!
-//! El mismo protocolo HTTP se sirve sobre dos transportes:
+//! Cada backend se sirve por socket Unix (`AF_UNIX`) o por TCP, y el backend y el
+//! transporte se eligen por variable de entorno; no hay dos implementaciones de la
+//! petición ni del parseo.
 //!
-//! - **TCP** contra `http://host:puerto` (`SHUUL_JOURNALD_URL`).
-//! - **Socket Unix** `AF_UNIX` (`SHUUL_JOURNALD_SOCKET`), el preferido cuando
-//!   gatewayd corre en el mismo host.
+//! | Backend | Socket Unix | TCP |
+//! |---|---|---|
+//! | **API de Docker** | `SHUUL_DOCKER_SOCKET` | `SHUUL_DOCKER_URL` (proxy) |
+//! | **`systemd-journal-gatewayd`** | `SHUUL_JOURNALD_SOCKET` | `SHUUL_JOURNALD_URL` |
 //!
-//! El socket de `/run/systemd/journal/socket` NO se usa: es write-only. El
-//! contenido sólo se sirve por la API HTTP de gatewayd.
+//! La precedencia es: `SHUUL_DOCKER_SOCKET` → `SHUUL_DOCKER_URL` →
+//! `SHUUL_JOURNALD_SOCKET` → `SHUUL_JOURNALD_URL` → `http://localhost:19531`. Un
+//! valor ausente o en blanco cuenta como no definido. Dentro de un backend el
+//! socket gana a su URL, se avisa de la URL ignorada y se sigue; y el backend de
+//! más prioridad gana **sin** que las variables del otro lleguen a evaluarse como
+//! transporte. El contenedor sigue `SHUUL_DOCKER_CONTAINER` →
+//! `SHUUL_JOURNALD_CONTAINER` → `traefik`, de modo que quien ya apuntaba al
+//! contenedor correcto con la variable de journald no cambia al pasar de backend.
 //!
-//! ## Protocolo
+//! El socket de `/run/systemd/journal/socket` NO se usa: es write-only. Lo que
+//! sirve gatewayd es su API HTTP.
 //!
-//! 1. `GET /entries?follow&CONTAINER_NAME={container_name}` con
-//!    `Accept: application/json` (Journal JSON Format, NDJSON) y `Host`
-//! 2. Cada línea del cuerpo es un objeto JSON con los campos del journal
-//! 3. Filtra por `CONTAINER_NAME`
-//! 4. Parsea el campo `MESSAGE` como JSON de access log de Traefik
-//! 5. Construye un `ReportPayload` y lo envía al pipeline Jail
+//! ## Petición
 //!
-//! ## Filtrado
+//! - **API de Docker**:
+//!   `GET /v1.44/containers/{container}/logs?follow=1&stdout=1&stderr=1&tail=0&timestamps=1&since={cutoff}`
+//!   en **forma origen**, con `Accept: application/json`, `Host: docker` por socket
+//!   (la autoridad del endpoint por TCP) y **sin** `Upgrade` ni
+//!   `Connection: Upgrade` —con ellas el motor contesta `101 UPGRADED` en vez de
+//!   servir el stream—. `timestamps=1` antepone a cada carga su instante
+//!   `RFC3339Nano`, que alimenta el corte por intento.
+//! - **gatewayd**: `GET /entries?follow&CONTAINER_NAME={container}`, también en
+//!   forma origen, más un `Range` de reanudación que es sólo una **pista**.
 //!
-//! `?follow` sirve el journal desde el principio, así que el lector descarta
-//! en cliente:
+//! El cuerpo de la API de Docker va en **frames** multiplexados (8 bytes de
+//! cabecera: byte de stream, 3 de relleno y longitud big-endian) cuando el
+//! contenedor **no** lleva TTY. `1` (stdout) va al pipeline, `2` (stderr) se
+//! descarta, y un primer byte fuera de `{0,1,2}` —un JSON crudo empieza por
+//! `{`— descarta la conexión con un warning que nombra la causa probable. Con
+//! `tty: true` el stream va crudo y sin cabeceras: es el error más común.
 //!
-//! - las entradas con `__REALTIME_TIMESTAMP` anterior al inicio del intento de
-//!   conexión en curso (o ausente / no numérico), para que un reinicio no
-//!   reproduzca el histórico contra el rate limiter;
-//! - la entrada cuyo `__CURSOR` coincide con el último ya procesado, porque el
-//!   stream puede reanudarse en ella.
+//! El camino de Docker va **directo** a [`parse_traefik_access_log`]: **no** pasa
+//! por `extract_report_payload`/`is_traefik_entry`, que exigen el campo
+//! `CONTAINER_NAME` —que el stream no trae— y descartarían el 100 % de las líneas
+//! en silencio.
 //!
-//! El `Range` de reanudación es sólo una pista: gatewayd ignora `realtime` con
-//! `follow` y no aplica el `skip` de `entries=<cursor>:1` sin `num_entries`.
+//! ## Corte por intento de conexión (no-replay)
 //!
-//! Limitación conocida: por TCP el corte se compara con los
-//! `__REALTIME_TIMESTAMP` de un gatewayd remoto, así que un desfase NTP entre
-//! hosts descarta tráfico legítimo si el remoto va atrasado, o deja pasar
-//! histórico si va adelantado. Por socket Unix ambos relojes son el mismo.
+//! Garantía **común a los dos backends**: cada intento fija su corte en el
+//! instante en que empieza (µs) y sólo entrega al pipeline lo **estrictamente
+//! posterior**. Lo escrito mientras el reader estaba caído —o entre dos
+//! intentos— no cuenta para el rate limiter, así que reproducir el histórico al
+//! arrancar no puede banear IPs por escaneos antiguos. Es un fail-open deliberado;
+//! el WAF sigue protegiendo porque es síncrono y no depende de este transporte.
+//!
+//! ## Frontera de descarte, por backend (asimetría deliberada)
+//!
+//! Cada backend descarta con la evidencia de la que dispone, y las dos fronteras
+//! son distintas a propósito, no por descuido:
+//!
+//! - **API de Docker**: comparación exacta del instante de la carga con el corte
+//!   del intento en curso (`payload_is_after_cutoff`), estrictamente posterior.
+//!   El `since` de la petición es el filtro grueso del servidor —granularidad de
+//!   segundo— y una mera pista; la corrección la da la comparación exacta.
+//! - **gatewayd**: descarte por `__REALTIME_TIMESTAMP` anterior al corte y, tras
+//!   reconectar, dedupe por `__CURSOR` —el stream puede reanudarse en la entrada
+//!   que el cursor señala—. El `Range` es sólo una pista: gatewayd ignora
+//!   `realtime` con `follow` y no aplica el `skip` de `entries=<cursor>:1` sin
+//!   `num_entries`.
+//!
+//! ## Limitación de reloj
+//!
+//! La comparación con el corte asume que el emisor y Shuul comparten reloj. Con el
+//! daemon en la misma máquina se cumple (es el caso de los dos modos de Docker);
+//! apuntar `SHUUL_DOCKER_URL` a un daemon de **otra** máquina queda **fuera del
+//! contrato**. Y falla en las dos direcciones: un emisor **atrasado** descarta
+//! tráfico legítimo en silencio, y uno **adelantado** deja pasar el backlog
+//! (replay proporcional al desfase). Es la misma limitación que ya tenía journald
+//! por TCP, ahora aplicable también a la API de Docker remota.
+//!
+//! ## Fail-open
+//!
+//! Si el backend no está disponible se emite un `warn!` que **nombra el backend y
+//! el endpoint** —`docker api not available: {endpoint}` o `journald gateway not
+//! available`— y se reintenta cada [`DEFAULT_RETRY_DELAY`]. El texto de gatewayd
+//! se conserva literal: es el guardián de que el camino heredado no cambió.
 //!
 //! ## Concurrencia
 //!
