@@ -2411,6 +2411,53 @@ mod tests_docker_frames {
         );
     }
 
+    // ── cota de la longitud declarada en la cabecera ──
+
+    #[test]
+    fn test_a_frame_declaring_more_than_the_limit_is_refused_without_buffering() {
+        // La cabecera lleva la longitud de la carga como un `u32` (hasta ~4
+        // GiB) y la fija el par —el daemon o, en el modo B, un proxy de
+        // terceros—, que puede declararla sin enviar un solo byte de carga. Sin
+        // cota, el buffer crecería hasta esa cifra con bytes reales: es un
+        // vector de agotamiento de memoria. El decodificador SHALL rechazarlo
+        // antes de reservar nada, nombrando la longitud declarada y la cota.
+        const DECLARED: u32 = u32::MAX;
+        // La cota, escrita como literal para que este test no dependa de un
+        // símbolo que todavía no existe en el RED.
+        const LIMIT: usize = 8 * 1024 * 1024;
+
+        let mut header = vec![STDOUT, 0, 0, 0];
+        header.extend_from_slice(&DECLARED.to_be_bytes());
+        assert_eq!(header.len(), HEADER_LEN, "the fixture must be a bare header");
+
+        let mut decoder = DockerFrameDecoder::new();
+        let err = decoder.push(&header).err().expect(
+            "a frame declaring ~4 GiB must be refused, not parked waiting for a payload that \
+             will never come",
+        );
+
+        let message = err.to_string();
+        assert!(
+            message.contains(&DECLARED.to_string()),
+            "the refusal must name the declared length ({DECLARED}) so the peer can be told \
+             apart; got: {message:?}"
+        );
+        assert!(
+            message.contains(&LIMIT.to_string()),
+            "the refusal must name the {LIMIT}-byte limit so the operator knows what to expect; \
+             got: {message:?}"
+        );
+        assert!(
+            std::error::Error::source(&err).is_none(),
+            "the refusal is a context-only failure and must not carry a source"
+        );
+        assert!(
+            decoder.buffer.capacity() <= LIMIT,
+            "the refused frame must not be reserved for; capacity was {}",
+            decoder.buffer.capacity()
+        );
+    }
+
     // ── 2.4: prefijo del instante ──
 
     #[test]
