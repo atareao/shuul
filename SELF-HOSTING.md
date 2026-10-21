@@ -435,7 +435,7 @@ The shipped `compose.yml` interpolates this, so the same file works on both engi
 
 **Rootless Podman** needs one more flag. There the container runs inside a user namespace where the gid of the bind-mounted socket is not mapped, so listing the numeric gid is not enough: start the container with `--group-add keep-groups` as well, which keeps the invoking user's supplementary groups inside the container and makes the socket's gid usable. If your compose implementation forwards `group_add` verbatim, `group_add: [keep-groups, "<gid>"]` expresses the same thing; otherwise run the container with `podman run --group-add keep-groups --group-add <gid> …`.
 
-**Mount the directory, never the socket file.** A single-file bind mount stays attached to the inode it was created from: when systemd recreates the socket (socket restart, host reboot, `daemon-reload`), the container keeps seeing the dead inode and every connection fails with `ENOENT` even though `ls -l` on the host looks perfectly healthy. Mounting the parent directory propagates the recreated socket. `docker.sock` has exactly the same gotcha.
+**Mount the directory, never the socket file.** A single-file bind mount stays attached to the inode it was created from: when systemd recreates the socket (socket restart, host reboot, `daemon-reload`), the container keeps seeing the dead inode and every connection fails with `ENOENT` even though `ls -l` on the host looks perfectly healthy. Mounting the parent directory propagates the recreated socket. This applies to the journald socket only: the Docker socket is the exception — it is owned by systemd's `docker.socket` and survives Engine restarts, so mode A in 2.13 mounts the file itself.
 
 With this in place there is no `extra_hosts` entry, no published port and no firewall rule: the container only needs read access to one path on the host, plus the one group that guards it. The shipped `compose.yml` already contains the variable, the group and the volume; the snippet above is what a hand-written compose file needs.
 
@@ -736,7 +736,7 @@ Shuul never sends `Upgrade` / `Connection: Upgrade`: with those headers the Engi
 
 #### Mode A — direct socket
 
-Point shuul at the socket and mount it read-only (mount the **directory**, for the same reason as the journald socket in 2.7 — a single-file bind mount goes stale when the socket is recreated):
+Point shuul at the socket and mount **the file** read-only:
 
 ```yaml
 services:
@@ -750,6 +750,17 @@ services:
     volumes:
       - /var/run/docker.sock:/var/run/docker.sock:ro
 ```
+
+**Mount the file, not the directory — unlike the journald socket in 2.7.** Bind-mounting `/run` would hand the container **more** than the Docker API: it would also expose `containerd/containerd.sock` (`root:root 0660`) and `/run/dbus/system_bus_socket` (`0666`), which is attack surface this backend does not need. And the single-file gotcha does **not** apply here: `/run/docker.sock` is owned by systemd's `docker.socket` and dockerd runs with `-H fd://`, so the inode survives Engine restarts.
+
+> **Caveat on hosts without socket activation.** Where there is no `docker.socket` and it is dockerd itself that creates the socket, restarting the Engine replaces the inode and the mounted one goes dead. On such hosts, recreate the container (`docker restart shuul`) after restarting the Engine. The symptom in the logs is `docker api not available`. To check whether the mount is still alive, compare the inode the host sees with the one the container sees:
+>
+> ```bash
+> stat -c %i /run/docker.sock
+> docker exec shuul sh -c 'ls -i /var/run/docker.sock'
+> ```
+>
+> If the two numbers match, the mount is live.
 
 **The `group_add` needs the numeric gid of the host's `docker` group.** The container runs as `app` (uid 1000), while the socket is `root:docker 0660`; without the supplementary group `connect()` fails with `EACCES`. Read the real value — it is **not** the same as `systemd-journal` (on the reference host `docker` is `999` and `systemd-journal` is `101`):
 
@@ -1000,7 +1011,7 @@ The Jail pipeline feed is configured in addition to the stack above: the recomme
 - [ ] `RUST_LOG` is set to `info` or `warn` (not `debug`) in production
 - [ ] Health check is working
 - [ ] Container restarts automatically
-- [ ] The Jail feed is configured deliberately (see 2.13): **mode B** (`SHUUL_DOCKER_URL` pointing at a `docker-socket-proxy` with `CONTAINERS=1`, on an internal network, no host permission) is the recommended choice. If you chose **mode A**, the Docker socket is mounted (`:ro` — which still grants **root on the host**), the container joins the host's **numeric** `docker` gid via `group_add`, and `tty: true` is **not** set on Traefik. Only with the journald fallback: `systemd-journal-gatewayd.socket` enabled, `/run/systemd/journal` mounted read-only, the `systemd-journal` group granted (numeric gid on Podman), and `19531` restricted to the bridge subnet when used over TCP
+- [ ] The Jail feed is configured deliberately (see 2.13): **mode B** (`SHUUL_DOCKER_URL` pointing at a `docker-socket-proxy` with `CONTAINERS=1`, on an internal network, no host permission) is the recommended choice. If you chose **mode A**, the Docker socket **file** is mounted (`:ro` — which still grants **root on the host**), the container joins the host's **numeric** `docker` gid via `group_add`, and `tty: true` is **not** set on Traefik (on a host without socket activation, recreate the container after restarting the Engine). Only with the journald fallback: `systemd-journal-gatewayd.socket` enabled, `/run/systemd/journal` mounted read-only, the `systemd-journal` group granted (numeric gid on Podman), and `19531` restricted to the bridge subnet when used over TCP
 
 ---
 
