@@ -109,7 +109,6 @@ pub enum JournalError {
     /// identificador de stream es en realidad el primero del mensaje (un JSON
     /// empieza por `{`, `0x7B`). El campo es ese byte, para que la diagnosis lo
     /// nombre.
-    #[allow(dead_code)] // La construye la tarea 4.4 al decodificar; ver su banner.
     #[error(
         "raw Docker log stream: byte 0x{0:02X} is not a stream id (0, 1 or 2); the container \
          probably has TTY enabled, which sends the log stream raw, without the 8-byte frame headers"
@@ -625,7 +624,11 @@ impl JournaldReader {
         );
 
         let mut body = response.into_body();
-        let mut buffer: Vec<u8> = Vec::new();
+        // El backend en curso decide cómo se trocea el cuerpo —NDJSON de gatewayd
+        // o frames multiplexados de la API de Docker— en un único punto de
+        // decisión. El bucle, la petición y la reconexión son comunes a los dos
+        // (tarea 5.3): no hay un segundo `send_request` ni un segundo `loop`.
+        let mut framing = StreamFraming::for_transport(&self.transport);
         loop {
             let frame = tokio::select! {
                 biased;
@@ -636,64 +639,91 @@ impl JournaldReader {
             };
 
             let Some(frame) = frame else {
+                // El stream se cerró: un frame a medias en el backend de Docker
+                // se descarta aquí y no se arrastra a la siguiente conexión.
+                let discarded = framing.finish();
+                if discarded > 0 {
+                    debug!(
+                        "journald reader: discarding {discarded} bytes of an unfinished Docker \
+                         frame at stream close"
+                    );
+                }
                 return Ok(StreamOutcome::Disconnected);
             };
             let frame = frame.map_err(|e| JournalError::socket_from(e.to_string(), e))?;
 
-            // Trailer frames carry no NDJSON, so only data frames are appended.
+            // Trailer frames carry no payload, so only data frames are appended.
             let Some(data) = frame.data_ref() else {
                 continue;
             };
 
-            buffer.extend_from_slice(data);
-            for line in drain_ndjson_lines(&mut buffer) {
-                let entry = match parse_journal_entry(&line) {
-                    Ok(entry) => entry,
-                    Err(e) => {
-                        debug!("journald reader: skipping unsuitable journal line: {e}");
-                        continue;
-                    },
-                };
+            match &mut framing {
+                // NDJSON de gatewayd: comportamiento sin cambios respecto al
+                // camino heredado.
+                StreamFraming::Journald { buffer } => {
+                    buffer.extend_from_slice(data);
+                    for line in drain_ndjson_lines(buffer) {
+                        let entry = match parse_journal_entry(&line) {
+                            Ok(entry) => entry,
+                            Err(e) => {
+                                debug!("journald reader: skipping unsuitable journal line: {e}");
+                                continue;
+                            },
+                        };
 
-                let cursor = entry.get("__CURSOR");
+                        let cursor = entry.get("__CURSOR");
 
-                // The cursor is only a hint: `?follow` can hand back the entry
-                // the cursor points at after a reconnect. `last_cursor` is
-                // `None` on startup, so this never fires for the backlog — at
-                // most once per reconnect.
-                if cursor.is_some() && cursor == last_cursor.as_ref() {
-                    debug!("journald reader: discarding the entry already processed at the cursor");
-                    continue;
-                }
+                        // The cursor is only a hint: `?follow` can hand back the entry
+                        // the cursor points at after a reconnect. `last_cursor` is
+                        // `None` on startup, so this never fires for the backlog — at
+                        // most once per reconnect.
+                        if cursor.is_some() && cursor == last_cursor.as_ref() {
+                            debug!(
+                                "journald reader: discarding the entry already processed at the cursor"
+                            );
+                            continue;
+                        }
 
-                // An entry that cannot be placed after the start of this
-                // attempt is not ours to count. A missing or malformed
-                // timestamp is treated the same way: better to lose an entry
-                // than to ban an IP on stale evidence. Silence is deliberate:
-                // on startup this runs for every entry of the backlog, so an
-                // `INFO` line (or worse) here would flood the log.
-                let Some(timestamp) = entry
-                    .get("__REALTIME_TIMESTAMP")
-                    .and_then(|value| value.parse::<u64>().ok())
-                else {
-                    debug!(
-                        "journald reader: discarding entry without a usable __REALTIME_TIMESTAMP"
-                    );
-                    continue;
-                };
-                if timestamp < cutoff_micros {
-                    debug!(
-                        "journald reader: discarding entry from before this connection attempt \
-                         ({timestamp} < {cutoff_micros})"
-                    );
-                    continue;
-                }
+                        // An entry that cannot be placed after the start of this
+                        // attempt is not ours to count. A missing or malformed
+                        // timestamp is treated the same way: better to lose an entry
+                        // than to ban an IP on stale evidence. Silence is deliberate:
+                        // on startup this runs for every entry of the backlog, so an
+                        // `INFO` line (or worse) here would flood the log.
+                        let Some(timestamp) = entry
+                            .get("__REALTIME_TIMESTAMP")
+                            .and_then(|value| value.parse::<u64>().ok())
+                        else {
+                            debug!(
+                                "journald reader: discarding entry without a usable __REALTIME_TIMESTAMP"
+                            );
+                            continue;
+                        };
+                        if timestamp < cutoff_micros {
+                            debug!(
+                                "journald reader: discarding entry from before this connection attempt \
+                                 ({timestamp} < {cutoff_micros})"
+                            );
+                            continue;
+                        }
 
-                if let Some(cursor) = cursor {
-                    *last_cursor = Some(cursor.clone());
-                }
+                        if let Some(cursor) = cursor {
+                            *last_cursor = Some(cursor.clone());
+                        }
 
-                self.process_entry(&entry, app_state).await;
+                        self.process_entry(&entry, app_state).await;
+                    }
+                },
+                // Frames multiplexados de la API de Docker: cada frame cerrado
+                // se entrega al pipeline por el camino directo de Docker.
+                StreamFraming::Docker { decoder } => {
+                    for decoded in decoder.push(data)? {
+                        if let Some(payload) = decoded.into_pipeline_line() {
+                            self.process_docker_payload(&payload, cutoff_micros, app_state)
+                                .await;
+                        }
+                    }
+                },
             }
         }
     }
@@ -857,6 +887,49 @@ impl JournaldReader {
             Ok(None) => {},
             Err(e) => {
                 debug!("journald reader: MESSAGE is not a Traefik access log: {e}");
+            },
+        }
+    }
+
+    /// Entrega al pipeline Jail la carga de un frame de la **API de Docker**.
+    ///
+    /// El camino de Docker va **directo** a [`parse_traefik_access_log`]: no pasa
+    /// por [`extract_report_payload`] ni por [`is_traefik_entry`], que exigen el
+    /// campo `CONTAINER_NAME` —que el stream no trae— y descartarían el 100 % de
+    /// las líneas en silencio.
+    ///
+    /// El instante que antepone `timestamps=1` alimenta el corte por intento
+    /// ([`payload_is_after_cutoff`]) y la línea ya sin el prefijo alimenta el
+    /// parser. Una carga sin prefijo utilizable, o anterior al corte de la
+    /// conexión en curso, se descarta **sin abortar el stream**: mejor perder una
+    /// carga que banear una IP por evidencia vieja.
+    async fn process_docker_payload(
+        &self,
+        payload: &str,
+        cutoff_micros: u64,
+        app_state: &Arc<AppState>,
+    ) {
+        let Some((instant_micros, line)) = split_timestamp_prefix(payload) else {
+            debug!("journald reader: discarding Docker payload without a usable timestamp prefix");
+            return;
+        };
+        if !payload_is_after_cutoff(Some(instant_micros), cutoff_micros) {
+            debug!(
+                "journald reader: discarding Docker payload from before this connection attempt \
+                 ({instant_micros} <= {cutoff_micros})"
+            );
+            return;
+        }
+
+        match parse_traefik_access_log(line) {
+            Ok(Some(payload)) => {
+                if let Err(e) = run_jail_pipeline(app_state, &payload).await {
+                    warn!("journald reader: jail pipeline error: {e}");
+                }
+            },
+            Ok(None) => {},
+            Err(e) => {
+                debug!("journald reader: Docker payload is not a Traefik access log: {e}");
             },
         }
     }
@@ -1700,14 +1773,11 @@ mod tests_task6 {
 // lecturas se decodifica al completarse. El camino de journald sigue usando su
 // NDJSON (`drain_ndjson_lines`, más abajo).
 //
-// Todavía NO está cableado al bucle de lectura: eso es la tarea 4.4 del change,
-// y hasta entonces nada del build de producción lo usa. De ahí el
-// `#[allow(dead_code)]` de cada ítem de este bloque, que se retira entero
-// cuando la 4.4 lo llame desde `stream_once`. Los cuerpos devuelven por ahora
-// el valor neutro —nada decodificado—: los implementa también la 4.4.
+// Está cableado al **mismo** bucle de `stream_once` que el NDJSON: `StreamFraming`
+// elige un backend u otro en un solo punto y el resto —conexión, petición,
+// reconexión y respuesta a la señal de parada— es común a los dos (tarea 5.3).
 
 /// Identificador de stream del primer byte de la cabecera de un frame.
-#[allow(dead_code)] // Lo usa la tarea 4.4; ver el banner del bloque.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum DockerStream {
     /// `0`: stdin. El endpoint `logs` no lo emite, pero la cabecera lo admite.
@@ -1718,7 +1788,6 @@ enum DockerStream {
     Stderr,
 }
 
-#[allow(dead_code)] // Lo usa la tarea 4.4; ver el banner del bloque.
 impl DockerStream {
     /// Identificador de stream del primer byte de una cabecera, o `None` si ese
     /// byte no es ninguno de los tres válidos.
@@ -1745,7 +1814,6 @@ impl DockerStream {
 }
 
 /// Frame ya decodificado del stream multiplexado de la API de Docker.
-#[allow(dead_code)] // Lo usa la tarea 4.4; ver el banner del bloque.
 #[derive(Debug)]
 struct DecodedFrame {
     /// Stream del que viene, según el primer byte de su cabecera.
@@ -1755,7 +1823,6 @@ struct DecodedFrame {
     payload: String,
 }
 
-#[allow(dead_code)] // Lo usa la tarea 4.4; ver el banner del bloque.
 impl DecodedFrame {
     /// Línea que debe llegar al pipeline Jail, o `None` si este frame no
     /// alimenta el pipeline.
@@ -1786,13 +1853,11 @@ const DOCKER_FRAME_HEADER_LEN: usize = 8;
 /// Guarda los bytes que todavía no forman un frame completo, de modo que el
 /// corte se decide por la longitud de la cabecera y nunca por dónde caiga la
 /// frontera entre dos lecturas del socket.
-#[allow(dead_code)] // Lo usa la tarea 4.4; ver el banner del bloque.
 struct DockerFrameDecoder {
     /// Bytes leídos que todavía no completan un frame.
     buffer: Vec<u8>,
 }
 
-#[allow(dead_code)] // Lo usa la tarea 4.4; ver el banner del bloque.
 impl DockerFrameDecoder {
     /// Decodificador vacío.
     const fn new() -> Self {
@@ -1877,7 +1942,6 @@ impl DockerFrameDecoder {
 /// [`now_micros`]— y la línea ya sin el prefijo, o `None` si la carga no trae
 /// un prefijo utilizable: sin instante no se puede situar la carga después del
 /// corte de la conexión en curso, así que se descarta.
-#[allow(dead_code)] // La usa la tarea 4.5; ver el banner del bloque.
 fn split_timestamp_prefix(payload: &str) -> Option<(u64, &str)> {
     let (instant, line) = payload.split_once(' ')?;
     let parsed = chrono::DateTime::parse_from_rfc3339(instant).ok()?;
@@ -1898,11 +1962,59 @@ fn split_timestamp_prefix(payload: &str) -> Option<(u64, &str)> {
 ///
 /// Es una función **pura** a propósito: la frontera se prueba con dos números,
 /// sin reloj inyectado y sin servidor (tareas 3.5 (d) y (e) del change).
-#[allow(dead_code)] // La usa la tarea 4.5; ver el banner del bloque.
 const fn payload_is_after_cutoff(instant_micros: Option<u64>, cutoff_micros: u64) -> bool {
     match instant_micros {
         Some(instant) => instant > cutoff_micros,
         None => false,
+    }
+}
+
+/// Motor de decodificación del backend en curso.
+///
+/// Un único punto de decisión ([`StreamFraming::for_transport`]) elige entre el
+/// NDJSON de `systemd-journal-gatewayd` y los frames multiplexados de la API de
+/// Docker. El resto —conexión, petición, bucle de lectura, reconexión y
+/// respuesta a la señal de parada— es común a los dos backends (tarea 5.3), de
+/// modo que no hay un segundo `send_request` ni un segundo bucle de streaming.
+enum StreamFraming {
+    /// NDJSON de `systemd-journal-gatewayd`: líneas separadas por `\n`.
+    Journald {
+        /// Bytes leídos que todavía no completan una línea.
+        buffer: Vec<u8>,
+    },
+    /// Frames multiplexados de la API de Docker.
+    Docker {
+        /// Decodificador incremental del stream multiplexado.
+        decoder: DockerFrameDecoder,
+    },
+}
+
+impl StreamFraming {
+    /// Motor del backend que corresponde al transporte configurado.
+    const fn for_transport(transport: &JournaldTransport) -> Self {
+        match transport {
+            JournaldTransport::DockerTcp { .. } | JournaldTransport::DockerUnixSocket { .. } => {
+                Self::Docker {
+                    decoder: DockerFrameDecoder::new(),
+                }
+            },
+            JournaldTransport::Tcp { .. } | JournaldTransport::UnixSocket { .. } => {
+                Self::Journald { buffer: Vec::new() }
+            },
+        }
+    }
+
+    /// El stream se cerró: descarta lo que quedara a medias y devuelve los bytes
+    /// descartados.
+    ///
+    /// En NDJSON el fragmento final de una línea no es un frame y se tira con el
+    /// buffer (`0`); en Docker, un frame partido por el cierre del stream se
+    /// descarta aquí en vez de arrastrarlo a la siguiente conexión.
+    fn finish(&mut self) -> usize {
+        match self {
+            Self::Journald { .. } => 0,
+            Self::Docker { decoder } => decoder.finish(),
+        }
     }
 }
 
