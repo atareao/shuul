@@ -3988,6 +3988,62 @@ mod tests_task7 {
         );
     }
 
+    #[tokio::test]
+    async fn test_run_survives_a_container_that_does_not_exist() {
+        let socket = TempSocketPath::new();
+        let (logs, _subscriber) = capture_logs_while_running();
+
+        // The engine answers 404 with its own message when the container is
+        // unknown; the reader never decodes that body, so only the status and
+        // the container name can name the cause.
+        let (reader, recorded) = docker_unix_fixture(&socket, 3, |_, _| {
+            (
+                404,
+                vec![br#"{"message":"No such container: traefik"}"#.to_vec()],
+            )
+        })
+        .await;
+
+        let app_state = build_test_app_state().await;
+        let (shutdown_tx, shutdown_rx) = tokio::sync::watch::channel(false);
+        let handle = tokio::spawn(async move { reader.run(app_state, shutdown_rx).await });
+
+        // Several retries must have happened by now.
+        tokio::time::sleep(Duration::from_millis(300)).await;
+        let captured = logs.captured();
+
+        let _ = shutdown_tx.send(true);
+        let result = tokio::time::timeout(Duration::from_secs(5), handle)
+            .await
+            .expect("run() must stay responsive to shutdown while retrying")
+            .expect("run() must not panic when the container does not exist");
+        assert!(
+            result.is_ok(),
+            "an unknown container is a retryable condition, not a fatal error: {result:?}"
+        );
+
+        assert!(
+            recorded.lock().map_or(0, |r| r.len()) >= 2,
+            "the reader must retry after retry_delay; captured logs were: {captured:?}"
+        );
+        assert!(
+            captured.to_lowercase().contains("docker api not available"),
+            "the warning must say the Docker API is not available; captured logs were: {captured:?}"
+        );
+        let endpoint = format!("docker:unix:{} (traefik)", socket.path().display());
+        assert!(
+            captured.contains(&endpoint),
+            "the warning must name the endpoint ({endpoint}); captured logs were: {captured:?}"
+        );
+        let cause = captured.to_lowercase();
+        assert!(
+            cause.contains("404") && cause.contains("no such container"),
+            "the warning must name the cause —a 404 for the container that does not exist— \
+             instead of blaming a gateway that the Docker backend does not have; captured logs \
+             were: {captured:?}"
+        );
+    }
+
     // ── 3.7: shutdown a mitad de stream con el backend de Docker ──
 
     #[tokio::test]
@@ -5490,6 +5546,46 @@ mod tests_task8 {
                 None,
                 None,
                 Some("http://proxy:19531".to_string()),
+                None,
+            );
+        });
+        assert!(
+            !logs.contains("ignoring base path"),
+            "a URL without a path must not warn; logs were: {logs:?}"
+        );
+    }
+
+    #[test]
+    fn test_from_values_warns_and_hides_an_ignored_docker_base_path() {
+        let logs = capture_logs(|| {
+            let reader = JournaldReader::from_values(
+                None,
+                Some("http://proxy:2375/base".to_string()),
+                None,
+                None,
+                None,
+            );
+            assert_eq!(
+                reader.endpoint_display(),
+                "docker:http://proxy:2375 (traefik)",
+                "the logs must show the effective endpoint, not a path the request never uses"
+            );
+        });
+        assert!(
+            logs.contains("ignoring base path /base") && logs.contains("SHUUL_DOCKER_URL"),
+            "the ignored path must be reported once, naming SHUUL_DOCKER_URL so the operator \
+             knows which variable to fix; logs were: {logs:?}"
+        );
+    }
+
+    #[test]
+    fn test_from_values_does_not_warn_for_a_plain_docker_url() {
+        let logs = capture_logs(|| {
+            let _ = JournaldReader::from_values(
+                None,
+                Some("http://proxy:2375".to_string()),
+                None,
+                None,
                 None,
             );
         });
