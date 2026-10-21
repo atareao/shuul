@@ -3459,11 +3459,18 @@ mod tests_task7 {
 
     /// Valor de `since` (segundos desde `UNIX_EPOCH`) de la petición que acaba de
     /// recibir el servidor: es el corte del intento en curso, visto desde fuera.
+    ///
+    /// La query se lee del **request-target**, que es el segundo token de la
+    /// línea de petición (`METHOD target HTTP/x.y`), no de la línea entera: en la
+    /// línea completa el último par sería `since=<epoch> HTTP/1.1` y no parsearía
+    /// como entero. Se mira el segundo token por espacios a propósito, porque es
+    /// donde el protocolo sitúa la query.
     fn since_from_request(request: &str) -> u64 {
         let query = request
             .lines()
             .next()
-            .and_then(|line| line.split_once('?').map(|(_, query)| query))
+            .and_then(|line| line.split_whitespace().nth(1))
+            .and_then(|target| target.split_once('?').map(|(_, query)| query))
             .unwrap_or("");
         query
             .split('&')
