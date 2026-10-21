@@ -57,9 +57,9 @@
 
 ## 4. Implementación (GREEN)
 
-- [ ] 4.1 GREEN: resolver en `from_values`/`from_env()` la precedencia de **cinco niveles** (socket de Docker → URL de Docker → socket de journald → URL de journald → `http://localhost:19531`) y el `warn!` de la variable ignorada cuando el socket de Docker gana a su URL. Verificación: los tests de 3.1 pasan y no queda ninguna llamada a `from_values` con menos de cinco argumentos.
-- [ ] 4.2 GREEN: añadir `DockerTcp` y `DockerUnixSocket` a `JournaldTransport` y la resolución de la precedencia de cinco niveles en `from_env()`, con el `warn!` de la variable ignorada. Verificación: los tests de 3.1 pasan.
-- [ ] 4.3 GREEN: implementar el target, las cabeceras y el `endpoint_display()` del backend de Docker sobre el cliente `hyper` que ya existe (mismo `Io` borrado, mismo `CONNECT_TIMEOUT`, misma petición en forma origen). Verificación: los tests de 3.2, 3.3 y 3.4 pasan.
+- [x] 4.1 GREEN: resuelta en `from_values`/`from_env()` la precedencia de **cinco niveles** (socket de Docker → URL de Docker → socket de journald → URL de journald → `http://localhost:19531`) y el `warn!` que nombra `SHUUL_DOCKER_URL` cuando el socket de Docker gana. Verificación cumplida: los 5 tests de 3.1 pasan y no queda ninguna llamada a `from_values` con menos de cinco argumentos.
+- [x] 4.2 GREEN: `DockerTcp` y `DockerUnixSocket` en `JournaldTransport`, construidas por `from_values`; y la decisión **D1** del contenedor en `from_env()` (`SHUUL_DOCKER_CONTAINER` → `SHUUL_JOURNALD_CONTAINER` → `traefik`). Verificación cumplida: los 5 tests de 3.1 y los 2 de 3.8 pasan, los guardianes siguen verdes, y los dos `#[allow(dead_code)]` de las variantes quedan retirados.
+- [x] 4.3 GREEN: target, cabeceras y `endpoint_display()` del backend de Docker. `docker_request_target()` es el constructor **puro** del target —lo usan `build_request` y, a través de él, los tests—, y `host_header()` y `endpoint_display()` cubren los **cuatro** transportes en un solo `match` cada uno, así que no hay dos sitios que puedan desviarse. `connect()` es el mismo para los dos backends (`connect_unix`/`connect_tcp`). Verificación: los tests de 3.2 y 3.3 pasan; el de 3.4 **no** puede pasar hasta 4.4, que es quien entrega las líneas decodificadas al pipeline.
 - [ ] 4.4 GREEN: implementar el decodificador incremental de frames por delante de `drain_ndjson_lines`, respetando el corte por frontera de chunk, el descarte de `stderr` y la detección de TTY. Verificación: los tests de 2.1, 2.2, 2.3 y 3.4 pasan.
 - [ ] 4.5 GREEN: extraer el prefijo de instante de cada carga y entregar el resto a `parse_traefik_access_log`, sin pasar por `extract_report_payload`/`is_traefik_entry` en el camino de Docker (exigirían `CONTAINER_NAME` y descartarían el 100 % de las líneas). Verificación: los tests de 2.4 y 3.4 pasan y el pipeline recibe los payloads con sus campos.
 - [ ] 4.6 GREEN: corte por intento —**estrictamente posterior** al corte del intento en curso— y `since` como pista gruesa: el corte del intento en **cada** intento, también tras reconectar y tras un intento fallido; **nunca** el instante de la última carga procesada. **No** comparar contenido de línea. Verificación: los tests de 3.5 y los escenarios de *No history replay* pasan.
@@ -71,28 +71,22 @@
 - [ ] 5.2 REFACTOR: `cargo clippy -- -D warnings` y `cargo fmt --check` en verde.
 - [ ] 5.3 REFACTOR: comprobar que el gate único de construcción de la petición y el del bucle de streaming siguen siendo **uno solo** para los dos backends. Verificación: el diff no añade una segunda `send_request` ni un segundo `loop` de reconexión.
 - [ ] 5.4 REFACTOR: cerrar los dos cabos que deja el RED. (a) El estado RED
-      **rompe a propósito** el gate estricto: `cargo clippy -- -D warnings` sale
-      con exit 101 y **18** avisos, todos en `journald_reader.rs` y todos del
-      andamiaje neutro —**10** del decodificador de frames (medidos en el RED de
-      2.1–2.4: `unused_self` ×4, `missing_const_for_fn` ×3,
-      `needless_pass_by_ref_mut` ×2, `unnecessary_wraps` ×1) y **8** del
-      andamiaje de transporte —**7** de 3.0 (`docker_request_target`:
-      `unused_self`+`missing_const_for_fn`; `docker_host_header`:
-      `unused_self`+`missing_const_for_fn`+`unnecessary_wraps`;
-      `docker_endpoint_display`: `unused_self`+`missing_const_for_fn`) y **1** de
-      3.5 (`payload_is_after_cutoff`: `missing_const_for_fn`)—, que
-      desaparecen solos cuando 4.1/4.3/4.4/4.5 escriban los cuerpos reales:
-      **no se silencian** con `#[allow]`, porque el `#[allow]` seguiría ahí
-      mintiendo después.
-      (b) Los **9 `#[allow(dead_code)]` transitorios** del andamiaje —7 del
-      decodificador y 2 de las variantes `DockerTcp`/`DockerUnixSocket`,
-      comentados todos nombrando la tarea que los retira— SHALL **no existir** al
-      cerrar el REFACTOR.
-      Verificación: queda anotada la medición de partida (exit 101, 17 avisos),
-      `cargo clippy -- -D warnings` sale con exit 0 y
+      **rompe a propósito** el gate estricto y el GREEN de 4.1–4.3 lo ha bajado de
+      **18** a **11** avisos (exit 101 en los dos casos): los 7 del andamiaje de
+      transporte se los llevó 4.3 al escribir sus cuerpos y unificar
+      `host_header`/`endpoint_display` en un `match` por transporte. Los 11 que
+      quedan son todos del andamiaje neutro todavía en pie —**10** del
+      decodificador de frames (`unused_self` ×4, `missing_const_for_fn` ×3,
+      `needless_pass_by_ref_mut` ×2, `unnecessary_wraps` ×1) y **1** de 3.5
+      (`payload_is_after_cutoff`: `missing_const_for_fn`)—, y desaparecen solos
+      cuando 4.4/4.5 escriban los cuerpos reales: **no se silencian** con
+      `#[allow]`, porque el `#[allow]` seguiría ahí mintiendo después.
+      (b) Los **7 `#[allow(dead_code)]` transitorios** del decodificador —los 2 de
+      las variantes `DockerTcp`/`DockerUnixSocket` los retiró 4.2— SHALL **no
+      existir** al cerrar el REFACTOR.
+      Verificación: `cargo clippy -- -D warnings` sale con exit 0 y
       `grep -c 'allow(dead_code)' backend/src/journald_reader.rs` devuelve **3**
-      (los tres heredados: `socket`, `traefik_parse` y `with_retry_delay`), no
-      12.
+      (los tres heredados: `socket`, `traefik_parse` y `with_retry_delay`), no 10.
 
 ## 6. Documentación
 

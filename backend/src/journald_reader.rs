@@ -56,7 +56,7 @@ use hyper::client::conn::http1;
 use hyper::{Response, Uri};
 use hyper_util::rt::TokioIo;
 use std::collections::HashMap;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use thiserror::Error;
@@ -238,17 +238,13 @@ pub enum JournaldTransport {
         path: PathBuf,
     },
     // Variantes aditivas del backend de la **API de Docker** (decisión D2 del
-    // `design.md`). Todavía no las construye nadie: `from_values` las ignora
-    // hasta la tarea 4.2, que resuelve la precedencia —de ahí los dos
-    // `#[allow(dead_code)]`, que 4.2 retira—.
+    // `design.md`): las construye `from_values` al resolver la precedencia.
     /// API de logs de Docker sobre TCP contra una URL base (proxy).
-    #[allow(dead_code)] // La construye la tarea 4.2 al resolver la precedencia.
     DockerTcp {
         /// URL base del endpoint HTTP de la API de Docker.
         base_url: String,
     },
     /// API de logs del motor de Docker sobre su socket `AF_UNIX`.
-    #[allow(dead_code)] // La construye la tarea 4.2 al resolver la precedencia.
     DockerUnixSocket {
         /// Path del socket del motor de Docker.
         path: PathBuf,
@@ -307,33 +303,49 @@ impl JournaldReader {
     /// URL de journald → default de gatewayd.
     ///
     /// Los valores ausentes o en blanco se consideran no definidos. Cuando dos
-    /// variables del mismo backend llegan a la vez, gana el socket y se avisa
-    /// una sola vez de la URL que se ignora.
+    /// variables del **mismo** backend llegan a la vez, gana el socket y se avisa
+    /// una sola vez de la URL que se ignora. El backend de más prioridad gana sin
+    /// que las variables del otro lleguen a evaluarse como transporte.
     ///
     /// Está separado de [`JournaldReader::from_env`] para poder probarlo sin
     /// tocar las variables de entorno del proceso.
-    ///
-    /// La resolución de los dos niveles de Docker es la tarea 4.2: hoy los dos
-    /// primeros parámetros se ignoran —andamiaje de firma de la tarea 3.0—, de
-    /// modo que los tests heredados de journald siguen en verde y los de Docker
-    /// caen en su aserción.
     pub fn from_values(
-        _docker_socket: Option<String>,
-        _docker_url: Option<String>,
+        docker_socket: Option<String>,
+        docker_url: Option<String>,
         socket: Option<String>,
         url: Option<String>,
         container_name: Option<String>,
     ) -> Self {
-        let socket = socket
-            .map(|value| value.trim().to_string())
-            .filter(|value| !value.is_empty());
-        let url = url
-            .map(|value| value.trim().to_string())
-            .filter(|value| !value.is_empty());
-        let container_name = container_name
-            .map(|value| value.trim().to_string())
-            .filter(|value| !value.is_empty())
-            .unwrap_or_else(|| DEFAULT_CONTAINER_NAME.to_string());
+        let docker_socket = blank_to_none(docker_socket);
+        let docker_url = blank_to_none(docker_url);
+        let socket = blank_to_none(socket);
+        let url = blank_to_none(url);
+        let container_name =
+            blank_to_none(container_name).unwrap_or_else(|| DEFAULT_CONTAINER_NAME.to_string());
+
+        if let Some(path) = docker_socket {
+            if let Some(url) = docker_url {
+                warn!(
+                    "journald reader: ignoring SHUUL_DOCKER_URL={url}: \
+                     SHUUL_DOCKER_SOCKET={path} takes precedence"
+                );
+            }
+            return Self {
+                transport: JournaldTransport::DockerUnixSocket {
+                    path: PathBuf::from(path),
+                },
+                container_name,
+                retry_delay: DEFAULT_RETRY_DELAY,
+            };
+        }
+
+        if let Some(url) = docker_url {
+            return Self {
+                transport: JournaldTransport::DockerTcp { base_url: url },
+                container_name,
+                retry_delay: DEFAULT_RETRY_DELAY,
+            };
+        }
 
         match (socket, url) {
             (Some(path), Some(url)) => {
@@ -354,19 +366,23 @@ impl JournaldReader {
 
     /// Construye un reader desde las variables de entorno documentadas:
     /// `SHUUL_DOCKER_SOCKET`, `SHUUL_DOCKER_URL`, `SHUUL_JOURNALD_SOCKET`,
-    /// `SHUUL_JOURNALD_URL` y `SHUUL_JOURNALD_CONTAINER`, con los defaults
-    /// documentados.
+    /// `SHUUL_JOURNALD_URL` y el contenedor, con los defaults documentados.
     ///
-    /// La precedencia del contenedor (decisión D1 del `design.md`:
-    /// `SHUUL_DOCKER_CONTAINER` → `SHUUL_JOURNALD_CONTAINER` → `traefik`) es la
-    /// tarea 4.2.
+    /// El contenedor sigue la decisión D1 del `design.md`:
+    /// `SHUUL_DOCKER_CONTAINER` → `SHUUL_JOURNALD_CONTAINER` → `traefik`. Así
+    /// quien ya tenía definida la de journald sigue apuntando al mismo
+    /// contenedor al cambiar de backend, y quien quiera distinguirlos define la
+    /// de Docker.
     pub fn from_env() -> Self {
+        let container = blank_to_none(std::env::var("SHUUL_DOCKER_CONTAINER").ok())
+            .or_else(|| std::env::var("SHUUL_JOURNALD_CONTAINER").ok());
+
         Self::from_values(
             std::env::var("SHUUL_DOCKER_SOCKET").ok(),
             std::env::var("SHUUL_DOCKER_URL").ok(),
             std::env::var("SHUUL_JOURNALD_SOCKET").ok(),
             std::env::var("SHUUL_JOURNALD_URL").ok(),
-            std::env::var("SHUUL_JOURNALD_CONTAINER").ok(),
+            container,
         )
     }
 
@@ -392,8 +408,15 @@ impl JournaldReader {
                 |endpoint| format!("http://{}", endpoint.authority()),
             ),
             JournaldTransport::UnixSocket { path } => format!("unix:{}", path.display()),
-            JournaldTransport::DockerTcp { .. } | JournaldTransport::DockerUnixSocket { .. } => {
-                self.docker_endpoint_display()
+            JournaldTransport::DockerTcp { base_url } => {
+                format!(
+                    "docker:{} ({})",
+                    base_url.trim_end_matches('/'),
+                    self.container_name
+                )
+            },
+            JournaldTransport::DockerUnixSocket { path } => {
+                format!("docker:unix:{} ({})", path.display(), self.container_name)
             },
         }
     }
@@ -493,6 +516,16 @@ pub const CONNECT_TIMEOUT: Duration = Duration::from_secs(10);
 /// en microsegundos y el `since` de la API de Docker, que tiene granularidad de
 /// segundo, en segundos desde `UNIX_EPOCH`.
 const MICROS_PER_SECOND: u64 = 1_000_000;
+
+/// Versión de la API del motor de Docker que se consulta.
+pub const DOCKER_API_VERSION: &str = "v1.44";
+
+/// Un valor de configuración ausente o en blanco equivale a no definido.
+fn blank_to_none(value: Option<String>) -> Option<String> {
+    value
+        .map(|value| value.trim().to_string())
+        .filter(|value| !value.is_empty())
+}
 
 impl JournaldReader {
     /// Bucle de streaming: conecta con gatewayd, recibe NDJSON y entrega cada
@@ -713,37 +746,19 @@ impl JournaldReader {
         Ok((connection_task, response))
     }
 
-    /// Abre el socket correspondiente al transporte configurado.
+    /// Abre el socket del transporte configurado.
+    ///
+    /// Lo único que cambia entre los dos backends es la **petición**, no el
+    /// transporte: «conectar por un path Unix» y «conectar por una autoridad TCP»
+    /// son una sola implementación cada uno, compartida por gatewayd y por la API
+    /// de Docker.
     async fn connect(&self) -> Result<BoxedIo, JournalError> {
         match &self.transport {
-            JournaldTransport::UnixSocket { path } => {
-                let stream = UnixStream::connect(path).await.map_err(|e| {
-                    JournalError::connection_from(
-                        format!("failed to connect to unix:{}: {e}", path.display()),
-                        e,
-                    )
-                })?;
-                Ok(Box::new(stream))
+            JournaldTransport::UnixSocket { path }
+            | JournaldTransport::DockerUnixSocket { path } => connect_unix(path).await,
+            JournaldTransport::Tcp { base_url } | JournaldTransport::DockerTcp { base_url } => {
+                connect_tcp(base_url).await
             },
-            JournaldTransport::Tcp { base_url } => {
-                let endpoint = tcp_endpoint(base_url)?;
-                let stream = TcpStream::connect((endpoint.connect_host.as_str(), endpoint.port))
-                    .await
-                    .map_err(|e| {
-                        JournalError::connection_from(
-                            format!("failed to connect to {}: {e}", endpoint.authority()),
-                            e,
-                        )
-                    })?;
-                Ok(Box::new(stream))
-            },
-            JournaldTransport::DockerUnixSocket { path } => Err(JournalError::connection(format!(
-                "the Docker socket transport ({}) is not wired yet (task 4.3)",
-                path.display()
-            ))),
-            JournaldTransport::DockerTcp { base_url } => Err(JournalError::connection(format!(
-                "the Docker API transport ({base_url}) is not wired yet (task 4.3)"
-            ))),
         }
     }
 
@@ -767,7 +782,7 @@ impl JournaldReader {
             let request = Request::builder()
                 .method(Method::GET)
                 .uri(self.docker_request_target(cutoff_micros / MICROS_PER_SECOND))
-                .header(header::HOST, self.docker_host_header()?)
+                .header(header::HOST, self.host_header()?)
                 .header(header::ACCEPT, "application/json")
                 .body(Empty::<Bytes>::new())
                 .map_err(|e| {
@@ -800,13 +815,17 @@ impl JournaldReader {
     /// Valor de la cabecera `Host`: `host:puerto` en TCP (con corchetes si es
     /// IPv6, como exige el RFC) y `localhost` en el socket Unix (donde no hay
     /// autoridad real).
+    /// Valor de la cabecera `Host`: la autoridad del endpoint en los dos
+    /// transportes TCP, `localhost` en el socket de gatewayd —donde no hay
+    /// autoridad real— y `docker` en el del motor, que es la convención de la
+    /// propia API de Docker.
     fn host_header(&self) -> Result<String, JournalError> {
         match &self.transport {
-            JournaldTransport::Tcp { base_url } => Ok(tcp_endpoint(base_url)?.authority()),
-            JournaldTransport::UnixSocket { .. } => Ok("localhost".to_string()),
-            JournaldTransport::DockerTcp { .. } | JournaldTransport::DockerUnixSocket { .. } => {
-                self.docker_host_header()
+            JournaldTransport::Tcp { base_url } | JournaldTransport::DockerTcp { base_url } => {
+                Ok(tcp_endpoint(base_url)?.authority())
             },
+            JournaldTransport::UnixSocket { .. } => Ok("localhost".to_string()),
+            JournaldTransport::DockerUnixSocket { .. } => Ok("docker".to_string()),
         }
     }
 
@@ -817,27 +836,12 @@ impl JournaldReader {
     /// `stderr=1` se pide aunque sus cargas se descarten después (decisión D3
     /// del `design.md`): así un error de Traefik en `stderr` aparece en los logs
     /// del reader en vez de desaparecer.
-    ///
-    /// Cuerpo neutro: lo implementa la tarea 4.3.
-    fn docker_request_target(&self, _since_epoch: u64) -> String {
-        String::new()
-    }
-
-    /// Valor de la cabecera `Host` del backend de Docker: `docker` en el socket
-    /// Unix, donde no hay autoridad real, y la del endpoint configurado en TCP.
-    ///
-    /// Cuerpo neutro: lo implementa la tarea 4.3.
-    fn docker_host_header(&self) -> Result<String, JournalError> {
-        Ok(String::new())
-    }
-
-    /// Representación del endpoint de Docker para los logs, con el contenedor
-    /// entre paréntesis: `docker:unix:/ruta (traefik)` o
-    /// `docker:http://host:2375 (traefik)`.
-    ///
-    /// Cuerpo neutro: lo implementa la tarea 4.3.
-    fn docker_endpoint_display(&self) -> String {
-        String::new()
+    fn docker_request_target(&self, since_epoch: u64) -> String {
+        format!(
+            "/{DOCKER_API_VERSION}/containers/{}/logs\
+             ?follow=1&stdout=1&stderr=1&tail=0&timestamps=1&since={since_epoch}",
+            urlencoding::encode(&self.container_name)
+        )
     }
 
     /// Convierte los campos de una entrada del journal en un `ReportPayload`
@@ -872,6 +876,37 @@ impl TcpEndpoint {
     fn authority(&self) -> String {
         format!("{}:{}", self.authority_host, self.port)
     }
+}
+
+/// Conecta con un socket `AF_UNIX` del sistema de ficheros.
+///
+/// El mismo código sirve a gatewayd y a la API de Docker: el socket no sabe de
+/// protocolos.
+async fn connect_unix(path: &Path) -> Result<BoxedIo, JournalError> {
+    let stream = UnixStream::connect(path).await.map_err(|e| {
+        JournalError::connection_from(
+            format!("failed to connect to unix:{}: {e}", path.display()),
+            e,
+        )
+    })?;
+    Ok(Box::new(stream))
+}
+
+/// Conecta con la autoridad (`host:puerto`) de una URL base HTTP.
+///
+/// El mismo código sirve a gatewayd y a la API de Docker: lo único que se
+/// resuelve aquí es a dónde ir.
+async fn connect_tcp(base_url: &str) -> Result<BoxedIo, JournalError> {
+    let endpoint = tcp_endpoint(base_url)?;
+    let stream = TcpStream::connect((endpoint.connect_host.as_str(), endpoint.port))
+        .await
+        .map_err(|e| {
+            JournalError::connection_from(
+                format!("failed to connect to {}: {e}", endpoint.authority()),
+                e,
+            )
+        })?;
+    Ok(Box::new(stream))
 }
 
 /// Extrae `host:puerto` de una URL base HTTP.
