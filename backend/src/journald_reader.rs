@@ -352,6 +352,11 @@ impl JournaldReader {
         }
 
         if let Some(url) = docker_url {
+            // Un path base en `SHUUL_DOCKER_URL` se ignora en silencio en
+            // `build_request` —la petición va en forma origen—, así que hay que
+            // avisarlo aquí igual que se avisa en `SHUUL_JOURNALD_URL`: de otro
+            // modo el prefijo desaparece sin que nadie se entere.
+            warn_ignored_base_path(&url, "SHUUL_DOCKER_URL", &docker_logs_path(&container_name));
             return Self {
                 transport: JournaldTransport::DockerTcp { base_url: url },
                 container_name,
@@ -369,7 +374,7 @@ impl JournaldReader {
             },
             (Some(path), None) => Self::unix(path, &container_name),
             (None, Some(url)) => {
-                warn_ignored_base_path(&url);
+                warn_ignored_base_path(&url, "SHUUL_JOURNALD_URL", "/entries");
                 Self::new(&url, &container_name)
             },
             (None, None) => Self::new(DEFAULT_GATEWAY_URL, &container_name),
@@ -420,13 +425,27 @@ impl JournaldReader {
                 |endpoint| format!("http://{}", endpoint.authority()),
             ),
             JournaldTransport::UnixSocket { path } => format!("unix:{}", path.display()),
-            JournaldTransport::DockerTcp { base_url } => {
-                format!(
-                    "docker:{} ({})",
-                    base_url.trim_end_matches('/'),
-                    self.container_name
-                )
-            },
+            // Mismo cálculo que el brazo de journald (`tcp_endpoint` +
+            // `map_or_else`) para que el endpoint efectivo no se pueda desviar
+            // entre los dos backends: si `SHUUL_DOCKER_URL` trae un path base,
+            // éste se ignora al construir la petición y no debe aparecer en los
+            // logs. El fallback es la URL recortada, con el prefijo del backend.
+            JournaldTransport::DockerTcp { base_url } => tcp_endpoint(base_url).map_or_else(
+                |_| {
+                    format!(
+                        "docker:{} ({})",
+                        base_url.trim_end_matches('/'),
+                        self.container_name
+                    )
+                },
+                |endpoint| {
+                    format!(
+                        "docker:http://{} ({})",
+                        endpoint.authority(),
+                        self.container_name
+                    )
+                },
+            ),
             JournaldTransport::DockerUnixSocket { path } => {
                 format!("docker:unix:{} ({})", path.display(), self.container_name)
             },
@@ -896,9 +915,8 @@ impl JournaldReader {
     /// del reader en vez de desaparecer.
     fn docker_request_target(&self, since_epoch: u64) -> String {
         format!(
-            "/{DOCKER_API_VERSION}/containers/{}/logs\
-             ?follow=1&stdout=1&stderr=1&tail=0&timestamps=1&since={since_epoch}",
-            urlencoding::encode(&self.container_name)
+            "{}?follow=1&stdout=1&stderr=1&tail=0&timestamps=1&since={since_epoch}",
+            docker_logs_path(&self.container_name)
         )
     }
 
@@ -1078,19 +1096,35 @@ fn tcp_endpoint(base_url: &str) -> Result<TcpEndpoint, JournalError> {
     })
 }
 
-/// Avisa de que el path de la URL se ignora, para que un `SHUUL_JOURNALD_URL`
-/// con prefijo (`http://proxy/journald`) no acabe en un 404 silencioso.
-fn warn_ignored_base_path(url: &str) {
+/// Avisa de que el path de la URL se ignora, para que una URL con prefijo
+/// (`http://proxy/journald`) no acabe en un 404 silencioso.
+///
+/// El nombre de la variable y el target de la petición entran por parámetro
+/// para que **los dos backends** compartan el aviso sin divergir: el log de
+/// journald se conserva **literal** —misma variable, mismo `/entries`—, y el de
+/// Docker nombra `SHUUL_DOCKER_URL` y el path real de los logs del contenedor.
+fn warn_ignored_base_path(url: &str, variable: &str, target: &str) {
     if let Ok(uri) = url.parse::<Uri>() {
         let path = uri.path();
         if !path.is_empty() && path != "/" {
             warn!(
-                "journald reader: ignoring base path {path} in SHUUL_JOURNALD_URL={url}: \
-                 requests always use {}",
-                "/entries"
+                "journald reader: ignoring base path {path} in {variable}={url}: \
+                 requests always use {target}"
             );
         }
     }
+}
+
+/// Path de la petición de logs de la API de Docker, **sin** la query.
+///
+/// Es el punto único donde se escribe el path del contenedor: lo usan el
+/// constructor del target y el aviso del path base ignorado, de modo que no hay
+/// dos sitios que puedan desviarse.
+fn docker_logs_path(container_name: &str) -> String {
+    format!(
+        "/{DOCKER_API_VERSION}/containers/{}/logs",
+        urlencoding::encode(container_name)
+    )
 }
 
 // ── Task 2: parse_journal_entry (Journal JSON Format / NDJSON) ──
