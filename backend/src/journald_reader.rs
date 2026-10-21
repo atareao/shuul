@@ -49,7 +49,7 @@
 
 use crate::http::report::run_jail_pipeline;
 use crate::models::{AppState, ReportPayload};
-use http::{Method, Request, header};
+use http::{Method, Request, StatusCode, header};
 use http_body_util::{BodyExt, Empty};
 use hyper::body::{Bytes, Incoming};
 use hyper::client::conn::http1;
@@ -640,9 +640,7 @@ impl JournaldReader {
                 );
                 *last_cursor = None;
             }
-            return Err(JournalError::connection(format!(
-                "gateway returned HTTP {status}"
-            )));
+            return Err(JournalError::connection(self.error_status_cause(status)));
         }
 
         info!(
@@ -801,6 +799,28 @@ impl JournaldReader {
         })??;
 
         Ok((connection_task, response))
+    }
+
+    /// Causa de un intento fallido por un status HTTP de error.
+    ///
+    /// El texto de gatewayd se conserva **literal** (`gateway returned HTTP
+    /// {status}`): es el guardián de que el camino heredado no cambió. Con la
+    /// API de Docker, nombrar un «gateway» sería falso —no hay ninguno— y no
+    /// diría lo que de verdad pasa, así que la causa es backend-aware y un `404`
+    /// se explica como lo que es: el contenedor no existe.
+    fn error_status_cause(&self, status: StatusCode) -> String {
+        if !self.transport.is_docker() {
+            return format!("gateway returned HTTP {status}");
+        }
+
+        let container = &self.container_name;
+        if status == StatusCode::NOT_FOUND {
+            format!(
+                "the Docker API returned HTTP {status} for container {container} (no such container)"
+            )
+        } else {
+            format!("the Docker API returned HTTP {status} for container {container}")
+        }
     }
 
     /// Aviso de que el backend no está disponible, emitido desde el **único**
