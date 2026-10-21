@@ -39,6 +39,10 @@
 - [ ] 3.4 RED: servidor `hyper` de prueba sobre un socket Unix temporal **y** sobre TCP que responda con `200 OK` y `Content-Type: application/vnd.docker.raw-stream`, emitiendo en **ambos** los mismos frames multiplexados construidos a mano —incluido a propósito un frame partido entre dos chunks, un chunk con dos frames y una carga con el prefijo de instante— y exigiendo que las líneas de stdout lleguen al pipeline Jail. Verificación: el test falla; los tests existentes del transporte de gatewayd siguen en verde.
 - [ ] 3.5 RED: test de no-replay del backend de Docker: (a) el histórico anterior al corte no llega al pipeline; (b) tras reconectar, el `since` de la petición lleva el corte del **intento nuevo** —comprobado **como forma de la petición**, igual que en 3.2, y **no** como garantía de corrección: si un día se olvidara ponerlo, el lector seguiría siendo correcto porque es la comparación estricta la que descarta, sólo viajaría de más— y **ninguna** carga del segundo de ese corte se cuenta dos veces (esa no-duplicación la da la comparación estricta, no el `since`); (c) dos cargas de **contenido idéntico** con instantes distintos —los dos posteriores al corte— se cuentan las dos; (d) una carga con el instante **igual** al corte del intento se descarta; (e) una carga sin prefijo o con prefijo no parseable se descarta sin abortar el stream; (f) un intento fallido desplaza el corte, de modo que lo ocurrido durante la caída no llega al pipeline. Verificación: el test falla.
 - [ ] 3.6 RED: test de fail-open con el backend de Docker: socket ausente y proxy inalcanzable → warning `docker api not available`, reintento tras `retry_delay` y `run()` que devuelve `Ok(())` al recibir la señal de parada, sin dejar tareas colgadas. Verificación: el test falla.
+      Nota (honestidad del registro): el tercer `GIVEN` del escenario *Docker
+      API not available* —«o el contenedor no existe»— **no** se cubrió en el
+      RED de 3.6. Quedó como hueco declarado y lo cierra 4.9, que añade su test
+      en rojo junto a los dos hermanos de aquí.
 - [ ] 3.7 RED: test de shutdown a mitad de stream con el backend de Docker. Verificación: el test termina en menos de un segundo y devuelve `Ok(())`.
 - [x] 3.8 RED (**cubierto** en el RED de 3.4–3.5): los dos
       comportamientos de `from_env()` que se quedan sin test en rojo. (a) La
@@ -64,13 +68,31 @@
 - [x] 4.5 GREEN: extraer el prefijo de instante de cada carga y entregar el resto a `parse_traefik_access_log`, sin pasar por `extract_report_payload`/`is_traefik_entry` en el camino de Docker (exigirían `CONTAINER_NAME` y descartarían el 100 % de las líneas). Verificación cumplida: los tests de 2.4 y 3.4 pasan y el pipeline recibe los payloads con sus campos.
 - [x] 4.6 GREEN: corte por intento —**estrictamente posterior** al corte del intento en curso— y `since` como pista gruesa: el corte del intento en **cada** intento, también tras reconectar y tras un intento fallido; **nunca** el instante de la última carga procesada. **No** comparar contenido de línea. Verificación cumplida: los tests de 3.5 y los escenarios de *No history replay* pasan.
 - [x] 4.7 GREEN: fail-open y shutdown del backend de Docker reutilizando el bucle de `run()` y `wait_for_shutdown`, sin duplicar el bucle. Verificación cumplida: los tests de 3.6 y 3.7 pasan, junto con los de gatewayd.
-- [ ] 4.8 GREEN: si `SHUUL_DOCKER_URL` trae un **path base**, éste se ignora al
+- [x] 4.8 GREEN: si `SHUUL_DOCKER_URL` trae un **path base**, éste se ignora al
       construir la petición —que va en **forma origen**, igual que en el socket— y
       NO SHALL aparecer en `endpoint_display()`, que muestra el endpoint
       **efectivo** `docker:scheme://host:puerto (contenedor)`, con un `warn!` que
       nombra el path ignorado. Es el mismo contrato que ya cumple
-      `SHUUL_JOURNALD_URL` (`warn_ignored_base_path`). Verificación: el escenario
-      *A base path in the Docker URL is ignored* pasa.
+      `SHUUL_JOURNALD_URL`: el brazo `DockerTcp` de `endpoint_display()`
+      **reutiliza** `tcp_endpoint` con el mismo `map_or_else` que su hermano de
+      journald, y el aviso comparte `warn_ignored_base_path` —generalizada a
+      `(url, variable, target)`— sin divergir entre los dos brazos.
+      Verificación cumplida: el escenario *A base path in the Docker URL is
+      ignored* pasa con
+      `test_from_values_warns_and_hides_an_ignored_docker_base_path` y
+      `test_from_values_does_not_warn_for_a_plain_docker_url`, y el texto de
+      journald se conserva **literal** (su test heredado sigue verde).
+- [x] 4.9 GREEN: la **causa** de un intento fallido por un status HTTP de error
+      es **backend-aware**. Con la API de Docker un `404` se nombra como lo que
+      es —el contenedor no existe— y no se culpa a un «gateway» que ese backend
+      no tiene; el texto de gatewayd se conserva **literal** (`gateway returned
+      HTTP {status}`) como guardián del camino heredado. Cierra el tercer
+      `GIVEN` del escenario *Docker API not available* —el contenedor
+      inexistente— que 3.6 dejó como hueco en el RED.
+      Verificación cumplida: `test_run_survives_a_container_that_does_not_exist`
+      pasa —aviso `docker api not available`, endpoint `docker:unix:… (traefik)`,
+      causa con el `404` y «no such container», reintento tras `retry_delay` y
+      `run()` que devuelve `Ok(())`—, junto con sus dos hermanos del escenario.
 
 ## 5. Refactor
 
