@@ -250,6 +250,19 @@ pub enum JournaldTransport {
     },
 }
 
+impl JournaldTransport {
+    /// `true` si el transporte habla con la **API de Docker** en vez de con
+    /// `systemd-journal-gatewayd`.
+    ///
+    /// Es lo único que decide el texto del aviso de backend no disponible: los
+    /// dos backends comparten bucle, petición y conexión, así que el log es el
+    /// único punto donde hay que distinguirlos, y se distingue con un predicado
+    /// para no abrir una segunda bifurcación del camino de streaming.
+    const fn is_docker(&self) -> bool {
+        matches!(self, Self::DockerTcp { .. } | Self::DockerUnixSocket { .. })
+    }
+}
+
 /// Lector de access logs desde `systemd-journal-gatewayd`.
 ///
 /// Hace streaming NDJSON contra el endpoint `/entries?follow` del gateway,
@@ -562,12 +575,7 @@ impl JournaldReader {
                 Ok(StreamOutcome::Disconnected) => {
                     debug!("journald reader: stream closed, reconnecting");
                 },
-                Err(e) => {
-                    warn!(
-                        "journald gateway not available: {e} (retrying in {}s)",
-                        self.retry_delay.as_secs()
-                    );
-                },
+                Err(e) => self.warn_backend_unavailable(&e),
             }
 
             // Backoff that stays responsive to the shutdown signal.
@@ -774,6 +782,26 @@ impl JournaldReader {
         })??;
 
         Ok((connection_task, response))
+    }
+
+    /// Aviso de que el backend no está disponible, emitido desde el **único**
+    /// bucle de `run()` antes de reintentar.
+    ///
+    /// Nombra el backend y, en el caso de Docker, el endpoint efectivo —más la
+    /// causa, que ya viene en `error`—: quien lee los logs no tiene que adivinar
+    /// cuál de los dos falló ni a dónde se está intentando conectar. El texto de
+    /// gatewayd se conserva **literal**, porque es el guardián de que el camino
+    /// heredado no cambió.
+    fn warn_backend_unavailable(&self, error: &JournalError) {
+        let retry = self.retry_delay.as_secs();
+        if self.transport.is_docker() {
+            warn!(
+                "docker api not available: {}: {error} (retrying in {retry}s)",
+                self.endpoint_display()
+            );
+        } else {
+            warn!("journald gateway not available: {error} (retrying in {retry}s)");
+        }
     }
 
     /// Abre el socket del transporte configurado.
