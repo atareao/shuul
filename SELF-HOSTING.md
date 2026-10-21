@@ -214,7 +214,7 @@ Other distributions:
 - **Fedora / RHEL:** `sudo dnf install systemd-journal-remote`
 - **Arch Linux:** the gatewayd units ship with the base `systemd` package (some derivatives also provide a separate `systemd-journal-remote` package).
 
-### 2.3 Serve gatewayd over a Unix socket (recommended)
+### 2.3 Serve gatewayd over a Unix socket (journald backend, lower priority)
 
 ```bash
 sudo systemctl enable --now systemd-journal-gatewayd.socket
@@ -463,7 +463,7 @@ docker compose logs shuul | grep "journald reader"
 
 If you see `journald gateway not available` or `docker api not available` instead, the reader is retrying every 30 seconds: the socket is missing, was not mounted, or is not readable. See 2.11 for gatewayd and 2.13 for Docker. The WAF keeps working either way.
 
-### 2.9 TCP mode (alternative)
+### 2.9 TCP mode (gatewayd backend)
 
 Use this **only** when you cannot mount the socket — typically when gatewayd runs on **another machine**, or on a host whose systemd cannot serve a filesystem socket. It opens a network port that exposes the whole journal, so the socket is always preferable.
 
@@ -686,7 +686,7 @@ A `000` from curl says nothing about the container's configuration — curl fail
 
 **`journalctl --disk-usage` still shows gigabytes with `Storage=volatile`.** Those are the files left in `/var/log/journal` before the switch; see 2.6.
 
-### 2.12 Rollback to TCP
+### 2.12 Rollback to TCP (gatewayd backend)
 
 The WAF pipeline is never involved: the transport only affects how the Jail pipeline is fed, so rolling back cannot change allow/deny decisions.
 

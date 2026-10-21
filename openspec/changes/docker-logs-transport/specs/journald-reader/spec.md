@@ -271,6 +271,14 @@ Sólo SHALL entregarse al pipeline Jail lo que cada backend acepte al compararlo
 con ese corte —la comparación exacta de cada uno se detalla abajo—; todo lo demás
 SHALL descartarse.
 
+El alcance de este requisito es la **entrega**: el lector garantiza que las
+entradas y cargas posteriores al corte llegan al pipeline Jail. La cuantificación
+de fallos y el baneo los hace `run_jail_pipeline` en `http/report.rs` —cubierto
+por sus propios tests (`rate_limiting`, `report_per_rule_ban`)—, de modo que
+cuando un escenario dice que el rate limiter «cuenta» o «no cuenta» una carga
+describe la consecuencia observable de esa entrega, no una responsabilidad del
+propio lector.
+
 La garantía SHALL ser la misma en los dos backends, y cada uno la consigue por
 medios distintos:
 
