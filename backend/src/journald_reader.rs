@@ -166,6 +166,27 @@ pub enum JournalError {
          probably has TTY enabled, which sends the log stream raw, without the 8-byte frame headers"
     )]
     TtyStream(u8),
+
+    /// La longitud declarada en la cabecera de un frame de la API de Docker
+    /// excede la cota superior aceptada ([`MAX_FRAME_LEN`]).
+    ///
+    /// La cabecera lleva la longitud de la carga como un `u32`, así que el par
+    /// —el daemon o, en el modo B, un proxy de terceros— puede declarar hasta
+    /// ~4 GiB y hacer crecer el buffer del decodificador hasta esa cifra con
+    /// bytes reales: es un vector de agotamiento de memoria. La cota es
+    /// holgadísima para una línea de access log de Traefik (~1 KiB). Descartar
+    /// la conexión es el mismo remedio que [`JournalError::TtyStream`]: el
+    /// bucle reconecta y el corte del intento nuevo impide cualquier replay.
+    #[error(
+        "Docker log stream frame declares {declared} bytes of payload, over the {limit}-byte \
+         limit; discarding the connection"
+    )]
+    FrameTooLarge {
+        /// Longitud de la carga que declaraba la cabecera, en bytes.
+        declared: u32,
+        /// Cota superior aceptada, en bytes ([`MAX_FRAME_LEN`]).
+        limit: usize,
+    },
 }
 
 impl JournalError {
@@ -1982,6 +2003,17 @@ impl DecodedFrame {
 /// identificador de stream, tres de relleno y cuatro de longitud big-endian.
 const DOCKER_FRAME_HEADER_LEN: usize = 8;
 
+/// Cota superior de la carga que puede declarar la cabecera de un frame de la
+/// API de Docker, en bytes.
+///
+/// La cabecera lleva la longitud como un `u32` —hasta ~4 GiB— y la fija el par
+/// (el daemon o, en el modo B, un proxy de terceros), así que sin cota una
+/// cabecera declarando gigabytes haría crecer el buffer del decodificador hasta
+/// esa cifra a base de bytes reales: es un vector de agotamiento de memoria. 8
+/// MiB es holgadísimo para una línea de access log de Traefik, que ronda 1 KiB;
+/// lo que la excede no es un frame de este protocolo.
+const MAX_FRAME_LEN: usize = 8 * 1024 * 1024;
+
 /// Decodificador incremental de los frames del stream multiplexado.
 ///
 /// Guarda los bytes que todavía no forman un frame completo, de modo que el
@@ -2009,6 +2041,11 @@ impl DockerFrameDecoder {
     /// Devuelve [`JournalError::TtyStream`] si el primer byte de una cabecera
     /// no es un identificador de stream válido: el cuerpo llega crudo y quien
     /// llama SHALL descartar la conexión en vez de seguir decodificando.
+    ///
+    /// Devuelve [`JournalError::FrameTooLarge`] si la longitud declarada en una
+    /// cabecera excede [`MAX_FRAME_LEN`]: quien llama SHALL descartar la
+    /// conexión igual que con [`JournalError::TtyStream`], en vez de reservar
+    /// memoria por lo que el par declare.
     fn push(&mut self, chunk: &[u8]) -> Result<Vec<DecodedFrame>, JournalError> {
         self.buffer.extend_from_slice(chunk);
 
@@ -2029,13 +2066,27 @@ impl DockerFrameDecoder {
             if self.buffer.len() < DOCKER_FRAME_HEADER_LEN {
                 break;
             }
-            let payload_len = u32::from_be_bytes([
+            let declared_len = u32::from_be_bytes([
                 self.buffer[4],
                 self.buffer[5],
                 self.buffer[6],
                 self.buffer[7],
             ]);
-            let payload_len = usize::try_from(payload_len).unwrap_or(usize::MAX);
+
+            // La longitud declarada la fija el par, así que lo que exceda la
+            // cota se rechaza antes de reservar nada: sin cota, una cabecera
+            // declarando gigabytes haría crecer el buffer hasta esa cifra con
+            // bytes reales. `u32 -> usize` no puede fallar en las plataformas
+            // soportadas, pero se resuelve con `try_from` para no depender de
+            // ello: lo que no cupiera en `usize` es, por definición, mayor que
+            // la cota.
+            let payload_len = usize::try_from(declared_len)
+                .ok()
+                .filter(|len| *len <= MAX_FRAME_LEN)
+                .ok_or(JournalError::FrameTooLarge {
+                    declared: declared_len,
+                    limit: MAX_FRAME_LEN,
+                })?;
 
             // Carga truncada: lo mismo, se espera al resto. El corte se decide
             // por la longitud declarada, nunca por la frontera entre chunks.
