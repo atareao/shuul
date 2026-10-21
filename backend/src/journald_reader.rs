@@ -237,6 +237,22 @@ pub enum JournaldTransport {
         /// Path del socket que expone gatewayd.
         path: PathBuf,
     },
+    // Variantes aditivas del backend de la **API de Docker** (decisión D2 del
+    // `design.md`). Todavía no las construye nadie: `from_values` las ignora
+    // hasta la tarea 4.2, que resuelve la precedencia —de ahí los dos
+    // `#[allow(dead_code)]`, que 4.2 retira—.
+    /// API de logs de Docker sobre TCP contra una URL base (proxy).
+    #[allow(dead_code)] // La construye la tarea 4.2 al resolver la precedencia.
+    DockerTcp {
+        /// URL base del endpoint HTTP de la API de Docker.
+        base_url: String,
+    },
+    /// API de logs del motor de Docker sobre su socket `AF_UNIX`.
+    #[allow(dead_code)] // La construye la tarea 4.2 al resolver la precedencia.
+    DockerUnixSocket {
+        /// Path del socket del motor de Docker.
+        path: PathBuf,
+    },
 }
 
 /// Lector de access logs desde `systemd-journal-gatewayd`.
@@ -287,14 +303,23 @@ impl JournaldReader {
     }
 
     /// Construye un reader a partir de valores ya resueltos, aplicando esta
-    /// precedencia: socket → URL → default.
+    /// precedencia: socket de Docker → URL de Docker → socket de journald →
+    /// URL de journald → default de gatewayd.
     ///
-    /// Los valores ausentes o en blanco se consideran no definidos. Si llegan
-    /// socket y URL a la vez, gana el socket y se avisa una sola vez.
+    /// Los valores ausentes o en blanco se consideran no definidos. Cuando dos
+    /// variables del mismo backend llegan a la vez, gana el socket y se avisa
+    /// una sola vez de la URL que se ignora.
     ///
     /// Está separado de [`JournaldReader::from_env`] para poder probarlo sin
     /// tocar las variables de entorno del proceso.
+    ///
+    /// La resolución de los dos niveles de Docker es la tarea 4.2: hoy los dos
+    /// primeros parámetros se ignoran —andamiaje de firma de la tarea 3.0—, de
+    /// modo que los tests heredados de journald siguen en verde y los de Docker
+    /// caen en su aserción.
     pub fn from_values(
+        _docker_socket: Option<String>,
+        _docker_url: Option<String>,
         socket: Option<String>,
         url: Option<String>,
         container_name: Option<String>,
@@ -327,11 +352,18 @@ impl JournaldReader {
         }
     }
 
-    /// Construye un reader desde `SHUUL_JOURNALD_SOCKET`,
+    /// Construye un reader desde las variables de entorno documentadas:
+    /// `SHUUL_DOCKER_SOCKET`, `SHUUL_DOCKER_URL`, `SHUUL_JOURNALD_SOCKET`,
     /// `SHUUL_JOURNALD_URL` y `SHUUL_JOURNALD_CONTAINER`, con los defaults
     /// documentados.
+    ///
+    /// La precedencia del contenedor (decisión D1 del `design.md`:
+    /// `SHUUL_DOCKER_CONTAINER` → `SHUUL_JOURNALD_CONTAINER` → `traefik`) es la
+    /// tarea 4.2.
     pub fn from_env() -> Self {
         Self::from_values(
+            std::env::var("SHUUL_DOCKER_SOCKET").ok(),
+            std::env::var("SHUUL_DOCKER_URL").ok(),
             std::env::var("SHUUL_JOURNALD_SOCKET").ok(),
             std::env::var("SHUUL_JOURNALD_URL").ok(),
             std::env::var("SHUUL_JOURNALD_CONTAINER").ok(),
@@ -360,6 +392,9 @@ impl JournaldReader {
                 |endpoint| format!("http://{}", endpoint.authority()),
             ),
             JournaldTransport::UnixSocket { path } => format!("unix:{}", path.display()),
+            JournaldTransport::DockerTcp { .. } | JournaldTransport::DockerUnixSocket { .. } => {
+                self.docker_endpoint_display()
+            },
         }
     }
 }
@@ -454,6 +489,11 @@ pub const DEFAULT_CONTAINER_NAME: &str = "traefik";
 /// cabecera de respuesta del gateway.
 pub const CONNECT_TIMEOUT: Duration = Duration::from_secs(10);
 
+/// Microsegundos que tiene un segundo: el corte por intento de conexión se mide
+/// en microsegundos y el `since` de la API de Docker, que tiene granularidad de
+/// segundo, en segundos desde `UNIX_EPOCH`.
+const MICROS_PER_SECOND: u64 = 1_000_000;
+
 impl JournaldReader {
     /// Bucle de streaming: conecta con gatewayd, recibe NDJSON y entrega cada
     /// access log de Traefik al pipeline Jail.
@@ -528,7 +568,7 @@ impl JournaldReader {
             // A shutdown must not wait for CONNECT_TIMEOUT to elapse.
             () = wait_for_shutdown(shutdown) => return Ok(StreamOutcome::Shutdown),
 
-            response = self.send_request(last_cursor.as_deref()) => response?,
+            response = self.send_request(last_cursor.as_deref(), cutoff_micros) => response?,
         };
 
         let status = response.status();
@@ -639,8 +679,9 @@ impl JournaldReader {
     async fn send_request(
         &self,
         cursor: Option<&str>,
+        cutoff_micros: u64,
     ) -> Result<(ConnectionTask, Response<Incoming>), JournalError> {
-        let request = self.build_request(cursor)?;
+        let request = self.build_request(cursor, cutoff_micros)?;
         let endpoint = self.endpoint_display();
 
         let (connection_task, response) = tokio::time::timeout(CONNECT_TIMEOUT, async {
@@ -696,11 +737,49 @@ impl JournaldReader {
                     })?;
                 Ok(Box::new(stream))
             },
+            JournaldTransport::DockerUnixSocket { path } => Err(JournalError::connection(format!(
+                "the Docker socket transport ({}) is not wired yet (task 4.3)",
+                path.display()
+            ))),
+            JournaldTransport::DockerTcp { base_url } => Err(JournalError::connection(format!(
+                "the Docker API transport ({base_url}) is not wired yet (task 4.3)"
+            ))),
         }
     }
 
-    /// Construye la petición en forma origen, idéntica en ambos transportes.
-    fn build_request(&self, cursor: Option<&str>) -> Result<Request<Empty<Bytes>>, JournalError> {
+    /// Construye la petición del backend configurado. **Gate único**: el camino
+    /// real (`send_request`) y los tests llaman a esta misma función, de modo
+    /// que la forma de la petición no se puede desviar entre uno y otros (tarea
+    /// 5.3), y se puede asertar sin levantar ningún servidor.
+    ///
+    /// `cursor` es la pista de reanudación de gatewayd (`Range`) y
+    /// `cutoff_micros` el corte del intento de conexión en curso, del que la API
+    /// de Docker deriva su `since` en segundos. Cada backend usa el suyo e
+    /// ignora el otro.
+    fn build_request(
+        &self,
+        cursor: Option<&str>,
+        cutoff_micros: u64,
+    ) -> Result<Request<Empty<Bytes>>, JournalError> {
+        if let JournaldTransport::DockerTcp { .. } | JournaldTransport::DockerUnixSocket { .. } =
+            &self.transport
+        {
+            let request = Request::builder()
+                .method(Method::GET)
+                .uri(self.docker_request_target(cutoff_micros / MICROS_PER_SECOND))
+                .header(header::HOST, self.docker_host_header()?)
+                .header(header::ACCEPT, "application/json")
+                .body(Empty::<Bytes>::new())
+                .map_err(|e| {
+                    JournalError::connection_from(
+                        format!("failed to build the Docker request: {e}"),
+                        e,
+                    )
+                })?;
+
+            return Ok(request);
+        }
+
         let mut builder = Request::builder()
             .method(Method::GET)
             .uri(self.request_target())
@@ -725,7 +804,40 @@ impl JournaldReader {
         match &self.transport {
             JournaldTransport::Tcp { base_url } => Ok(tcp_endpoint(base_url)?.authority()),
             JournaldTransport::UnixSocket { .. } => Ok("localhost".to_string()),
+            JournaldTransport::DockerTcp { .. } | JournaldTransport::DockerUnixSocket { .. } => {
+                self.docker_host_header()
+            },
         }
+    }
+
+    /// Target en forma origen de la petición de la **API de Docker**: el
+    /// contenedor viaja URL-encoded en el segmento del path y `since` es el
+    /// corte del intento en curso en segundos desde `UNIX_EPOCH`.
+    ///
+    /// `stderr=1` se pide aunque sus cargas se descarten después (decisión D3
+    /// del `design.md`): así un error de Traefik en `stderr` aparece en los logs
+    /// del reader en vez de desaparecer.
+    ///
+    /// Cuerpo neutro: lo implementa la tarea 4.3.
+    fn docker_request_target(&self, _since_epoch: u64) -> String {
+        String::new()
+    }
+
+    /// Valor de la cabecera `Host` del backend de Docker: `docker` en el socket
+    /// Unix, donde no hay autoridad real, y la del endpoint configurado en TCP.
+    ///
+    /// Cuerpo neutro: lo implementa la tarea 4.3.
+    fn docker_host_header(&self) -> Result<String, JournalError> {
+        Ok(String::new())
+    }
+
+    /// Representación del endpoint de Docker para los logs, con el contenedor
+    /// entre paréntesis: `docker:unix:/ruta (traefik)` o
+    /// `docker:http://host:2375 (traefik)`.
+    ///
+    /// Cuerpo neutro: lo implementa la tarea 4.3.
+    fn docker_endpoint_display(&self) -> String {
+        String::new()
     }
 
     /// Convierte los campos de una entrada del journal en un `ReportPayload`
@@ -2016,6 +2128,275 @@ mod tests_docker_frames {
     }
 }
 
+#[cfg(test)]
+mod tests_docker_transport {
+    use super::{DEFAULT_RETRY_DELAY, JournaldReader, JournaldTransport};
+    use http::{HeaderMap, header};
+    use std::path::PathBuf;
+
+    // ── fixtures ──
+
+    /// Socket del motor de Docker.
+    const DOCKER_SOCKET: &str = "/var/run/docker.sock";
+    /// URL base de un proxy de la API de Docker.
+    const DOCKER_PROXY: &str = "http://docker-socket-proxy:2375";
+    /// Corte de un intento de conexión. Lleva una parte sub-segundo a propósito:
+    /// el `since` de la API tiene granularidad de segundo y tiene que truncarla.
+    const CUTOFF_MICROS: u64 = 1_792_571_467_123_456;
+
+    /// Reader con el backend de Docker sobre socket Unix.
+    ///
+    /// Se construye a mano porque `from_values` todavía no resuelve la
+    /// precedencia de Docker (tarea 4.2): los tests de la petición y del endpoint
+    /// no pueden pasar por él.
+    fn docker_unix_reader(path: &str, container: &str) -> JournaldReader {
+        JournaldReader {
+            transport: JournaldTransport::DockerUnixSocket {
+                path: PathBuf::from(path),
+            },
+            container_name: container.to_string(),
+            retry_delay: DEFAULT_RETRY_DELAY,
+        }
+    }
+
+    /// Reader con el backend de Docker sobre TCP.
+    fn docker_tcp_reader(base_url: &str, container: &str) -> JournaldReader {
+        JournaldReader {
+            transport: JournaldTransport::DockerTcp {
+                base_url: base_url.to_string(),
+            },
+            container_name: container.to_string(),
+            retry_delay: DEFAULT_RETRY_DELAY,
+        }
+    }
+
+    /// Target y cabeceras de la petición que este reader enviaría, tomados del
+    /// **mismo** constructor que usa el camino real —`build_request`, el gate
+    /// único de la tarea 5.3—, sin levantar ningún servidor.
+    ///
+    /// Si la petición no se puede construir, la aserción de abajo falla el test
+    /// y el valor vacío que devuelve el `else` no llega a usarse: el test no
+    /// puede caer en un pánico del código de producción.
+    fn request_parts(reader: &JournaldReader, cutoff_micros: u64) -> (String, HeaderMap) {
+        let request = reader.build_request(None, cutoff_micros);
+        assert!(request.is_ok(), "the request must build, got: {request:?}");
+        let Ok(request) = request else {
+            return (String::new(), HeaderMap::new());
+        };
+        (request.uri().to_string(), request.headers().clone())
+    }
+
+    /// Valor de texto de una cabecera, o `None` si no viene o no es ASCII.
+    fn header_value<'a>(headers: &'a HeaderMap, name: header::HeaderName) -> Option<&'a str> {
+        headers.get(name).and_then(|value| value.to_str().ok())
+    }
+
+    // ── 3.1: precedencia de los cinco niveles ──
+
+    #[test]
+    fn test_docker_socket_alone_selects_the_docker_unix_transport() {
+        let reader =
+            JournaldReader::from_values(Some(DOCKER_SOCKET.to_string()), None, None, None, None);
+        assert_eq!(
+            reader.transport,
+            JournaldTransport::DockerUnixSocket {
+                path: PathBuf::from(DOCKER_SOCKET)
+            },
+            "SHUUL_DOCKER_SOCKET must select the Docker API over its Unix socket"
+        );
+        assert_eq!(reader.container_name, "traefik");
+    }
+
+    #[test]
+    fn test_docker_url_alone_selects_the_docker_tcp_transport() {
+        let reader =
+            JournaldReader::from_values(None, Some(DOCKER_PROXY.to_string()), None, None, None);
+        assert_eq!(
+            reader.transport,
+            JournaldTransport::DockerTcp {
+                base_url: DOCKER_PROXY.to_string()
+            },
+            "SHUUL_DOCKER_URL must select the Docker API over TCP"
+        );
+    }
+
+    #[test]
+    fn test_docker_socket_wins_over_the_docker_url() {
+        let reader = JournaldReader::from_values(
+            Some(DOCKER_SOCKET.to_string()),
+            Some(DOCKER_PROXY.to_string()),
+            None,
+            None,
+            None,
+        );
+        assert_eq!(
+            reader.transport,
+            JournaldTransport::DockerUnixSocket {
+                path: PathBuf::from(DOCKER_SOCKET)
+            },
+            "with both Docker variables set the socket wins"
+        );
+    }
+
+    #[test]
+    fn test_docker_variables_win_over_every_journald_variable() {
+        let docker_socket = Some(DOCKER_SOCKET.to_string());
+        let docker_url = Some(DOCKER_PROXY.to_string());
+        let journald_socket = Some("/run/systemd/journal/gatewayd.sock".to_string());
+        let journald_url = Some("http://remote:19531".to_string());
+
+        // The four transport variables set: Docker's socket must win.
+        let reader = JournaldReader::from_values(
+            docker_socket.clone(),
+            docker_url.clone(),
+            journald_socket.clone(),
+            journald_url.clone(),
+            None,
+        );
+        assert_eq!(
+            reader.transport,
+            JournaldTransport::DockerUnixSocket {
+                path: PathBuf::from(DOCKER_SOCKET)
+            },
+            "the highest priority backend must win, with the others never reaching the transport"
+        );
+
+        // Without the Docker socket, Docker's URL must win.
+        let reader = JournaldReader::from_values(
+            None,
+            docker_url,
+            journald_socket.clone(),
+            journald_url.clone(),
+            None,
+        );
+        assert_eq!(
+            reader.transport,
+            JournaldTransport::DockerTcp {
+                base_url: DOCKER_PROXY.to_string()
+            },
+            "the Docker URL goes before both journald variables"
+        );
+
+        // Without both Docker variables, journald's socket must win.
+        let reader =
+            JournaldReader::from_values(None, None, journald_socket, journald_url.clone(), None);
+        assert_eq!(
+            reader.transport,
+            JournaldTransport::UnixSocket {
+                path: PathBuf::from("/run/systemd/journal/gatewayd.sock")
+            },
+            "removing the Docker backend must fall back to the journald socket, not to the URL"
+        );
+
+        // And with only the journald URL left, that is the transport.
+        let reader = JournaldReader::from_values(None, None, None, journald_url, None);
+        assert_eq!(
+            reader.transport,
+            JournaldTransport::Tcp {
+                base_url: "http://remote:19531".to_string()
+            },
+            "the last level of the precedence is the journald URL"
+        );
+    }
+
+    #[test]
+    fn test_blank_docker_variable_counts_as_undefined() {
+        let reader = JournaldReader::from_values(
+            Some("   ".to_string()),
+            Some(String::new()),
+            Some("/run/systemd/journal/gatewayd.sock".to_string()),
+            None,
+            None,
+        );
+        assert_eq!(
+            reader.transport,
+            JournaldTransport::UnixSocket {
+                path: PathBuf::from("/run/systemd/journal/gatewayd.sock")
+            },
+            "a blank Docker variable must not activate the Docker backend"
+        );
+    }
+
+    // ── 3.2: la petición del backend de Docker ──
+
+    #[test]
+    fn test_docker_request_is_the_engine_log_endpoint() {
+        let reader = docker_unix_reader(DOCKER_SOCKET, "traefik");
+        let (target, headers) = request_parts(&reader, CUTOFF_MICROS);
+
+        assert_eq!(
+            target,
+            "/v1.44/containers/traefik/logs?follow=1&stdout=1&stderr=1&tail=0&timestamps=1\
+             &since=1792571467",
+            "the Docker request must be the engine log endpoint, with the attempt cutoff in \
+             seconds as `since`"
+        );
+        assert_eq!(
+            header_value(&headers, header::ACCEPT),
+            Some("application/json"),
+            "the engine serves the stream as JSON lines"
+        );
+        assert_eq!(
+            header_value(&headers, header::HOST),
+            Some("docker"),
+            "over a Unix socket there is no real authority and Docker's own convention is `docker`"
+        );
+        assert!(
+            headers.get(header::UPGRADE).is_none(),
+            "asking for Upgrade makes the engine answer 101 UPGRADED instead of serving the stream"
+        );
+        assert!(
+            headers.get(header::CONNECTION).is_none(),
+            "no `Connection: Upgrade` either: the stream is a plain 200 OK body"
+        );
+    }
+
+    #[test]
+    fn test_docker_request_is_identical_in_both_transports_but_for_the_host() {
+        let unix = docker_unix_reader(DOCKER_SOCKET, "traefik");
+        let tcp = docker_tcp_reader(DOCKER_PROXY, "traefik");
+
+        let (unix_target, _) = request_parts(&unix, CUTOFF_MICROS);
+        let (tcp_target, tcp_headers) = request_parts(&tcp, CUTOFF_MICROS);
+
+        assert_eq!(
+            tcp_target, unix_target,
+            "the path and the query must be identical in both transports"
+        );
+        assert_eq!(
+            header_value(&tcp_headers, header::HOST),
+            Some("docker-socket-proxy:2375"),
+            "in TCP the Host header is the authority of the configured endpoint"
+        );
+    }
+
+    #[test]
+    fn test_docker_request_url_encodes_the_container_name() {
+        let reader = docker_unix_reader(DOCKER_SOCKET, "my traefik");
+        let (target, _) = request_parts(&reader, CUTOFF_MICROS);
+
+        assert!(
+            target.starts_with("/v1.44/containers/my%20traefik/logs?"),
+            "the container travels in the path segment, URL-encoded, so the lines need no \
+             CONTAINER_NAME field; got: {target}"
+        );
+    }
+
+    // ── 3.3: endpoint_display ──
+
+    #[test]
+    fn test_docker_endpoint_display_names_the_backend_and_the_container() {
+        assert_eq!(
+            docker_unix_reader(DOCKER_SOCKET, "traefik").endpoint_display(),
+            "docker:unix:/var/run/docker.sock (traefik)"
+        );
+        assert_eq!(
+            docker_tcp_reader(DOCKER_PROXY, "traefik").endpoint_display(),
+            "docker:http://docker-socket-proxy:2375 (traefik)"
+        );
+    }
+}
+
 // ── Task 7: JournaldReader::run ──
 
 /// Extrae del buffer las líneas NDJSON completas, dejando en él sólo el
@@ -2181,7 +2562,9 @@ mod tests_task7 {
         let reader = JournaldReader::new("http://[::1]:19531", "traefik");
         assert_eq!(reader.endpoint_display(), "http://[::1]:19531");
 
-        let request = reader.build_request(None).expect("request must build");
+        let request = reader
+            .build_request(None, now_micros())
+            .expect("request must build");
         assert_eq!(
             request.headers()[header::HOST],
             "[::1]:19531",
@@ -3677,7 +4060,7 @@ mod tests_task7 {
 
         let reader = JournaldReader::new(&format!("http://{addr}"), "traefik");
         let err = reader
-            .send_request(None)
+            .send_request(None, now_micros())
             .await
             .err()
             .expect("a peer that closes early must produce an error");
@@ -3785,7 +4168,7 @@ mod tests_task8 {
 
     #[test]
     fn test_from_values_uses_defaults_when_absent() {
-        let reader = JournaldReader::from_values(None, None, None);
+        let reader = JournaldReader::from_values(None, None, None, None, None);
         assert_eq!(reader.transport, tcp(DEFAULT_GATEWAY_URL));
         assert_eq!(reader.container_name, DEFAULT_CONTAINER);
     }
@@ -3793,6 +4176,8 @@ mod tests_task8 {
     #[test]
     fn test_from_values_honours_url_and_container() {
         let reader = JournaldReader::from_values(
+            None,
+            None,
             None,
             Some("http://host.docker.internal:19531".to_string()),
             Some("my-traefik".to_string()),
@@ -3804,6 +4189,8 @@ mod tests_task8 {
     #[test]
     fn test_from_values_socket_only_selects_unix_transport() {
         let reader = JournaldReader::from_values(
+            None,
+            None,
             Some("/run/systemd/journal/gatewayd.sock".to_string()),
             None,
             None,
@@ -3819,6 +4206,8 @@ mod tests_task8 {
     #[test]
     fn test_from_values_socket_takes_precedence_over_url() {
         let reader = JournaldReader::from_values(
+            None,
+            None,
             Some("/run/systemd/journal/gatewayd.sock".to_string()),
             Some("http://remote:19531".to_string()),
             Some("traefik".to_string()),
@@ -3836,6 +4225,8 @@ mod tests_task8 {
     fn test_from_values_socket_takes_precedence_over_url_and_warns() {
         let logs = capture_logs(|| {
             let reader = JournaldReader::from_values(
+                None,
+                None,
                 Some("/run/systemd/journal/gatewayd.sock".to_string()),
                 Some("http://remote:19531".to_string()),
                 None,
@@ -3856,7 +4247,13 @@ mod tests_task8 {
     #[test]
     fn test_from_values_socket_only_does_not_warn() {
         let logs = capture_logs(|| {
-            let _ = JournaldReader::from_values(Some("/run/gw.sock".to_string()), None, None);
+            let _ = JournaldReader::from_values(
+                None,
+                None,
+                Some("/run/gw.sock".to_string()),
+                None,
+                None,
+            );
         });
         assert!(
             !logs.contains("SHUUL_JOURNALD_URL"),
@@ -3867,6 +4264,8 @@ mod tests_task8 {
     #[test]
     fn test_from_values_blank_values_are_equivalent_to_absent() {
         let reader = JournaldReader::from_values(
+            None,
+            None,
             Some("   ".to_string()),
             Some(String::new()),
             Some("\t\n".to_string()),
@@ -3885,6 +4284,8 @@ mod tests_task8 {
     #[test]
     fn test_from_values_blank_socket_falls_back_to_url() {
         let reader = JournaldReader::from_values(
+            None,
+            None,
             Some("  ".to_string()),
             Some("http://remote:19531".to_string()),
             None,
@@ -4012,6 +4413,8 @@ mod tests_task8 {
     #[test]
     fn test_from_values_trims_surrounding_whitespace() {
         let reader = JournaldReader::from_values(
+            None,
+            None,
             Some("  /run/systemd/journal/gatewayd.sock  ".to_string()),
             None,
             Some("  my-traefik  ".to_string()),
@@ -4025,8 +4428,13 @@ mod tests_task8 {
         );
         assert_eq!(reader.container_name, "my-traefik");
 
-        let reader =
-            JournaldReader::from_values(None, Some(" http://remote:19531 ".to_string()), None);
+        let reader = JournaldReader::from_values(
+            None,
+            None,
+            None,
+            Some(" http://remote:19531 ".to_string()),
+            None,
+        );
         assert_eq!(
             reader.transport,
             tcp("http://remote:19531"),
@@ -4038,6 +4446,8 @@ mod tests_task8 {
     fn test_from_values_warns_and_hides_an_ignored_base_path() {
         let logs = capture_logs(|| {
             let reader = JournaldReader::from_values(
+                None,
+                None,
                 None,
                 Some("http://proxy:19531/journald".to_string()),
                 None,
@@ -4057,7 +4467,13 @@ mod tests_task8 {
     #[test]
     fn test_from_values_does_not_warn_for_a_plain_url() {
         let logs = capture_logs(|| {
-            let _ = JournaldReader::from_values(None, Some("http://proxy:19531".to_string()), None);
+            let _ = JournaldReader::from_values(
+                None,
+                None,
+                None,
+                Some("http://proxy:19531".to_string()),
+                None,
+            );
         });
         assert!(
             !logs.contains("ignoring base path"),
