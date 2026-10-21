@@ -60,10 +60,17 @@
 - [x] 4.1 GREEN: resuelta en `from_values`/`from_env()` la precedencia de **cinco niveles** (socket de Docker → URL de Docker → socket de journald → URL de journald → `http://localhost:19531`) y el `warn!` que nombra `SHUUL_DOCKER_URL` cuando el socket de Docker gana. Verificación cumplida: los 5 tests de 3.1 pasan y no queda ninguna llamada a `from_values` con menos de cinco argumentos.
 - [x] 4.2 GREEN: `DockerTcp` y `DockerUnixSocket` en `JournaldTransport`, construidas por `from_values`; y la decisión **D1** del contenedor en `from_env()` (`SHUUL_DOCKER_CONTAINER` → `SHUUL_JOURNALD_CONTAINER` → `traefik`). Verificación cumplida: los 5 tests de 3.1 y los 2 de 3.8 pasan, los guardianes siguen verdes, y los dos `#[allow(dead_code)]` de las variantes quedan retirados.
 - [x] 4.3 GREEN: target, cabeceras y `endpoint_display()` del backend de Docker. `docker_request_target()` es el constructor **puro** del target —lo usan `build_request` y, a través de él, los tests—, y `host_header()` y `endpoint_display()` cubren los **cuatro** transportes en un solo `match` cada uno, así que no hay dos sitios que puedan desviarse. `connect()` es el mismo para los dos backends (`connect_unix`/`connect_tcp`). Verificación: los tests de 3.2 y 3.3 pasan; el de 3.4 **no** puede pasar hasta 4.4, que es quien entrega las líneas decodificadas al pipeline.
-- [ ] 4.4 GREEN: implementar el decodificador incremental de frames por delante de `drain_ndjson_lines`, respetando el corte por frontera de chunk, el descarte de `stderr` y la detección de TTY. Verificación: los tests de 2.1, 2.2, 2.3 y 3.4 pasan.
-- [ ] 4.5 GREEN: extraer el prefijo de instante de cada carga y entregar el resto a `parse_traefik_access_log`, sin pasar por `extract_report_payload`/`is_traefik_entry` en el camino de Docker (exigirían `CONTAINER_NAME` y descartarían el 100 % de las líneas). Verificación: los tests de 2.4 y 3.4 pasan y el pipeline recibe los payloads con sus campos.
-- [ ] 4.6 GREEN: corte por intento —**estrictamente posterior** al corte del intento en curso— y `since` como pista gruesa: el corte del intento en **cada** intento, también tras reconectar y tras un intento fallido; **nunca** el instante de la última carga procesada. **No** comparar contenido de línea. Verificación: los tests de 3.5 y los escenarios de *No history replay* pasan.
-- [ ] 4.7 GREEN: fail-open y shutdown del backend de Docker reutilizando el bucle de `run()` y `wait_for_shutdown`, sin duplicar el bucle. Verificación: los tests de 3.6 y 3.7 pasan, junto con los de gatewayd.
+- [x] 4.4 GREEN: implementar el decodificador incremental de frames por delante de `drain_ndjson_lines`, respetando el corte por frontera de chunk, el descarte de `stderr` y la detección de TTY. Verificación cumplida: los tests de 2.1, 2.2, 2.3 y 3.4 pasan.
+- [x] 4.5 GREEN: extraer el prefijo de instante de cada carga y entregar el resto a `parse_traefik_access_log`, sin pasar por `extract_report_payload`/`is_traefik_entry` en el camino de Docker (exigirían `CONTAINER_NAME` y descartarían el 100 % de las líneas). Verificación cumplida: los tests de 2.4 y 3.4 pasan y el pipeline recibe los payloads con sus campos.
+- [x] 4.6 GREEN: corte por intento —**estrictamente posterior** al corte del intento en curso— y `since` como pista gruesa: el corte del intento en **cada** intento, también tras reconectar y tras un intento fallido; **nunca** el instante de la última carga procesada. **No** comparar contenido de línea. Verificación cumplida: los tests de 3.5 y los escenarios de *No history replay* pasan.
+- [x] 4.7 GREEN: fail-open y shutdown del backend de Docker reutilizando el bucle de `run()` y `wait_for_shutdown`, sin duplicar el bucle. Verificación cumplida: los tests de 3.6 y 3.7 pasan, junto con los de gatewayd.
+- [ ] 4.8 GREEN: si `SHUUL_DOCKER_URL` trae un **path base**, éste se ignora al
+      construir la petición —que va en **forma origen**, igual que en el socket— y
+      NO SHALL aparecer en `endpoint_display()`, que muestra el endpoint
+      **efectivo** `docker:scheme://host:puerto (contenedor)`, con un `warn!` que
+      nombra el path ignorado. Es el mismo contrato que ya cumple
+      `SHUUL_JOURNALD_URL` (`warn_ignored_base_path`). Verificación: el escenario
+      *A base path in the Docker URL is ignored* pasa.
 
 ## 5. Refactor
 
@@ -96,6 +103,13 @@
 - [ ] 6.4 Dejar escrito en `SELF-HOSTING.md` que el `group_add` del modo A exige el gid **numérico** del grupo `docker` del host y que cambiarlo requiere `--force-recreate`. Verificación: los comandos son copiables y no hardcodean `999`.
 - [ ] 6.5 `SELF-HOSTING.md` §2: dejar escrito que el contrato de no-replay **asume el mismo reloj** que el motor —con el daemon en la misma máquina (modos A y B) emisor y lector comparten reloj, como en journald— y que apuntar `SHUUL_DOCKER_URL` a un daemon de **otra máquina** exige relojes sincronizados y queda **fuera del contrato** de este change. Verificación: el texto menciona el desfase de reloj y el requisito de sincronía.
 - [ ] 6.6 `backend/src/journald_reader.rs:26-43`: reescribir el comentario de módulo para que describa **los dos backends** y no sólo `systemd-journal-gatewayd` —hoy habla sólo de `__REALTIME_TIMESTAMP`/`__CURSOR` y de un «gatewayd remoto», así que miente por omisión en cuanto el mismo módulo sirva también la API de Docker, y es el fichero donde un dev mira primero—: el **corte por intento de conexión** (la garantía de no-replay), la **comparación exacta por instante de la carga** en el backend de Docker, el **dedupe por `__CURSOR`** en el de journald, y la **limitación de reloj** con sus **dos** direcciones (emisor atrasado → tráfico legítimo descartado en silencio; emisor adelantado → replay del backlog). Verificación: `grep -n 'API de Docker\|comparación exacta\|__CURSOR\|atrasado\|adelantado' backend/src/journald_reader.rs` encuentra los cinco términos dentro del comentario de módulo (antes de la primera línea `use`).
+- [x] 6.7 Alineación de las referencias obsoletas a gatewayd **fuera de §2**
+      (hecha ya en `5eb7247`, con `9b7c0d7`): `README.md` y `SELF-HOSTING.md`
+      §1.1, §6.1, §6.3, §12, §13 y §14 dejan de presentar gatewayd y el plugin
+      `traefik-shuul-reporter` como el camino recomendado, y apuntan al
+      `JournaldReader` vía la API de Docker. Verificación cumplida: esas
+      secciones describen el transporte por la API de Docker, citando `9b7c0d7`
+      y `5eb7247`.
 
 ## 7. Gates
 

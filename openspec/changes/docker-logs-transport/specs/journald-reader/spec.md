@@ -233,6 +233,15 @@ impl Default for JournaldReader { /* gatewayd local por TCP + contenedor "traefi
 - **AND** en el transporte TCP la cabecera `Host` es la autoridad del endpoint configurado
 - **AND** el path y la query son idénticos en los dos transportes
 
+#### Scenario: A base path in the Docker URL is ignored
+- **GIVEN** `SHUUL_DOCKER_URL=http://docker-socket-proxy:2375/base` definida y no vacía
+- **AND** `SHUUL_DOCKER_SOCKET` sin definir o en blanco
+- **WHEN** se construye el reader y abre el stream con el backend de Docker
+- **THEN** la petición se envía en **forma origen** (`path?query`), sin el path base
+- **AND** la cabecera `Host` es la autoridad del endpoint configurado, sin el path base
+- **AND** el endpoint que aparece en los logs es el **efectivo**, `docker:http://docker-socket-proxy:2375 (traefik)`
+- **AND** se registra un warning que nombra el path base que se ignora
+
 #### Scenario: Container filtering is delegated to the Docker API
 - **GIVEN** un lector con el backend de Docker y contenedor `traefik`
 - **WHEN** el reader construye la petición
