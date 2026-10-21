@@ -3145,6 +3145,7 @@ mod tests_task7 {
 
     use super::tests_docker_frames::{STDOUT, access_log_line, docker_frame};
     use super::tests_docker_transport::{docker_tcp_reader, docker_unix_reader};
+    use super::tests_task8::capture_logs_while_running;
     use super::{BoxedIo, MICROS_PER_SECOND};
     use tokio::io::AsyncWrite;
 
@@ -3640,6 +3641,156 @@ mod tests_task7 {
             "the second request must carry the cutoff of the new attempt as a coarse hint \
              (since={since_second}, the reconnect was observed at {observed_seconds}), not a \
              stale one frozen at the last processed payload"
+        );
+    }
+
+    // ── 3.6: fail-open con el backend de Docker ──
+    //
+    // El bucle, el reintento, la respuesta a la señal de parada y el mecanismo
+    // para no dejar tareas colgadas son **los mismos** que los de gatewayd (lo
+    // prohíbe la tarea 4.7): estos tests manejan el mismo `run()` con un
+    // transporte de Docker configurado, y sólo cambia lo que el `connect()`
+    // devuelve.
+
+    #[tokio::test]
+    async fn test_run_survives_a_missing_docker_socket() {
+        let socket = TempSocketPath::new();
+        let (logs, _subscriber) = capture_logs_while_running();
+
+        let reader = docker_unix_reader(socket.path().to_string_lossy().as_ref(), "traefik")
+            .with_retry_delay(Duration::from_millis(50));
+        let app_state = build_test_app_state().await;
+        let (shutdown_tx, shutdown_rx) = tokio::sync::watch::channel(false);
+        let handle = tokio::spawn(async move { reader.run(app_state, shutdown_rx).await });
+
+        // Several retries must have happened by now.
+        tokio::time::sleep(Duration::from_millis(300)).await;
+        let captured = logs.captured();
+
+        let _ = shutdown_tx.send(true);
+        let result = tokio::time::timeout(Duration::from_secs(5), handle)
+            .await
+            .expect("run() must stay responsive to shutdown while retrying")
+            .expect("run() must not panic when the Docker socket is missing");
+        assert!(
+            result.is_ok(),
+            "a missing Docker socket is a retryable condition, not a fatal error: {result:?}"
+        );
+
+        assert!(
+            captured.matches("retrying in").count() >= 2,
+            "the reader must retry after retry_delay; captured logs were: {captured:?}"
+        );
+        assert!(
+            captured.to_lowercase().contains("docker api not available"),
+            "the warning must say the Docker API is not available instead of leaving the \
+             operator guessing which backend broke; captured logs were: {captured:?}"
+        );
+        let endpoint = format!("docker:unix:{} (traefik)", socket.path().display());
+        assert!(
+            captured.contains(&endpoint),
+            "the warning must name the endpoint ({endpoint}); captured logs were: {captured:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_run_survives_an_unreachable_docker_proxy() {
+        let (logs, _subscriber) = capture_logs_while_running();
+
+        // Port 1 is not listening → connection refused.
+        let reader = docker_tcp_reader("http://127.0.0.1:1", "traefik")
+            .with_retry_delay(Duration::from_millis(50));
+        let app_state = build_test_app_state().await;
+        let (shutdown_tx, shutdown_rx) = tokio::sync::watch::channel(false);
+        let handle = tokio::spawn(async move { reader.run(app_state, shutdown_rx).await });
+
+        tokio::time::sleep(Duration::from_millis(300)).await;
+        let captured = logs.captured();
+
+        let _ = shutdown_tx.send(true);
+        let result = tokio::time::timeout(Duration::from_secs(5), handle)
+            .await
+            .expect("run() must stay responsive to shutdown while retrying")
+            .expect("run() must not panic when the Docker proxy is down");
+        assert!(
+            result.is_ok(),
+            "an unreachable Docker proxy is a retryable condition, not a fatal error: {result:?}"
+        );
+
+        assert!(
+            captured.matches("retrying in").count() >= 2,
+            "the reader must retry after retry_delay; captured logs were: {captured:?}"
+        );
+        assert!(
+            captured.to_lowercase().contains("docker api not available"),
+            "the warning must say the Docker API is not available; captured logs were: {captured:?}"
+        );
+        assert!(
+            captured.contains("docker:http://127.0.0.1:1 (traefik)"),
+            "the warning must name the endpoint of the configured proxy; captured logs were: \
+             {captured:?}"
+        );
+    }
+
+    // ── 3.7: shutdown a mitad de stream con el backend de Docker ──
+
+    #[tokio::test]
+    async fn test_run_stops_docker_mid_stream_when_shutdown_arrives() {
+        let _guard = TEST_LOCK.lock().await;
+        reset_log_collector();
+
+        let socket = TempSocketPath::new();
+        let listener =
+            tokio::net::UnixListener::bind(socket.path()).expect("bind the holding docker stream");
+
+        tokio::spawn(async move {
+            if let Ok((mut stream, _)) = listener.accept().await {
+                let request = read_request_head(&mut stream).await;
+                let frame = docker_frame(
+                    STDOUT,
+                    &docker_payload_at(since_from_request(&request), 1, 503, "/pending"),
+                );
+                // More bytes promised than written, and the connection stays
+                // open: the reader is really blocked in `body.frame()` when the
+                // stop signal arrives.
+                let header = format!(
+                    "HTTP/1.1 200 OK\r\nContent-Type: application/vnd.docker.raw-stream\r\n\
+                     Content-Length: {}\r\n\r\n",
+                    frame.len() + 4096
+                );
+                let _ = stream.write_all(header.as_bytes()).await;
+                let _ = stream.write_all(&frame).await;
+                let _ = stream.flush().await;
+                tokio::time::sleep(Duration::from_secs(60)).await;
+            }
+        });
+
+        let reader = docker_unix_reader(socket.path().to_string_lossy().as_ref(), "traefik");
+        let app_state = build_test_app_state().await;
+        let (shutdown_tx, shutdown_rx) = tokio::sync::watch::channel(false);
+        let handle = tokio::spawn(async move { reader.run(app_state, shutdown_rx).await });
+
+        assert!(
+            wait_for_pipeline_entry(503, "/pending").await,
+            "the open Docker stream must still deliver the payload of its first frame"
+        );
+
+        let started = Instant::now();
+        let _ = shutdown_tx.send(true);
+        let result = tokio::time::timeout(Duration::from_secs(2), handle)
+            .await
+            .expect("shutdown must interrupt a pending frame()")
+            .expect("run() must not panic");
+        let elapsed = started.elapsed();
+
+        assert!(
+            result.is_ok(),
+            "run() must return Ok on shutdown: {result:?}"
+        );
+        assert!(
+            elapsed < Duration::from_secs(1),
+            "a shutdown in the middle of a Docker stream must not wait for the pending frame: \
+             took {elapsed:?}"
         );
     }
 
@@ -5120,7 +5271,19 @@ mod tests_task8 {
     // ── log capture helper ──
 
     #[derive(Clone, Default)]
-    struct CapturedLog(Arc<Mutex<Vec<u8>>>);
+    pub(super) struct CapturedLog(Arc<Mutex<Vec<u8>>>);
+
+    impl CapturedLog {
+        /// Lo capturado hasta ahora, como texto.
+        pub(super) fn captured(&self) -> String {
+            let bytes = self
+                .0
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .clone();
+            String::from_utf8_lossy(&bytes).to_string()
+        }
+    }
 
     impl std::io::Write for CapturedLog {
         fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
@@ -5134,6 +5297,28 @@ mod tests_task8 {
         fn flush(&mut self) -> std::io::Result<()> {
             Ok(())
         }
+    }
+
+    /// Igual que [`capture_logs`], pero **sin** closure: instala el subscriber en
+    /// este hilo y devuelve el sumidero junto al guard.
+    ///
+    /// Hace falta para los tests en los que el trabajo sigue después de montarlo:
+    /// `capture_logs` sólo sirve para trabajo síncrono y terminaría antes de que
+    /// el reader hiciera su primer `warn!`. Con el runtime `current_thread` de
+    /// `#[tokio::test]`, la tarea del reader corre en este mismo hilo y sus
+    /// eventos llegan a este sumidero.
+    pub(super) fn capture_logs_while_running() -> (CapturedLog, tracing::subscriber::DefaultGuard) {
+        let sink = CapturedLog::default();
+        let writer = sink.clone();
+        let subscriber = tracing_subscriber::fmt()
+            .with_max_level(tracing::Level::WARN)
+            .with_ansi(false)
+            .without_time()
+            .with_writer(move || writer.clone())
+            .finish();
+
+        let guard = tracing::subscriber::set_default(subscriber);
+        (sink, guard)
     }
 
     /// Runs `f` with a WARN-level subscriber that records every event, and
