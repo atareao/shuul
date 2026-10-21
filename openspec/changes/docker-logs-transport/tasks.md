@@ -40,7 +40,7 @@
 - [ ] 3.5 RED: test de no-replay del backend de Docker: (a) el histórico anterior al corte no llega al pipeline; (b) tras reconectar, el `since` de la petición lleva el corte del **intento nuevo** —comprobado **como forma de la petición**, igual que en 3.2, y **no** como garantía de corrección: si un día se olvidara ponerlo, el lector seguiría siendo correcto porque es la comparación estricta la que descarta, sólo viajaría de más— y **ninguna** carga del segundo de ese corte se cuenta dos veces (esa no-duplicación la da la comparación estricta, no el `since`); (c) dos cargas de **contenido idéntico** con instantes distintos —los dos posteriores al corte— se cuentan las dos; (d) una carga con el instante **igual** al corte del intento se descarta; (e) una carga sin prefijo o con prefijo no parseable se descarta sin abortar el stream; (f) un intento fallido desplaza el corte, de modo que lo ocurrido durante la caída no llega al pipeline. Verificación: el test falla.
 - [ ] 3.6 RED: test de fail-open con el backend de Docker: socket ausente y proxy inalcanzable → warning `docker api not available`, reintento tras `retry_delay` y `run()` que devuelve `Ok(())` al recibir la señal de parada, sin dejar tareas colgadas. Verificación: el test falla.
 - [ ] 3.7 RED: test de shutdown a mitad de stream con el backend de Docker. Verificación: el test termina en menos de un segundo y devuelve `Ok(())`.
-- [ ] 3.8 RED (**pendiente, no cubierto en el RED de 3.0–3.3**): los dos
+- [x] 3.8 RED (**cubierto** en el RED de 3.4–3.5): los dos
       comportamientos de `from_env()` que se quedan sin test en rojo. (a) La
       precedencia del contenedor de la decisión **D1** del `design.md`
       (`SHUUL_DOCKER_CONTAINER` → `SHUUL_JOURNALD_CONTAINER` → `traefik`), con la
@@ -50,6 +50,10 @@
       ningún test lo exija: el test de 3.1 con las dos variables de Docker a la
       vez sólo asienta el transporte. Verificación: los dos tests fallan en rojo
       y 4.1/4.2 los ponen en verde.
+      Nota: el test del **fallback** de contenedor (`SHUUL_DOCKER_CONTAINER`
+      ausente → `SHUUL_JOURNALD_CONTAINER`) queda **verde por construcción**
+      mientras los parámetros de Docker se ignoren —`from_env()` lee la variable
+      de journald como siempre—: es guardián de 4.2, no RED.
 
 ## 4. Implementación (GREEN)
 

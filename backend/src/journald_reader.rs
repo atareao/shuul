@@ -4876,7 +4876,10 @@ mod tests_task8 {
 
     // ── from_env ──
 
-    const ENV_VARS: [&str; 3] = [
+    const ENV_VARS: [&str; 6] = [
+        "SHUUL_DOCKER_SOCKET",
+        "SHUUL_DOCKER_URL",
+        "SHUUL_DOCKER_CONTAINER",
         "SHUUL_JOURNALD_SOCKET",
         "SHUUL_JOURNALD_URL",
         "SHUUL_JOURNALD_CONTAINER",
@@ -4985,6 +4988,37 @@ mod tests_task8 {
         assert_eq!(reader.container_name, DEFAULT_CONTAINER);
     }
 
+    // ── the container of the Docker backend (decision D1) ──
+
+    #[test]
+    #[serial]
+    fn test_from_env_prefers_the_docker_container_variable() {
+        let _env = ScopedEnv::new()
+            .set("SHUUL_DOCKER_CONTAINER", "my-traefik")
+            .set("SHUUL_JOURNALD_CONTAINER", "legacy-traefik");
+
+        let reader = JournaldReader::from_env();
+        assert_eq!(
+            reader.container_name, "my-traefik",
+            "SHUUL_DOCKER_CONTAINER must win over SHUUL_JOURNALD_CONTAINER: whoever defines it \
+             can point the two backends at different containers (design D1)"
+        );
+    }
+
+    #[test]
+    #[serial]
+    fn test_from_env_falls_back_to_the_journald_container_variable() {
+        let _env = ScopedEnv::new().set("SHUUL_JOURNALD_CONTAINER", "legacy-traefik");
+
+        let reader = JournaldReader::from_env();
+        assert_eq!(
+            reader.container_name, "legacy-traefik",
+            "without SHUUL_DOCKER_CONTAINER the existing variable keeps pointing at the same \
+             container when switching backends (design D1), instead of silently falling back \
+             to the default"
+        );
+    }
+
     // ── trimming and base path ──
 
     #[test]
@@ -5055,6 +5089,31 @@ mod tests_task8 {
         assert!(
             !logs.contains("ignoring base path"),
             "a URL without a path must not warn; logs were: {logs:?}"
+        );
+    }
+
+    #[test]
+    fn test_from_values_warns_about_the_ignored_docker_url() {
+        let logs = capture_logs(|| {
+            let reader = JournaldReader::from_values(
+                Some("/var/run/docker.sock".to_string()),
+                Some("http://docker-socket-proxy:2375".to_string()),
+                None,
+                None,
+                None,
+            );
+            assert_eq!(
+                reader.transport,
+                JournaldTransport::DockerUnixSocket {
+                    path: std::path::PathBuf::from("/var/run/docker.sock")
+                },
+                "with both Docker variables set the socket wins"
+            );
+        });
+        assert!(
+            logs.contains("ignoring SHUUL_DOCKER_URL"),
+            "the Docker URL that is not used must be reported once, naming the variable, or the \
+             operator cannot tell which of the two is in force; logs were: {logs:?}"
         );
     }
 
