@@ -100,6 +100,21 @@ pub enum JournalError {
         String,
         #[source] Option<Box<dyn std::error::Error + Send + Sync>>,
     ),
+
+    /// El stream de la API de Docker no lleva cabeceras de frame: el
+    /// contenedor tiene TTY.
+    ///
+    /// La API sólo multiplexa el stream de un contenedor **sin** TTY; con él, el
+    /// cuerpo llega crudo y el primer byte que el decodificador lee como
+    /// identificador de stream es en realidad el primero del mensaje (un JSON
+    /// empieza por `{`, `0x7B`). El campo es ese byte, para que la diagnosis lo
+    /// nombre.
+    #[allow(dead_code)] // La construye la tarea 4.4 al decodificar; ver su banner.
+    #[error(
+        "raw Docker log stream: byte 0x{0:02X} is not a stream id (0, 1 or 2); the container \
+         probably has TTY enabled, which sends the log stream raw, without the 8-byte frame headers"
+    )]
+    TtyStream(u8),
 }
 
 impl JournalError {
@@ -1525,6 +1540,479 @@ mod tests_task6 {
             },
             other => panic!("expected TraefikParse error, got: {other:?}"),
         }
+    }
+}
+
+// ── Frames del stream de la API de Docker (`docker-logs-transport`) ──
+//
+// La API de Docker multiplexa el stream de un contenedor cuando éste NO tiene
+// TTY: cada mensaje llega en un frame con una cabecera de 8 bytes —un byte de
+// identificador de stream, tres de relleno y cuatro de longitud big-endian—.
+// Este decodificador es incremental: mantiene el estado entre los chunks que
+// llegan del socket, de modo que una cabecera o una carga partida entre dos
+// lecturas se decodifica al completarse. El camino de journald sigue usando su
+// NDJSON (`drain_ndjson_lines`, más abajo).
+//
+// Todavía NO está cableado al bucle de lectura: eso es la tarea 4.4 del change,
+// y hasta entonces nada del build de producción lo usa. De ahí el
+// `#[allow(dead_code)]` de cada ítem de este bloque, que se retira entero
+// cuando la 4.4 lo llame desde `stream_once`. Los cuerpos devuelven por ahora
+// el valor neutro —nada decodificado—: los implementa también la 4.4.
+
+/// Identificador de stream del primer byte de la cabecera de un frame.
+#[allow(dead_code)] // Lo usa la tarea 4.4; ver el banner del bloque.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum DockerStream {
+    /// `0`: stdin. El endpoint `logs` no lo emite, pero la cabecera lo admite.
+    Stdin,
+    /// `1`: stdout, por donde sale el access log de Traefik.
+    Stdout,
+    /// `2`: stderr, que no alimenta el pipeline Jail.
+    Stderr,
+}
+
+#[allow(dead_code)] // Lo usa la tarea 4.4; ver el banner del bloque.
+impl DockerStream {
+    /// Identificador de stream del primer byte de una cabecera, o `None` si ese
+    /// byte no es ninguno de los tres válidos.
+    ///
+    /// Un byte inválido es el síntoma de un contenedor arrancado con TTY, cuyo
+    /// stream llega crudo y sin cabeceras: un JSON empieza por `{` (`0x7B`).
+    const fn from_byte(_byte: u8) -> Option<Self> {
+        None
+    }
+
+    /// Nombre con el que aparece el stream en los descartes.
+    const fn name(self) -> &'static str {
+        ""
+    }
+}
+
+/// Frame ya decodificado del stream multiplexado de la API de Docker.
+#[allow(dead_code)] // Lo usa la tarea 4.4; ver el banner del bloque.
+#[derive(Debug)]
+struct DecodedFrame {
+    /// Stream del que viene, según el primer byte de su cabecera.
+    stream: DockerStream,
+    /// Carga del frame como texto: la API entrega un mensaje por frame y el
+    /// access log de Traefik es UTF-8.
+    payload: String,
+}
+
+#[allow(dead_code)] // Lo usa la tarea 4.4; ver el banner del bloque.
+impl DecodedFrame {
+    /// Línea que debe llegar al pipeline Jail, o `None` si este frame no
+    /// alimenta el pipeline.
+    ///
+    /// El access log de Traefik sale por `stdout`: las cargas de `stderr` —y de
+    /// `stdin`, que `logs` no emite— se descartan aquí, a nivel `debug`,
+    /// nombrando el stream del que venían.
+    fn into_pipeline_line(self) -> Option<String> {
+        None
+    }
+}
+
+/// Decodificador incremental de los frames del stream multiplexado.
+///
+/// Guarda los bytes que todavía no forman un frame completo, de modo que el
+/// corte se decide por la longitud de la cabecera y nunca por dónde caiga la
+/// frontera entre dos lecturas del socket.
+#[allow(dead_code)] // Lo usa la tarea 4.4; ver el banner del bloque.
+struct DockerFrameDecoder {
+    /// Bytes leídos que todavía no completan un frame.
+    buffer: Vec<u8>,
+}
+
+#[allow(dead_code)] // Lo usa la tarea 4.4; ver el banner del bloque.
+impl DockerFrameDecoder {
+    /// Decodificador vacío.
+    const fn new() -> Self {
+        Self { buffer: Vec::new() }
+    }
+
+    /// Alimenta el decodificador con los bytes recién leídos y devuelve los
+    /// frames que se hayan completado, en orden de llegada.
+    ///
+    /// Un frame con carga vacía (longitud `0`) se acepta y no entrega ninguna
+    /// línea; la decodificación continúa con el frame siguiente.
+    ///
+    /// # Errors
+    ///
+    /// Devuelve [`JournalError::TtyStream`] si el primer byte de una cabecera
+    /// no es un identificador de stream válido: el cuerpo llega crudo y quien
+    /// llama SHALL descartar la conexión en vez de seguir decodificando.
+    fn push(&mut self, _chunk: &[u8]) -> Result<Vec<DecodedFrame>, JournalError> {
+        Ok(Vec::new())
+    }
+
+    /// El stream se cerró: descarta el frame que quedara a medias.
+    ///
+    /// Devuelve cuántos bytes se han descartado (`0` si no quedaba ninguno).
+    fn finish(&mut self) -> usize {
+        0
+    }
+}
+
+/// Separa el instante que la API de Docker antepone a cada carga —cuando la
+/// petición pide `timestamps=1`— de la línea del access log.
+///
+/// El prefijo es un instante `RFC3339Nano` seguido de un espacio
+/// (`2026-10-21T08:31:07.123456789Z {…}`). Devuelve el instante en
+/// microsegundos desde `UNIX_EPOCH` —la unidad del corte por intento de
+/// [`now_micros`]— y la línea ya sin el prefijo, o `None` si la carga no trae
+/// un prefijo utilizable: sin instante no se puede situar la carga después del
+/// corte de la conexión en curso, así que se descarta.
+#[allow(dead_code)] // La usa la tarea 4.5; ver el banner del bloque.
+fn split_timestamp_prefix(_payload: &str) -> Option<(u64, &str)> {
+    None
+}
+
+#[cfg(test)]
+mod tests_docker_frames {
+    use super::{
+        DecodedFrame, DockerFrameDecoder, DockerStream, JournalError, parse_traefik_access_log,
+        split_timestamp_prefix,
+    };
+    use std::sync::{Arc, Mutex};
+
+    // ── fixtures ──
+
+    /// Identificador de stream `stdout` en la cabecera de un frame.
+    const STDOUT: u8 = 1;
+    /// Identificador de stream `stderr` en la cabecera de un frame.
+    const STDERR: u8 = 2;
+    /// Tamaño de la cabecera de un frame: stream, relleno y longitud.
+    const HEADER_LEN: usize = 8;
+
+    /// Construye a mano un frame multiplexado: un byte de identificador de
+    /// stream, tres de relleno y la longitud de la carga en big-endian.
+    fn docker_frame(stream: u8, payload: &str) -> Vec<u8> {
+        let len = u32::try_from(payload.len()).expect("the fixture payload fits in u32");
+        let mut frame = Vec::with_capacity(HEADER_LEN + payload.len());
+        frame.push(stream);
+        frame.extend_from_slice(&[0_u8; 3]);
+        frame.extend_from_slice(&len.to_be_bytes());
+        frame.extend_from_slice(payload.as_bytes());
+        frame
+    }
+
+    /// Línea del access log JSON de Traefik, con los campos que maneja el
+    /// módulo.
+    fn access_log_line(status: u16, path: &str) -> String {
+        serde_json::json!({
+            "ClientHost": "10.0.0.1",
+            "ClientAddr": "10.0.0.1:54321",
+            "OriginStatus": status,
+            "DownstreamStatus": status,
+            "RequestPath": path,
+            "RequestMethod": "GET",
+            "RequestHost": "example.com",
+            "RequestScheme": "https",
+            "request_User-Agent": "Mozilla/5.0 (compatible; Nmap Scripting Engine)",
+            "request_Referer": "https://example.com/login",
+            "request_Content-Type": "application/x-www-form-urlencoded",
+            "request_Accept-Language": "es-ES,es;q=0.9",
+            "request_X-Request-Id": "req-7f3a1c2e-4b9d"
+        })
+        .to_string()
+    }
+
+    /// Alimenta el decodificador con un chunk, fallando en una aserción —y no
+    /// en un pánico del decodificador— si el chunk no se decodifica.
+    fn push_frames(decoder: &mut DockerFrameDecoder, chunk: &[u8]) -> Vec<DecodedFrame> {
+        let result = decoder.push(chunk);
+        assert!(
+            result.is_ok(),
+            "a well-formed chunk must decode without error, got: {result:?}"
+        );
+        result.unwrap_or_default()
+    }
+
+    /// Líneas que los frames de este chunk entregarían al pipeline Jail.
+    fn pipeline_lines(decoder: &mut DockerFrameDecoder, chunk: &[u8]) -> Vec<String> {
+        frames_to_lines(push_frames(decoder, chunk))
+    }
+
+    /// Líneas que estos frames entregarían al pipeline Jail, en orden.
+    fn frames_to_lines(frames: Vec<DecodedFrame>) -> Vec<String> {
+        frames
+            .into_iter()
+            .filter_map(DecodedFrame::into_pipeline_line)
+            .collect()
+    }
+
+    // ── 2.1: decodificación incremental ──
+
+    #[test]
+    fn test_a_frame_split_between_two_chunks_is_decoded_exactly_once() {
+        let line = access_log_line(404, "/wp-login.php");
+        let frame = docker_frame(STDOUT, &line);
+        // The cut falls in the middle of the payload, and neither half matches
+        // the header (8 bytes) nor the payload length: this is where such
+        // parsers break.
+        let (head, tail) = frame.split_at(HEADER_LEN + line.len() / 2);
+        assert!(
+            !head.is_empty() && !tail.is_empty(),
+            "the fixture must really split the frame in two"
+        );
+
+        let mut decoder = DockerFrameDecoder::new();
+        let incomplete = push_frames(&mut decoder, head);
+        assert!(
+            incomplete.is_empty(),
+            "half a frame is not a frame yet: the bytes must stay buffered"
+        );
+        let completed = push_frames(&mut decoder, tail);
+
+        let lines = frames_to_lines(incomplete.into_iter().chain(completed).collect());
+        assert_eq!(
+            lines,
+            vec![line],
+            "the frame must be delivered once its payload completes, neither dropped nor \
+             duplicated by the chunk boundary"
+        );
+    }
+
+    #[test]
+    fn test_two_frames_in_one_chunk_are_both_decoded() {
+        let first = access_log_line(404, "/wp-login.php");
+        let second = access_log_line(429, "/api/v1/items");
+        let mut chunk = docker_frame(STDOUT, &first);
+        chunk.extend(docker_frame(STDOUT, &second));
+
+        let mut decoder = DockerFrameDecoder::new();
+        let frames = push_frames(&mut decoder, &chunk);
+        assert_eq!(
+            frames.len(),
+            2,
+            "one chunk carries two complete frames and both must be decoded, in order"
+        );
+
+        let lines = frames_to_lines(frames);
+        assert_eq!(
+            lines,
+            vec![first, second],
+            "each frame delivers its own line, in the order they arrived"
+        );
+
+        let statuses: Vec<u16> = lines
+            .iter()
+            .map(|line| {
+                parse_traefik_access_log(line)
+                    .expect("a decoded line must be a Traefik access log")
+                    .expect("a decoded line must be a backend response")
+                    .status_code
+            })
+            .collect();
+        assert_eq!(
+            statuses,
+            vec![404, 429],
+            "each payload must reach the pipeline with its own status_code"
+        );
+    }
+
+    #[test]
+    fn test_a_frame_with_an_empty_payload_is_accepted_and_delivers_no_line() {
+        let line = access_log_line(403, "/.env");
+        let mut chunk = docker_frame(STDOUT, "");
+        chunk.extend(docker_frame(STDOUT, &line));
+
+        let mut decoder = DockerFrameDecoder::new();
+        assert_eq!(
+            pipeline_lines(&mut decoder, &chunk),
+            vec![line],
+            "a zero-length payload is accepted, delivers no line, and decoding continues with \
+             the frame that follows"
+        );
+    }
+
+    #[test]
+    fn test_a_header_truncated_at_stream_close_is_discarded() {
+        let frame = docker_frame(STDOUT, &access_log_line(404, "/admin"));
+        let partial = &frame[..5];
+        assert!(
+            partial.len() < HEADER_LEN,
+            "the fixture must leave less than a whole frame header"
+        );
+
+        let mut decoder = DockerFrameDecoder::new();
+        let frames = push_frames(&mut decoder, partial);
+        assert!(
+            frames.is_empty(),
+            "an incomplete header cannot be decoded while more bytes may still arrive"
+        );
+        assert_eq!(
+            decoder.finish(),
+            partial.len(),
+            "a header cut short by the close of the stream must be dropped, not carried over to \
+             the next connection"
+        );
+    }
+
+    // ── 2.2: stdout frente a stderr ──
+
+    #[test]
+    fn test_stdout_and_stderr_are_told_apart_by_the_frame_header() {
+        let stdout_line = access_log_line(401, "/api/login");
+        // Traefik writes its own logs to stderr; they are not access logs.
+        let stderr_line =
+            r#"{"level":"error","msg":"no available server","time":"2026-10-21T08:31:07Z"}"#;
+        let mut chunk = docker_frame(STDOUT, &stdout_line);
+        chunk.extend(docker_frame(STDERR, stderr_line));
+
+        let mut decoder = DockerFrameDecoder::new();
+        let mut frames = push_frames(&mut decoder, &chunk);
+        assert_eq!(
+            frames.len(),
+            2,
+            "a stdout frame and a stderr frame must both be decoded, one per stream"
+        );
+
+        let stderr_frame = frames.pop().expect("two frames were decoded");
+        let stdout_frame = frames.pop().expect("two frames were decoded");
+        assert_eq!(
+            stdout_frame.stream,
+            DockerStream::Stdout,
+            "stream id 1 in the header means stdout"
+        );
+        assert_eq!(
+            stderr_frame.stream,
+            DockerStream::Stderr,
+            "stream id 2 in the header means stderr"
+        );
+
+        let logs = capture_debug(|| {
+            assert!(
+                stderr_frame.into_pipeline_line().is_none(),
+                "a stderr payload must never reach the Jail pipeline"
+            );
+        });
+        assert!(
+            logs.contains("stderr"),
+            "the discard must record which stream it dropped, at debug level; logs were: {logs:?}"
+        );
+        assert_eq!(
+            stdout_frame.into_pipeline_line().as_deref(),
+            Some(stdout_line.as_str()),
+            "the stdout payload must be handed to the pipeline verbatim"
+        );
+    }
+
+    // ── 2.3: detección de TTY ──
+
+    #[test]
+    fn test_a_raw_tty_stream_is_diagnosed_instead_of_decoded() {
+        // With `tty: true` the container sends its stream raw: the first thing
+        // that arrives is the message itself, and a JSON access log starts with
+        // `{` (`0x7B`), which is never a valid stream id.
+        let raw = access_log_line(404, "/wp-login.php");
+
+        let mut decoder = DockerFrameDecoder::new();
+        let result = decoder.push(raw.as_bytes());
+
+        assert!(
+            matches!(result.as_ref(), Err(JournalError::TtyStream(byte)) if *byte == b'{'),
+            "the first byte of a raw stream must be diagnosed as a TTY stream instead of being \
+             skipped in silence; got: {result:?}"
+        );
+        let message = result.err().map_or_else(String::new, |err| err.to_string());
+        assert!(
+            message.contains("TTY"),
+            "the diagnosis must name the probable cause —a container with TTY enabled— so the \
+             operator does not have to guess; got: {message:?}"
+        );
+    }
+
+    // ── 2.4: prefijo del instante ──
+
+    #[test]
+    fn test_the_payload_timestamp_prefix_is_stripped_before_parsing() {
+        // With `timestamps=1` the API prefixes every line with the instant, in
+        // RFC3339 with nanosecond precision.
+        let instant = "2026-10-21T08:31:07.123456789Z";
+        let line = access_log_line(401, "/api/login");
+        let payload = format!("{instant} {line}");
+
+        assert!(
+            parse_traefik_access_log(&payload).is_err(),
+            "the prefixed payload is not JSON: splitting the prefix off is what makes it parseable"
+        );
+
+        let split = split_timestamp_prefix(&payload);
+        assert!(
+            split.is_some(),
+            "the payload must split into its timestamp prefix and the access log line; \
+             got: {split:?}"
+        );
+        // `unwrap_or` instead of `expect`: this test must fail on the assertion
+        // above, never on a panic.
+        let (instant_micros, stripped) = split.unwrap_or((0, ""));
+
+        assert_eq!(
+            stripped, line,
+            "the access log line must come out of the payload without the timestamp prefix"
+        );
+        assert_eq!(
+            instant_micros,
+            1_792_571_467_123_456, // 2026-10-21T08:31:07.123456789Z
+            "the instant must travel in microseconds since UNIX_EPOCH, the unit the attempt \
+             cutoff uses"
+        );
+
+        let with_prefix = parse_traefik_access_log(stripped)
+            .expect("the stripped line must parse")
+            .expect("the stripped line must be a backend response");
+        let without_prefix = parse_traefik_access_log(&line)
+            .expect("the plain line must parse")
+            .expect("the plain line must be a backend response");
+        // `ReportPayload` does not derive `PartialEq` (it is a production
+        // model), so the identity is checked field by field through its `Debug`.
+        assert_eq!(
+            format!("{with_prefix:?}"),
+            format!("{without_prefix:?}"),
+            "the payload must be identical with and without the timestamp prefix"
+        );
+    }
+
+    // ── log capture helper ──
+
+    #[derive(Clone, Default)]
+    struct CapturedLog(Arc<Mutex<Vec<u8>>>);
+
+    impl std::io::Write for CapturedLog {
+        fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
+            self.0
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .extend_from_slice(buf);
+            Ok(buf.len())
+        }
+
+        fn flush(&mut self) -> std::io::Result<()> {
+            Ok(())
+        }
+    }
+
+    /// Runs `f` with a DEBUG-level subscriber that records every event, and
+    /// returns what was written. The discard of a `stderr` payload is only
+    /// observable that way.
+    fn capture_debug<F: FnOnce()>(f: F) -> String {
+        let sink = Arc::new(Mutex::new(Vec::new()));
+        let writer = CapturedLog(Arc::clone(&sink));
+        let subscriber = tracing_subscriber::fmt()
+            .with_max_level(tracing::Level::DEBUG)
+            .with_ansi(false)
+            .without_time()
+            .with_writer(move || CapturedLog(Arc::clone(&writer.0)))
+            .finish();
+
+        tracing::subscriber::with_default(subscriber, f);
+
+        let bytes = sink
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .clone();
+        String::from_utf8_lossy(&bytes).to_string()
     }
 }
 
