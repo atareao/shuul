@@ -2,47 +2,25 @@
 
 **The gatekeeper for your data** — WAF + fail2ban-style rate limiting for Traefik, powered by SQLite.
 
-Shuul is a ForwardAuth service for Traefik that evaluates incoming requests against a configurable set of rules (WAF pipeline) and applies post-factum rate limiting based on backend HTTP response codes (Jail pipeline). It ships with a full React admin dashboard and 80+ preconfigured rule templates, and it plugs into Traefik with a ForwardAuth middleware — the Jail pipeline is fed from Traefik's own access logs, streamed out of the systemd journal by a background reader.
+Shuul is a ForwardAuth service for Traefik that evaluates incoming requests against a configurable set of rules (WAF pipeline) and applies post-factum rate limiting based on backend HTTP response codes (Jail pipeline). It ships with a full React admin dashboard and 80+ preconfigured rule templates, and it plugs into Traefik with a ForwardAuth middleware — the Jail pipeline is fed from Traefik's own access logs, streamed from the Docker Engine log API by a background reader (`systemd-journal-gatewayd` remains supported as a lower-priority backend).
 
 ---
 
 ## Architecture
 
-```
-                    ┌────────────────────────────────────────────────┐
-                    │                   Traefik                      │
-                    │                                                │
-                    │   Request ──► [ForwardAuth] ──► [Backend] ──►  │
-                    │                                                │
-                    │   accessLog JSON ──► stdout                    │
-                    └──────────────────────┬─────────────────────────┘
-                                           │  journald logging driver
-                                           ▼
-                                journald (CONTAINER_NAME=traefik)
-                                           │
-                                           ▼
-                           systemd-journal-gatewayd :19531
-                                           │
-                                           │  GET /entries?follow
-                                           │  Accept: application/json (NDJSON)
-                                           ▼
-                    ┌────────────────────────────────────────────────┐
-                    │                    shuul                       │
-                    │                                                │
-                    │   JournaldReader — background task             │
-                    │   (reconnects with 30s backoff, fail-open)     │
-                    │                                                │
-                    │   1. WAF pipeline (ANY /api/v1/shuul)          │
-                    │      Matching — first match wins (weight ASC)  │
-                    │      Allow / Deny — enforce, log_only, off     │
-                    │      200 OK or 403 FORBIDDEN                   │
-                    │                                                │
-                    │   2. Jail pipeline (run_jail_pipeline)         │
-                    │      Matching — ALL matching rules count       │
-                    │      Rate Limiter — max_retry, find_time,      │
-                    │      fail_codes, escalation, ban               │
-                    │      Ban Manager — in-memory + SQLite          │
-                    └────────────────────────────────────────────────┘
+```mermaid
+flowchart TD
+  REQ["Request"] --> FA["ForwardAuth middleware"]
+  FA -->|"ANY /api/v1/shuul"| WAF["WAF pipeline — first match wins (weight ASC), allow/deny"]
+  WAF -->|"200 OK"| BE["Backend"]
+  WAF -->|"403 FORBIDDEN"| BLOCK["Blocked"]
+  BE --> AL["Traefik accessLog JSON (stdout)"]
+  AL --> DRV["container log driver"]
+  DRV --> DKR["Docker Engine logs API"]
+  DRV --> GW["systemd-journal-gatewayd (lower priority)"]
+  DKR -->|"GET /v1.44/containers/.../logs"| RD["reader — background task (30s backoff, fail-open)"]
+  GW -->|"GET /entries?follow"| RD
+  RD --> JAIL["Jail pipeline (run_jail_pipeline) — match, rate limit, ban"]
 ```
 
 ### Two independent pipelines
@@ -50,9 +28,9 @@ Shuul is a ForwardAuth service for Traefik that evaluates incoming requests agai
 | Pipeline | Source | Role | Behaviour |
 |---|---|---|---|
 | **WAF** | `ANY /api/v1/shuul` (ForwardAuth) | Intercept, match, allow/deny | First matching rule wins (by weight ASC). Safe paths, trusted IPs, and trusted UAs bypass all checks. |
-| **Jail** | Traefik access logs via `systemd-journal-gatewayd` (plus the legacy `POST /api/v1/report`) | Post-factum rate limiter (fail2ban-style) | ALL matching rules count independently. Each rule with a rate limit profile is a separate "jail". |
+| **Jail** | Traefik access logs via the **Docker Engine log API** (`systemd-journal-gatewayd` kept as a lower-priority backend), plus the legacy `POST /api/v1/report` | Post-factum rate limiter (fail2ban-style) | ALL matching rules count independently. Each rule with a rate limit profile is a separate "jail". |
 
-Both sources feed exactly the same `run_jail_pipeline` function: the journald reader calls it in-process, the HTTP endpoint calls it after deserializing the request body.
+Both sources feed exactly the same `run_jail_pipeline` function: the background reader calls it in-process, the HTTP endpoint calls it after deserializing the request body.
 
 ### How it works
 
@@ -60,8 +38,8 @@ Both sources feed exactly the same `run_jail_pipeline` function: the journald re
 2. **ForwardAuth** (`shuul-auth` middleware) sends the request to `ANY /api/v1/shuul`
 3. **WAF pipeline** evaluates rules, returns 200 OK (allow) or 403 FORBIDDEN (deny)
 4. If allowed, the request reaches your **backend**
-5. After the backend responds, the **status code lands in Traefik's access log** (JSON format, on stdout → journald)
-6. Shuul's **journald reader** (background task) streams those entries from `systemd-journal-gatewayd` and turns each backend response into a report
+5. After the backend responds, the **status code lands in Traefik's access log** (JSON format, on stdout; the container log driver decides where it is stored)
+6. Shuul's **background reader** streams those entries from the **Docker Engine log API** (or from `systemd-journal-gatewayd` as a lower-priority backend) and turns each backend response into a report
 7. **Jail pipeline** applies rate limiting to every report:
    - Matches against ALL jail rules
    - If `status_code ∈ fail_codes` → increments the rate limiter counter
@@ -85,7 +63,7 @@ Both sources feed exactly the same `run_jail_pipeline` function: the journald re
 ### Rate Limiting (Jail — fail2ban-style)
 
 - **Post-factum**: rate limiting happens AFTER the backend responds — zero latency impact on the request path
-- **Fed from Traefik's access logs**: the journald reader streams them out of the systemd journal, so no per-request HTTP call to shuul is needed
+- **Fed from Traefik's access logs**: the background reader streams them from the Docker Engine log API (or `systemd-journal-gatewayd` as a lower-priority backend), so no per-request HTTP call to shuul is needed
 - **Multiple independent jails**: each matching rule is evaluated independently with its own rate limit profile
 - **fail_codes**: only specific HTTP status codes count as failures (e.g., `[401, 403, 404]`)
 - Sliding window counter per IP per profile
@@ -93,16 +71,16 @@ Both sources feed exactly the same `run_jail_pipeline` function: the journald re
 - Ban count decay over configurable days
 - Circular ring-buffer implementation for O(1) rate limit checks
 
-### Journald Reader (Jail observation source)
+### Reader (Jail observation source)
 
-- Background task that streams Traefik access logs from `systemd-journal-gatewayd` (`GET /entries?follow`, NDJSON)
-- Server-side filtering by container (`CONTAINER_NAME`, default `traefik`)
+- Background task that streams Traefik access logs from the **Docker Engine log API**, over its Unix socket (`SHUUL_DOCKER_SOCKET`) or a TCP proxy (`SHUUL_DOCKER_URL`); `systemd-journal-gatewayd` is kept as a lower-priority backend
+- Server-side filtering by container: by the `{container}` path segment on the Docker backend, by `CONTAINER_NAME` on gatewayd (default `traefik`)
 - Only logs that reached a backend are accounted for: entries with `OriginStatus == 0` are discarded
-- Cursor tracking (`__CURSOR` + `Range: entries=<cursor>:1`) so no entry is lost across reconnects
-- Fail-open: if the gateway is unreachable it retries every 30 s and the WAF pipeline keeps working untouched
-- Two environment variables: `SHUUL_JOURNALD_URL` (default `http://localhost:19531`) and `SHUUL_JOURNALD_CONTAINER` (default `traefik`)
-- Requires `systemd-journal-gatewayd` on the host (Debian/Ubuntu: package `systemd-journal-remote`), socket-activated on port `19531`
-- No authentication: restrict port `19531` to your Docker bridge subnets with the firewall
+- No history replay: each connection attempt cuts off the backlog, so nothing older is counted towards rate limiting
+- Fail-open: if the backend is unreachable it retries every 30 s (`docker api not available` / `journald gateway not available`) and the WAF pipeline keeps working untouched
+- Transport precedence: `SHUUL_DOCKER_SOCKET` → `SHUUL_DOCKER_URL` → `SHUUL_JOURNALD_SOCKET` → `SHUUL_JOURNALD_URL` → `http://localhost:19531`; the container is `SHUUL_DOCKER_CONTAINER`, falling back to `SHUUL_JOURNALD_CONTAINER` and then `traefik`
+- Mode B (`docker-socket-proxy`) needs no host permissions; mode A mounts `/var/run/docker.sock`, which is **equivalent to root on the host** even with `:ro`
+- `systemd-journal-gatewayd` (Debian/Ubuntu: package `systemd-journal-remote`) is only needed if you use the journald backend; restrict port `19531` to your Docker bridge subnets
 
 ### Dashboard (React SPA)
 
@@ -174,7 +152,11 @@ Both sources feed exactly the same `run_jail_pipeline` function: the journald re
 | `DATABASE_URL` | ❌ | `sqlite:///app/data/shuul.db?mode=rwc` | SQLite database path |
 | `PORT` | ❌ | `3000` | HTTP listen port |
 | `MAXMIND_DB_PATH` | ❌ | `geo/GeoLite2-City.mmdb` | Path to GeoIP database |
-| `SHUUL_JOURNALD_URL` | ❌ | `http://localhost:19531` | Base URL of the `systemd-journal-gatewayd` endpoint (Jail source) |
+| `SHUUL_DOCKER_SOCKET` | ❌ | — (unset) | Path of the Docker socket; activates the **Docker API** over `AF_UNIX` (highest transport priority) |
+| `SHUUL_DOCKER_URL` | ❌ | — (unset) | Base URL of a Docker API proxy over TCP; used only if `SHUUL_DOCKER_SOCKET` is unset |
+| `SHUUL_DOCKER_CONTAINER` | ❌ | `traefik` | Container whose logs are read; falls back to `SHUUL_JOURNALD_CONTAINER`, then `traefik` |
+| `SHUUL_JOURNALD_SOCKET` | ❌ | — (unset) | Path of the gatewayd socket (lower-priority journald backend) |
+| `SHUUL_JOURNALD_URL` | ❌ | `http://localhost:19531` | Base URL of the `systemd-journal-gatewayd` endpoint (lower-priority backend) |
 | `SHUUL_JOURNALD_CONTAINER` | ❌ | `traefik` | Container name matched against the journal's `CONTAINER_NAME` field |
 | `RUST_LOG` | ❌ | `info` | Log level (trace, debug, info, warn, error) |
 
@@ -222,34 +204,55 @@ http:
         - shuul-auth   # ForwardAuth (allow/deny)
 ```
 
-The Jail pipeline reads the status codes from Traefik's access logs, so Traefik must write them in JSON format and ship them to the systemd journal:
+The Jail pipeline reads the status codes from Traefik's access logs, so Traefik must write them in JSON format and leave them on stdout (do **not** set `accessLog.filePath`):
 
 ```yaml
 # traefik.yml (static)
 accessLog:
   format: json
-  # Do NOT set filePath: leave access logs on stdout so the journald log driver captures them
+  # Do NOT set filePath: leave access logs on stdout so the container log driver captures them
 ```
 
+The reader then reads those logs from the **Docker Engine log API**. The container's log driver must be one of `json-file`, `local` or `journald`:
+
 ```yaml
-# compose.yml of the Traefik stack
+# compose.yml of the Traefik stack — any of json-file / local / journald works
 services:
   traefik:
     logging:
       driver: journald
 ```
 
-On the host, install and enable the journal gateway (`systemd-journal-remote` package on Debian/Ubuntu):
+The recommended setup (mode B) puts a `docker-socket-proxy` in front of the Docker socket and points shuul at it over an internal network, so shuul needs no permission on the host:
+
+```yaml
+# compose.yml of the shuul stack — mode B (recommended)
+services:
+  docker-socket-proxy:
+    image: <a docker-socket-proxy image of your choice>
+    environment:
+      - CONTAINERS=1                # only what the log API needs
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock:ro
+    networks: [internal]
+  shuul:
+    environment:
+      - SHUUL_DOCKER_URL=http://docker-socket-proxy:2375
+      - SHUUL_DOCKER_CONTAINER=traefik
+    networks: [internal, proxy]     # `proxy` is the network Traefik shares with shuul
+```
+
+The direct-socket alternative (mode A) sets `SHUUL_DOCKER_SOCKET=/var/run/docker.sock`, mounts the socket read-only and adds the host's numeric `docker` group gid to `group_add` — but be aware that mounting the Docker socket is **equivalent to root on the host**, even with `:ro`. Both modes, and the `tty: true` prohibition, are documented in [SELF-HOSTING.md](SELF-HOSTING.md) §2.13.
+
+If you instead keep the **journald backend** (lower priority), install the gateway package, enable it and point shuul at it. With the `journald` driver the Docker API already serves the same logs, so this is only needed when you deliberately do not use the Docker backend:
 
 ```bash
-sudo apt install -y systemd-journal-remote
+sudo apt install -y systemd-journal-remote          # Debian/Ubuntu: separate package
 sudo systemctl enable --now systemd-journal-gatewayd.socket
 ```
 
-Then point shuul at the host's gateway and keep the journal in RAM if you want zero disk writes:
-
 ```yaml
-# compose.yml of the shuul stack
+# compose.yml of the shuul stack — journald fallback
 services:
   shuul:
     extra_hosts:
@@ -259,6 +262,8 @@ services:
       - SHUUL_JOURNALD_CONTAINER=traefik
 ```
 
+Keep the journal in RAM if you want zero disk writes:
+
 ```ini
 # /etc/systemd/journald.conf.d/volatile.conf
 [Journal]
@@ -267,7 +272,7 @@ Storage=volatile
 
 `systemd-journal-gatewayd` has **no authentication** — never expose port `19531` publicly; allow it only from your Docker bridge subnets. See [SELF-HOSTING.md](SELF-HOSTING.md) for the full setup, firewall rules, and troubleshooting.
 
-> **Deprecated — the `shuul-reporter` Traefik plugin is no longer the recommended path.** It still works for existing deployments (it keeps posting to `POST /api/v1/report`), but new installations should use the journald reader. Its static config was:
+> **Deprecated — the `shuul-reporter` Traefik plugin is no longer the recommended path.** It still works for existing deployments (it keeps posting to `POST /api/v1/report`), but new installations should use the background reader (Docker backend). Its static config was:
 >
 > ```yaml
 > experimental:
@@ -290,7 +295,7 @@ All endpoints are prefixed with `/api/v1`. Protected endpoints require a Bearer 
 | Method | Path | Description |
 |---|---|---|
 | `ANY` | `/shuul` | **WAF** — ForwardAuth: validate and filter request |
-| `POST` | `/report` | **Jail** — Receive a backend status code report (deprecated plugin path; the journald reader calls the same pipeline in-process) |
+| `POST` | `/report` | **Jail** — Receive a backend status code report (deprecated plugin path; the background reader calls the same pipeline in-process) |
 | `GET` | `/health` | Health check |
 | `GET` | `/util/complete?ip=` | GeoIP lookup for a single IP |
 | `GET` | `/auth/sso` | OIDC SSO redirect |
@@ -351,7 +356,7 @@ Called by Traefik as ForwardAuth for every incoming request.
 
 ### Report Endpoint (`POST /api/v1/report`)
 
-Legacy HTTP entry point to the Jail pipeline, called by the deprecated `traefik-shuul-reporter` plugin. Always returns 200 OK (fire-and-forget). New deployments feed the Jail pipeline through the journald reader, which invokes the very same pipeline in-process — this endpoint remains for backwards compatibility.
+Legacy HTTP entry point to the Jail pipeline, called by the deprecated `traefik-shuul-reporter` plugin. Always returns 200 OK (fire-and-forget). New deployments feed the Jail pipeline through the background reader, which invokes the very same pipeline in-process — this endpoint remains for backwards compatibility.
 
 ```json
 {
@@ -371,24 +376,25 @@ Legacy HTTP entry point to the Jail pipeline, called by the deprecated `traefik-
    - If threshold exceeded → ban the IP
 3. Always returns 200 OK
 
-### Journald Reader (Jail observation source)
+### Reader (Jail observation source)
 
-The recommended way to feed the Jail pipeline. A background task streams Traefik's access logs from `systemd-journal-gatewayd`:
+The recommended way to feed the Jail pipeline. A background task streams Traefik's access logs from the **Docker Engine log API**:
 
 ```
-GET {SHUUL_JOURNALD_URL}/entries?follow&CONTAINER_NAME={SHUUL_JOURNALD_CONTAINER}
-Accept: application/json          # Journal JSON Format (NDJSON)
-Range: entries=<last __CURSOR>:1  # on reconnect: resume right after the last entry processed
+GET {SHUUL_DOCKER_URL or SHUUL_DOCKER_SOCKET}/v1.44/containers/{SHUUL_DOCKER_CONTAINER}/logs?follow=1&stdout=1&stderr=1&tail=0&timestamps=1&since=<epoch>
+Accept: application/json          # Docker raw-stream, multiplexed into 8-byte frames
 ```
 
 **Logic:**
-1. Stream the NDJSON entries and keep the last `__CURSOR` seen
-2. Filter to Traefik entries (`CONTAINER_NAME` match)
-3. Parse `MESSAGE` as Traefik access log JSON
-4. Discard entries with `OriginStatus == 0` (or missing, or without a client IP): the request never reached a backend
-5. Hand every remaining entry to the Jail pipeline as a `ReportPayload`
+1. Read the multiplexed stream incrementally: an 8-byte header (stream id, padding, big-endian length) followed by the payload, keeping the decoder state across chunks
+2. Keep only `stdout` frames; `stderr` is dropped at `debug`
+3. Strip the leading RFC3339 timestamp (`timestamps=1`), then parse the rest as Traefik access log JSON
+4. Discard lines with `OriginStatus == 0` (or missing, or without a client IP): the request never reached a backend
+5. Hand every remaining line to the Jail pipeline as a `ReportPayload`
 
-If the gateway is unavailable the reader logs `journald gateway not available` and retries every 30 s; a rejected cursor is dropped so streaming restarts from scratch. The WAF pipeline is never affected.
+Each connection attempt cuts off the history (the `since` filter is only a coarse, one-second hint), so a restart never replays the backlog. If the backend is unavailable the reader logs `docker api not available` and retries every 30 s. The WAF pipeline is never affected.
+
+The `systemd-journal-gatewayd` backend (lower priority) uses `GET /entries?follow&CONTAINER_NAME={SHUUL_JOURNALD_CONTAINER}`, keeps its position with `__CURSOR`, and is selected only when no `SHUUL_DOCKER_*` variable is set.
 
 ### Rule Export / Import
 
@@ -457,27 +463,27 @@ The `fail_codes` field is what makes shuul unique. Instead of counting every req
 
 The Jail pipeline needs to know which status codes your backends returned. Shuul supports two observation sources, and both hand the result to the same `run_jail_pipeline` function.
 
-### Recommended: journald reader (`systemd-journal-gatewayd`)
+### Recommended: Docker backend (Engine log API)
 
 ```mermaid
 flowchart LR
-  A[Traefik access log JSON] --> B[journald]
-  B --> C["systemd-journal-gatewayd :19531"]
-  C --> D[JournaldReader background task]
+  A[Traefik access log JSON] --> B[container log driver]
+  B --> C["Docker Engine logs API"]
+  C --> D[reader background task]
   D --> E[Jail pipeline]
 ```
 
-Shuul streams the entries as NDJSON (`GET /entries?follow`), keeps its position with `__CURSOR`, and turns every access log that reached a backend into a report — which is how it knows:
+Shuul streams the logs from the Engine (`GET /v1.44/containers/{container}/logs?follow`), demodulates the 8-byte frame headers, strips the per-line timestamp, and turns every access log that reached a backend into a report — which is how it knows:
 
 - "This IP got 5 login failures in 10 minutes" (401)
 - "This IP is scanning for PHP files" (404)
 - "This IP is scraping aggressively" (429)
 
-Entries with `OriginStatus == 0` never reached a backend (the answer came from routing or a middleware) and are discarded, so they don't count as failures. There is no extra HTTP call per request, and if the gateway goes down the reader just retries every 30 s while the WAF keeps working. Setup: **Quick Start → 4. Traefik Configuration**.
+Entries with `OriginStatus == 0` never reached a backend (the answer came from routing or a middleware) and are discarded, so they don't count as failures. There is no extra HTTP call per request, and if the backend goes down the reader just retries every 30 s while the WAF keeps working. Setup: **Quick Start → 4. Traefik Configuration**. The `systemd-journal-gatewayd` backend is still supported as a lower-priority alternative.
 
 ### Deprecated: `traefik-shuul-reporter` plugin
 
-The [traefik-shuul-reporter](https://github.com/atareao/traefik-shuul-reporter) plugin was the original bridge between the backend response and shuul. It still works, and existing deployments can keep using it, but it is **no longer the recommended path** — it adds an HTTP `POST` per response plus a 500 ms timeout, while the journald reader reuses Traefik's own access logs for free.
+The [traefik-shuul-reporter](https://github.com/atareao/traefik-shuul-reporter) plugin was the original bridge between the backend response and shuul. It still works, and existing deployments can keep using it, but it is **no longer the recommended path** — it adds an HTTP `POST` per response plus a 500 ms timeout, while the background reader reuses Traefik's own access logs for free.
 
 ### How the plugin works
 
@@ -489,7 +495,7 @@ Backend response → Plugin wraps ResponseWriter
                     shuul evaluates: status_code ∈ fail_codes?
 ```
 
-The plugin intercepts `WriteHeader()` on the Go response writer, extracts the client IP, and sends an async POST to shuul's report endpoint — zero latency impact on the response. Both this path and the journald reader ultimately run the same Jail logic.
+The plugin intercepts `WriteHeader()` on the Go response writer, extracts the client IP, and sends an async POST to shuul's report endpoint — zero latency impact on the response. Both this path and the background reader ultimately run the same Jail logic.
 
 ---
 

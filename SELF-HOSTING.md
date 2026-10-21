@@ -18,7 +18,7 @@ This guide walks you through deploying shuul on your own infrastructure. Shuul i
 
 ### 1.1 Enable the shuul-reporter plugin
 
-**Deprecated — use the journald reader instead.** The `traefik-shuul-reporter` plugin is deprecated. The recommended way to feed shuul's Jail pipeline is now the `systemd-journal-gatewayd` integration described in **section 2**: shuul streams Traefik's access logs out of the systemd journal instead of receiving an HTTP `POST` per request. It removes the extra HTTP call per request and the plugin's 500 ms timeout. The plugin still works, and the configuration below remains valid for existing deployments, but it is no longer the recommended path — new installations should not use it.
+**Deprecated — use the background reader instead.** The `traefik-shuul-reporter` plugin is deprecated. The recommended way to feed shuul's Jail pipeline is now the reader described in **section 2**, which streams Traefik's access logs from the **Docker Engine log API** (a socket or a TCP proxy) instead of receiving an HTTP `POST` per request; the `systemd-journal-gatewayd` backend is kept as a lower-priority alternative. It removes the extra HTTP call per request and the plugin's 500 ms timeout. The plugin still works, and the configuration below remains valid for existing deployments, but it is no longer the recommended path — new installations should not use it.
 
 Add this to your Traefik static configuration (`traefik.yml`):
 
@@ -930,15 +930,20 @@ PORT=3000
 MAXMIND_DB_PATH=geo/GeoLite2-City.mmdb
 RUST_LOG=info
 
-# Optional — Jail pipeline feed from systemd-journal-gatewayd (see section 2)
-SHUUL_JOURNALD_SOCKET=/run/systemd/journal/gatewayd.sock
-SHUUL_JOURNALD_CONTAINER=traefik
+# Optional — Jail pipeline feed (see section 2)
+# Recommended: Docker Engine log API. Mode B points at a docker-socket-proxy (see 2.13).
+SHUUL_DOCKER_URL=http://docker-socket-proxy:2375
+SHUUL_DOCKER_CONTAINER=traefik
+# Mode A alternative: the Docker socket itself, which needs the socket mount and
+# its group and is equivalent to root on the host (see 2.13)
+# SHUUL_DOCKER_SOCKET=/var/run/docker.sock
 
-# Optional alternative: gatewayd reached over TCP instead of the socket
+# Rollback only — the lower-priority systemd-journal-gatewayd backend (see 2.14)
+# SHUUL_JOURNALD_SOCKET=/run/systemd/journal/gatewayd.sock
 # SHUUL_JOURNALD_URL=http://host.docker.internal:19531
 ```
 
-All three `SHUUL_JOURNALD_*` variables are **optional**. `SHUUL_JOURNALD_CONTAINER` defaults to `traefik`, `SHUUL_JOURNALD_URL` to `http://localhost:19531`, and `SHUUL_JOURNALD_SOCKET` has no default — when it is set and non-empty it takes precedence over the URL, which in turn takes precedence over the built-in default. The socket path must be visible inside the container, so pair it with the read-only volume shown in **2.7**; the shipped `compose.yml` already mounts it.
+All transport variables are **optional**. The reader picks the first one that is defined and non-blank, in this order: `SHUUL_DOCKER_SOCKET` → `SHUUL_DOCKER_URL` → `SHUUL_JOURNALD_SOCKET` → `SHUUL_JOURNALD_URL` → `http://localhost:19531`. The container is `SHUUL_DOCKER_CONTAINER`, falling back to `SHUUL_JOURNALD_CONTAINER` and then `traefik`. Any `SHUUL_DOCKER_*` variable disables the journald path, so rolling back (2.14) means **removing** the Docker variables, not just adding the journald ones. The gatewayd socket path must be visible inside the container, so pair it with the read-only volume shown in **2.7**. The recommended Docker setup and the `tty: true` prohibition are in **2.13**.
 
 ### 6.2 Docker Compose
 
@@ -983,7 +988,7 @@ networks:
     external: true
 ```
 
-If you feed the Jail pipeline from the systemd journal, also mount the gatewayd socket and set `SHUUL_JOURNALD_SOCKET` as shown in **section 2.7** — or use the TCP alternative from **2.9** (see **section 14** for the full reference).
+The Jail pipeline feed is configured in addition to the stack above: the recommended Docker backend is in **2.13** (mode B needs a `docker-socket-proxy`; mode A mounts the Docker socket and its group). Only if you use the lower-priority journald fallback, also mount the gatewayd socket and set `SHUUL_JOURNALD_SOCKET` as shown in **2.7** — or use the TCP alternative from **2.9** (see **section 14** for the full reference).
 
 ### 6.3 Production Checklist
 
@@ -995,7 +1000,7 @@ If you feed the Jail pipeline from the systemd journal, also mount the gatewayd 
 - [ ] `RUST_LOG` is set to `info` or `warn` (not `debug`) in production
 - [ ] Health check is working
 - [ ] Container restarts automatically
-- [ ] `systemd-journal-gatewayd.socket` is enabled and serving the Unix socket, `/run/systemd/journal` is mounted read-only into the container, and the container joins the `systemd-journal` group (`group_add`; on Podman use the numeric gid via `JOURNALD_GROUP` — only if using the journald feed, see 2.3 and 2.7). In TCP mode, `19531` is restricted to the Docker bridge subnet
+- [ ] The Jail feed is configured deliberately (see 2.13): **mode B** (`SHUUL_DOCKER_URL` pointing at a `docker-socket-proxy` with `CONTAINERS=1`, on an internal network, no host permission) is the recommended choice. If you chose **mode A**, the Docker socket is mounted (`:ro` — which still grants **root on the host**), the container joins the host's **numeric** `docker` gid via `group_add`, and `tty: true` is **not** set on Traefik. Only with the journald fallback: `systemd-journal-gatewayd.socket` enabled, `/run/systemd/journal` mounted read-only, the `systemd-journal` group granted (numeric gid on Podman), and `19531` restricted to the bridge subnet when used over TCP
 
 ---
 
@@ -1204,9 +1209,9 @@ Set via `RUST_LOG` environment variable.
 
 - Verify the rule has a `rate_limit_profile_id` set
 - Check the profile's `fail_codes` include the status code your backend returns
-- Ensure the Jail pipeline is receiving data: the `systemd-journal-gatewayd` reader must be connected (see section 2) and Traefik must be logging access logs in JSON to journald (see 2.1)
-- Verify the reader's transport: `SHUUL_JOURNALD_SOCKET` must point at the socket **inside the container** and the volume must be mounted (see 2.7); in TCP mode check `SHUUL_JOURNALD_URL`. Both modes share `SHUUL_JOURNALD_CONTAINER` — it must match the Traefik container name (see 2.8)
-- Check the shuul logs for `[BLOCK]` / `[DENIED]` and `[PENDING]` / `[BANNED]` entries, for `journald reader: streaming access logs from …`, and for `journald gateway not available` (see 2.11)
+- Ensure the Jail pipeline is receiving data: the reader must be connected (see section 2). The recommended backend reads from the **Docker Engine log API** (2.13); the lower-priority backend reads from `systemd-journal-gatewayd` (2.1–2.12). Traefik must write access logs in JSON to stdout either way (see 2.1)
+- Verify the feed transport: with the Docker backend check `SHUUL_DOCKER_SOCKET` / `SHUUL_DOCKER_URL` and that the container name matches (2.13); with the journald fallback check `SHUUL_JOURNALD_SOCKET` (mounting the volume, 2.7) or `SHUUL_JOURNALD_URL` in TCP mode. The full precedence is in 2.8
+- Check the shuul logs for `[BLOCK]` / `[DENIED]` and `[PENDING]` / `[BANNED]` entries, for `journald reader: streaming access logs from …`, and for `docker api not available` / `journald gateway not available` (see 2.11 and 2.13)
 - **Deprecated path:** if you still use the `shuul-reporter` plugin, ensure it is in the middleware chain **after** the backend, and check the plugin logs on the Traefik side
 
 ### 12.4 Database issues
@@ -1235,6 +1240,8 @@ Ban format may have changed between versions. The application falls back to an e
 ### 12.6 "Unit systemd-journal-gatewayd.socket not found" / gatewayd not reachable
 
 Symptoms: `systemctl enable --now systemd-journal-gatewayd.socket` fails with `Unit systemd-journal-gatewayd.socket not found`, or the shuul logs keep repeating `journald gateway not available`.
+
+**Only relevant to the journald fallback.** With the recommended Docker backend the equivalent symptom is `docker api not available`, and the checks are in **2.13** (socket not mounted, proxy unreachable, or a wrong container name).
 
 - On Debian/Ubuntu the units come from a **separate package**. Install it and retry:
 
@@ -1279,6 +1286,7 @@ Symptoms: `systemctl enable --now systemd-journal-gatewayd.socket` fails with `U
 - The shuul-reporter plugin sends async requests — network issues do not affect backend latency.
 - **`systemd-journal-gatewayd` has no authentication.** Prefer the Unix socket (no network surface); in TCP mode never expose port `19531` publicly — keep it off Traefik and restrict it to the Docker bridge subnets with the firewall (see 2.10).
 - **The journal holds sensitive data** — request paths, query strings, headers, user agents and client IPs. Anyone who can reach gatewayd can read it, so restrict access accordingly.
+- **The Docker backend has two very different risk profiles (2.13).** Mode A mounts `/var/run/docker.sock`, which is equivalent to **root on the host**; `:ro` does not restrict the API because the socket is a communication channel, not a file. Mode B (`docker-socket-proxy` with `CONTAINERS=1` on an internal network) is the recommended choice: it asks for no host permission and only allows what the proxy permits. Never publish the proxy port, and always reach it over an internal network.
 
 ---
 
@@ -1292,21 +1300,29 @@ services:
     restart: unless-stopped
     env_file: .env
     environment:
-      # Jail pipeline feed — Unix socket transport (recommended, see 2.3/2.7)
-      - SHUUL_JOURNALD_SOCKET=/run/systemd/journal/gatewayd.sock   # optional, no default; wins over the URL
-      - SHUUL_JOURNALD_CONTAINER=traefik                           # optional (default: traefik)
-      # TCP alternative only — requires extra_hosts and an open 19531 (see 2.9)
-      # - SHUUL_JOURNALD_URL=http://host.docker.internal:19531      # optional (default: http://localhost:19531)
-    # The image runs as `app` (uid 1000), not root; this group is what lets it
-    # connect to the `root:systemd-journal 0660` socket (see 2.3/2.7).
-    # Docker resolves the name from the host; on Podman set JOURNALD_GROUP to the
-    # numeric gid, because Podman resolves it inside the image (see 2.7).
+      # Jail pipeline feed (see 2.13). Recommended: Docker Engine log API, mode B,
+      # pointing at a docker-socket-proxy on an internal network.
+      - SHUUL_DOCKER_URL=http://docker-socket-proxy:2375            # optional, no default; needs the proxy service
+      - SHUUL_DOCKER_CONTAINER=traefik                              # optional (default: traefik)
+      # Mode A alternative: the Docker socket itself. It needs the socket mount and
+      # the host's numeric `docker` gid in group_add, and is root on the host (2.13).
+      # - SHUUL_DOCKER_SOCKET=/var/run/docker.sock
+      #
+      # Rollback only — lower-priority systemd-journal-gatewayd backend (see 2.14):
+      # - SHUUL_JOURNALD_SOCKET=/run/systemd/journal/gatewayd.sock
+      # - SHUUL_JOURNALD_URL=http://host.docker.internal:19531
+    # The image runs as `app` (uid 1000), not root. `group_add` is only needed when a
+    # socket is read directly: the host's numeric `docker` gid in mode A (see 2.13),
+    # or `systemd-journal` for the journald fallback (see 2.3/2.7).
+    # Docker resolves the name from the host; on Podman pass the numeric gid, because
+    # Podman resolves it inside the image (see 2.7).
     group_add:
       - ${JOURNALD_GROUP:-systemd-journal}
     volumes:
       - ./data:/app/data:Z           # SQLite database
       - ./geo:/app/geo:Z             # GeoIP database
-      # Mount the directory, not the socket file, so a recreated socket is seen
+      # journald fallback only: mount the directory, not the socket file, so a
+      # recreated socket is seen (see 2.7). Mode A would mount /var/run/docker.sock.
       - /run/systemd/journal:/run/systemd/journal:ro
     networks:
       - proxy
