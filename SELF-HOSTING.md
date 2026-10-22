@@ -101,6 +101,8 @@ Shuul picks the transport from the environment, in this order — the first vari
 4. `SHUUL_JOURNALD_URL` → **gatewayd** over TCP
 5. otherwise → **gatewayd** over TCP at `http://localhost:19531`
 
+Both TCP URLs accept `tcp://` as a **synonym** of `http://` — it is an alias of the same transport, not a variant, so `SHUUL_DOCKER_URL=tcp://proxy:2375` and `SHUUL_DOCKER_URL=http://proxy:2375` are interchangeable and the startup line always shows the effective `http` scheme.
+
 Within one backend the socket beats its own URL and shuul logs a warning naming the ignored URL. Because the Docker backend outranks the journald one, any `SHUUL_DOCKER_*` variable automatically disables the gatewayd path — which is what makes the rollback in 2.14 a matter of unsetting variables.
 
 The container whose logs are read is `SHUUL_DOCKER_CONTAINER`, falling back to `SHUUL_JOURNALD_CONTAINER` and then to `traefik`.
@@ -111,7 +113,7 @@ Both modes feed the same Docker API with the same request; they differ only in h
 
 | | Mode A — direct socket | Mode B — TCP proxy (recommended) |
 |---|---|---|
-| Configuration | `SHUUL_DOCKER_SOCKET=/var/run/docker.sock` + the socket bind mount + `group_add` with the host's `docker` gid | `SHUUL_DOCKER_URL=http://docker-socket-proxy:2375` + a `docker-socket-proxy` with `CONTAINERS=1` and everything else at `0`, on an internal network |
+| Configuration | `SHUUL_DOCKER_SOCKET=/var/run/docker.sock` + the socket bind mount + `group_add` with the host's `docker` gid | `SHUUL_DOCKER_URL=http://docker-socket-proxy:2375` (or `tcp://docker-socket-proxy:2375`) + a `docker-socket-proxy` with `CONTAINERS=1` and everything else at `0`, on an internal network |
 | Permissions it needs | The host's `docker` group | None on the host: only talking to the proxy over the internal network |
 | Real risk | The container can talk to **the whole Engine** — mounting the socket is equivalent to root on the host | Only what the proxy allows; everything else is blocked |
 | Cost | No extra pieces | One more container in the stack |
@@ -444,10 +446,10 @@ With this in place there is no `extra_hosts` entry, no published port and no fir
 | Variable | Default | Description |
 |---|---|---|
 | `SHUUL_DOCKER_SOCKET` | — (unset) | Path of the Docker socket. Activates the **Docker API** over `AF_UNIX`; **highest priority** of the transport |
-| `SHUUL_DOCKER_URL` | — (unset) | Base URL of a **Docker API proxy** reached over TCP. Used only if `SHUUL_DOCKER_SOCKET` is unset; a base path in the URL is ignored |
+| `SHUUL_DOCKER_URL` | — (unset) | Base URL of a **Docker API proxy** reached over TCP; `tcp://` is accepted as a synonym of `http://`. Used only if `SHUUL_DOCKER_SOCKET` is unset; a base path in the URL is ignored |
 | `SHUUL_DOCKER_CONTAINER` | `SHUUL_JOURNALD_CONTAINER`, else `traefik` | Container whose logs are read |
 | `SHUUL_JOURNALD_SOCKET` | — (unset) | Path of the gatewayd socket. **Lower priority** than any `SHUUL_DOCKER_*`; if defined and non-empty it takes precedence over the journald URL |
-| `SHUUL_JOURNALD_URL` | `http://localhost:19531` | Base URL of a gatewayd reached over TCP |
+| `SHUUL_JOURNALD_URL` | `http://localhost:19531` | Base URL of a gatewayd reached over TCP; `tcp://` is accepted as a synonym of `http://` |
 | `SHUUL_JOURNALD_CONTAINER` | `traefik` | Value matched against the journal's `CONTAINER_NAME` field; fallback for `SHUUL_DOCKER_CONTAINER` |
 
 Precedence is `SHUUL_DOCKER_SOCKET` → `SHUUL_DOCKER_URL` → `SHUUL_JOURNALD_SOCKET` → `SHUUL_JOURNALD_URL` → `http://localhost:19531`. Blank values count as unset. Within one backend the socket wins over its URL and shuul logs a one-time warning naming the ignored URL. Note that `localhost` inside a container is the container itself, so the default `SHUUL_JOURNALD_URL` is only meaningful when gatewayd shares shuul's network namespace — and it is never reached at all while a `SHUUL_DOCKER_*` transport is set.

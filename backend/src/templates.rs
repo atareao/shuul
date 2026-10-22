@@ -30,21 +30,6 @@ pub struct RuleTemplate {
     pub weight: i32,
 }
 
-#[derive(Debug, Clone, Serialize)]
-pub struct RateLimitProfileTemplate {
-    pub id: i32,
-    pub name: String,
-    pub description: String,
-    pub max_requests: i32,
-    pub window_seconds: i32,
-    pub ban_seconds: i32,
-    pub escalation_enabled: bool,
-    pub escalation_multipliers: Vec<i32>,
-    pub max_ban_seconds: i32,
-    pub cooldown_seconds: i32,
-    pub fail_codes: Vec<i32>,
-}
-
 #[allow(
     clippy::must_use_candidate,
     clippy::return_self_not_must_use,
@@ -308,130 +293,6 @@ pub fn all_rule_templates() -> Vec<RuleTemplate> {
     ]
 }
 
-#[allow(clippy::too_many_lines)]
-#[must_use]
-pub fn all_rate_limit_profile_templates() -> Vec<RateLimitProfileTemplate> {
-    vec![
-        RateLimitProfileTemplate {
-            id: 1,
-            name: "Auth Brute Force".into(),
-            description: "5 requests in 5 minutes → 15min ban with escalation".into(),
-            max_requests: 5,
-            window_seconds: 300,
-            ban_seconds: 900,
-            escalation_enabled: true,
-            escalation_multipliers: vec![1, 2, 4, 8, 16, 32, 64, 128],
-            max_ban_seconds: 604_800,
-            cooldown_seconds: 30,
-            fail_codes: vec![401],
-        },
-        RateLimitProfileTemplate {
-            id: 2,
-            name: "Admin Guard".into(),
-            description: "5 requests in 5 minutes → 1h ban with escalation".into(),
-            max_requests: 5,
-            window_seconds: 300,
-            ban_seconds: 3600,
-            escalation_enabled: true,
-            escalation_multipliers: vec![1, 2, 4, 8, 16, 32, 64, 128],
-            max_ban_seconds: 604_800,
-            cooldown_seconds: 30,
-            fail_codes: vec![401, 403],
-        },
-        RateLimitProfileTemplate {
-            id: 3,
-            name: "Path Scanning".into(),
-            description: "20 requests in 60 seconds → 5min ban with escalation. Un humano jamas genera 20 errores 404 en 1 minuto.".into(),
-            max_requests: 20,
-            window_seconds: 60,
-            ban_seconds: 300,
-            escalation_enabled: true,
-            escalation_multipliers: vec![1, 2, 4, 8, 16, 32, 64, 128],
-            max_ban_seconds: 86_400,
-            cooldown_seconds: 30,
-            fail_codes: vec![403, 404],
-        },
-        RateLimitProfileTemplate {
-            id: 4,
-            name: "API Abuse".into(),
-            description: "100 requests in 1 minute → 5min ban with escalation".into(),
-            max_requests: 100,
-            window_seconds: 60,
-            ban_seconds: 300,
-            escalation_enabled: true,
-            escalation_multipliers: vec![1, 2, 4, 8, 16, 32, 64, 128],
-            max_ban_seconds: 86_400,
-            cooldown_seconds: 30,
-            fail_codes: vec![401, 403, 429],
-        },
-        RateLimitProfileTemplate {
-            id: 5,
-            name: "Scraping".into(),
-            description: "60 requests in 1 minute → 5min ban with escalation".into(),
-            max_requests: 60,
-            window_seconds: 60,
-            ban_seconds: 300,
-            escalation_enabled: true,
-            escalation_multipliers: vec![1, 2, 4, 8, 16, 32, 64, 128],
-            max_ban_seconds: 86_400,
-            cooldown_seconds: 7,
-            fail_codes: vec![403, 429, 500],
-        },
-        RateLimitProfileTemplate {
-            id: 6,
-            name: "Health & Webhooks".into(),
-            description: "100 requests in 60 seconds → 1min ban".into(),
-            max_requests: 100,
-            window_seconds: 60,
-            ban_seconds: 60,
-            escalation_enabled: false,
-            escalation_multipliers: vec![1],
-            max_ban_seconds: 60,
-            cooldown_seconds: 30,
-            fail_codes: vec![500, 502, 503],
-        },
-        RateLimitProfileTemplate {
-            id: 7,
-            name: "Recidive".into(),
-            description: "3 reincidences in 48h → 7-day ban (max 30 days)".into(),
-            max_requests: 3,
-            window_seconds: 172_800,
-            ban_seconds: 604_800,
-            escalation_enabled: true,
-            escalation_multipliers: vec![1, 2, 4, 8, 16, 32, 64, 128],
-            max_ban_seconds: 2_592_000,
-            cooldown_seconds: 60,
-            fail_codes: vec![403, 429],
-        },
-        RateLimitProfileTemplate {
-            id: 9,
-            name: "Scanner Aggressive".into(),
-            description: "50 requests in 10 seconds → 30min ban with escalation. Para escaneres rapidos incluso con retardo aleatorio.".into(),
-            max_requests: 50,
-            window_seconds: 10,
-            ban_seconds: 1800,
-            escalation_enabled: true,
-            escalation_multipliers: vec![1, 2, 4, 8, 16, 32, 64, 128],
-            max_ban_seconds: 604_800,
-            cooldown_seconds: 30,
-            fail_codes: vec![403, 404, 405, 500],
-        },
-        RateLimitProfileTemplate {
-            id: 8,
-            name: "Global Shield".into(),
-            description: "Catch-all: 300 errores en 60s → 5min ban with escalation. Sin filtros, matchea todo. Atrapa cualquier IP que genere demasiados errores.".into(),
-            max_requests: 300,
-            window_seconds: 60,
-            ban_seconds: 300,
-            escalation_enabled: true,
-            escalation_multipliers: vec![1, 2, 4, 8, 16, 32, 64, 128],
-            max_ban_seconds: 86_400,
-            cooldown_seconds: 30,
-            fail_codes: vec![403, 404, 429, 500, 502, 503],
-        },
-    ]
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -590,12 +451,6 @@ mod tests {
     }
 
     #[test]
-    fn test_rate_limit_profile_count() {
-        let profiles = all_rate_limit_profile_templates();
-        assert_eq!(profiles.len(), 9, "Expected 9 rate limit profiles");
-    }
-
-    #[test]
     fn test_health_webhooks_template_exists() {
         let all = all_rule_templates();
         let found = all.iter().any(|t| t.name == "Health & Webhooks");
@@ -675,34 +530,5 @@ mod tests {
                 t.name
             );
         }
-    }
-
-    const NEW_MULTIPLIERS: &[i32] = &[1, 2, 4, 8, 16, 32, 64, 128];
-
-    /// Escenario 1: Templates tienen multipliers [1,2,4,8,16,32,64,128]
-    /// GIVEN los rate limit profile templates
-    /// WHEN se listan
-    /// THEN todos los templates con escalation_enabled=true tienen escalation_multipliers = [1,2,4,8,16,32,64,128]
-    #[test]
-    fn all_escalated_templates_have_aggressive_multipliers() {
-        let profiles = all_rate_limit_profile_templates();
-        for profile in &profiles {
-            if profile.escalation_enabled {
-                assert_eq!(
-                    profile.escalation_multipliers, NEW_MULTIPLIERS,
-                    "Profile '{}' (id={}) debe tener escalation_multipliers = {:?}, pero tiene {:?}",
-                    profile.name, profile.id, NEW_MULTIPLIERS, profile.escalation_multipliers
-                );
-            }
-        }
-    }
-
-    /// Escenario 1 (contraejemplo): Health & Webhooks no tiene escalation, se queda con [1]
-    #[test]
-    fn health_and_webhooks_not_escalated() {
-        let profiles = all_rate_limit_profile_templates();
-        let health = profiles.iter().find(|p| p.id == 6).unwrap();
-        assert!(!health.escalation_enabled);
-        assert_eq!(health.escalation_multipliers, vec![1]);
     }
 }
