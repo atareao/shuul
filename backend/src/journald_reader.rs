@@ -1803,6 +1803,39 @@ mod tests_task4 {
             "IPv6 ClientAddr fallback must strip the brackets and port"
         );
     }
+
+    /// Escenario: An access log with only a subset of the request_ keys maps the present ones.
+    /// Guardián de caracterización: con sólo `request_User-Agent` y
+    /// `request_X-Request-Id`, esas dos claves se mapean, las otras tres quedan
+    /// a `None` y la línea NO se descarta.
+    #[test]
+    fn test_parse_traefik_subset_of_request_keys_maps_present_ones() {
+        let json = r#"{
+            "ClientHost": "10.0.0.1",
+            "OriginStatus": 200,
+            "RequestPath": "/admin",
+            "RequestMethod": "GET",
+            "RequestHost": "example.com",
+            "request_User-Agent": "Mozilla/5.0",
+            "request_X-Request-Id": "abc-123"
+        }"#;
+        let result = parse_traefik_access_log(json);
+        let payload = result
+            .expect("un JSON válido debe parsear")
+            .expect("una respuesta del backend no debe descartarse");
+
+        assert_eq!(payload.user_agent.as_deref(), Some("Mozilla/5.0"));
+        assert_eq!(payload.x_request_id.as_deref(), Some("abc-123"));
+        assert!(payload.referer.is_none(), "referer ausente → None");
+        assert!(
+            payload.content_type.is_none(),
+            "content_type ausente → None"
+        );
+        assert!(
+            payload.accept_language.is_none(),
+            "accept_language ausente → None"
+        );
+    }
 }
 
 // ── Task 6: extract_report_payload ──
