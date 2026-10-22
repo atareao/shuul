@@ -1,4 +1,25 @@
 # Changelog
+## [0.16.1] - 2026-10-22
+
+### Bug Fixes
+
+- *(matcher)* Un campo restringido sin valor ya no casa por ausencia
+- *(ban-manager)* Un baneo sobrevive al reinicio
+- *(review)* Corrige los hallazgos de la auditoría
+
+### Documentation
+
+- *(openspec)* Cierra la fase 0 del transporte de logs por la API de Docker
+- *(openspec)* Propuesta del change missing-header-fields
+- *(openspec)* Documenta los campos de cabecera y cierra el change
+- *(openspec)* Propuesta del change ban-manager-persistence
+- *(openspec)* Aprueba el change ban-manager-persistence con B2
+- *(ban-manager)* Documenta el contrato de persistencia y cierra el change
+
+### Testing
+
+- *(spec)* Archiva docker-logs-transport en openspec/specs/
+- *(spec)* Archiva missing-header-fields en openspec/specs/
 ## [0.16.0] - 2026-10-21
 
 ### Bug Fixes
@@ -33,6 +54,7 @@
 ### Miscellaneous Tasks
 
 - *(docker)* Build the frontend on node 22
+- Release v0.16.0
 
 ### Other
 
