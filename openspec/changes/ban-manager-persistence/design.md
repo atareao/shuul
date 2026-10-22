@@ -226,3 +226,23 @@ por el usuario el 2026-10-22**, y se dejan aquí como memoria de la decisión:
   cálculo `banned_at + ban_duration_seconds` daría **7 filas** todavía válidas,
   pero no distingue las barridas por el bug de las caducadas de verdad ni de las
   desbaneadas a mano —resucitaría un baneo levantado por un operador—. Ver §D4.
+
+### Medición post-fix (pendiente de despliegue)
+
+La comprobación *post-fix* en producción corresponde a la **tarea 6.5** de
+`tasks.md` y se hará al desplegar en `co1`; no se ha podido ejecutar end-to-end en
+local (el binario fija el bind en `0.0.0.0:3000` en `main.rs:427` —`PORT` se lee y
+se registra, pero no se usa para el bind— y ese puerto está ocupado por un proceso
+ajeno). Qué hay que mirar allí, en la DB del contenedor ya reiniciado:
+
+- `SELECT COUNT(*) FROM bans WHERE expired = 0` **ya no colapsa a 1**: debe ser
+  ≥ el número de particiones activas distintas (`ip_address, COALESCE(rule_id, 0)`).
+  Antes del fix daba **1** (el `rowid` más bajo, el baneo más antiguo de la tabla).
+- **0 filas** con `expired = 0` ya caducadas:
+  `SELECT COUNT(*) FROM bans WHERE expired = 0 AND CAST(strftime('%s', banned_at) AS INTEGER) + ban_duration_seconds < CAST(strftime('%s','now') AS INTEGER)`
+  → `0`. Antes del fix eran **22**.
+
+Mientras tanto, la semántica de B2 (la limpieza en DB marca las filas muertas y
+deja las vivas) queda cubierta por el test de caracterización
+`test_cleanup_expired_db_marks_dead_rows_and_leaves_live_ones`, que ejecuta el
+mismo `cleanup_expired_db` que invoca el task.
