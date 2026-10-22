@@ -1,5 +1,14 @@
 import React from "react";
-import { Table, Input, Flex, Typography, Switch, Select, Tag } from "antd";
+import {
+  Table,
+  Input,
+  Flex,
+  Typography,
+  Switch,
+  Select,
+  Tag,
+  Pagination,
+} from "antd";
 import type { GetProp, TableProps, TableColumnsType } from "antd";
 import type {
   FilterValue,
@@ -55,7 +64,6 @@ type Props<T extends { id: number | string }> = {
   defaultSortDesc?: boolean;
   autoRefresh?: boolean;
   autoRefreshInterval?: number;
-  clientFilter?: (items: T[]) => T[];
   extraHeaderContent?: React.ReactNode;
 } & Partial<ActionProps<T>>;
 
@@ -305,7 +313,7 @@ export default class CustomTable<
         effectiveSorter.order !== undefined &&
         effectiveSorter.field !== this.state.sortField
           ? 1
-          : pagination.current || 1,
+          : pagination.current || this.state.pagination.current || 1,
       pageSize: pagination.pageSize || this.state.pagination.pageSize || 10,
       total: this.state.pagination.total || 0,
     };
@@ -321,6 +329,31 @@ export default class CustomTable<
       newPagination.pageSize,
       newSortField as string | undefined,
       newSortOrder,
+    );
+  };
+
+  /**
+   * La paginación vive fuera del `Table` (que se renderiza con `pagination=false`),
+   * de modo que `CustomTable` es el único paginador: antd nunca vuelve a recortar
+   * una página ya paginada por el servidor. El `pageSize` es del cliente y no se
+   * reescribe desde la respuesta.
+   */
+  handlePageChange = (page: number, pageSize: number) => {
+    // Cambiar el tamaño de página vuelve a la primera página; si sólo cambia la
+    // página, se respeta la página pedida. El `onChange` de rc-pagination no
+    // garantiza lo primero: calcula `nextCurrent = current > newCurrent ? newCurrent
+    // : current` y sólo coincide con la primera página por casualidad (p. ej. cuando
+    // `total <= pageSize`). La spec exige la primera página siempre.
+    const previousPageSize = this.state.pagination.pageSize ?? 10;
+    const pageSizeChanged = pageSize !== previousPageSize;
+    const targetPage = pageSizeChanged ? 1 : page;
+    this.setState(
+      (prevState) => ({
+        pagination: { ...prevState.pagination, current: targetPage, pageSize },
+      }),
+      () => {
+        this.fetchData(targetPage, pageSize);
+      },
     );
   };
 
@@ -377,16 +410,21 @@ export default class CustomTable<
           pagination: {
             ...prevState.pagination,
             current: responseJson.pagination?.page || 1,
-            pageSize: responseJson.pagination?.limit || 10,
+            // El `pageSize` es del cliente: NO se reescribe con el `limit` de
+            // la respuesta (que puede diferir del solicitado).
             total: responseJson.pagination?.records || 0,
           },
         }));
       } else {
         if (this.fetchSeq !== seq) return;
+        // Una respuesta de error no debe dejar el `total`/`totalPages` de la
+        // respuesta anterior: una lista vacía mostraría sus páginas.
         this.setState((prevState) => ({
           ...prevState,
           items: [],
           loading: false,
+          totalPages: 0,
+          pagination: { ...prevState.pagination, total: 0 },
         }));
       }
     } catch (error) {
@@ -396,6 +434,8 @@ export default class CustomTable<
         ...prevState,
         items: [],
         loading: false,
+        totalPages: 0,
+        pagination: { ...prevState.pagination, total: 0 },
       }));
     }
   };
@@ -457,20 +497,6 @@ export default class CustomTable<
   render = () => {
     const titleText = this.props.t(this.props.title);
     const { hasActions, renderHeaderAction } = this.props;
-
-    // Apply client-side filter if provided
-    const displayItems = this.props.clientFilter
-      ? this.props.clientFilter(this.state.items)
-      : this.state.items;
-
-    // Computed pagination config with size changer and total display
-    const paginationConfig: TablePaginationConfig = {
-      ...this.state.pagination,
-      showSizeChanger: true,
-      pageSizeOptions: ["10", "50", "100"],
-      showTotal: (total: number) =>
-        `Total: ${total} records (${this.state.totalPages} pages)`,
-    };
 
     let dialogUI: React.ReactNode | null = null;
 
@@ -547,13 +573,33 @@ export default class CustomTable<
             style={{ width: "100%" }}
             columns={this.columns}
             rowKey={(record) => record.id.toString()}
-            dataSource={displayItems || []}
+            dataSource={this.state.items || []}
             sortDirections={["ascend", "descend"]}
-            pagination={paginationConfig}
+            // antd NO pagina: `CustomTable` es el único paginador y antd no
+            // debe recortar una página ya paginada por el servidor.
+            pagination={false}
             loading={this.state.loading}
             onChange={this.handleTableChange}
             scroll={{ x: 1000 }}
           />
+          {/* Sin registros no hay nada que paginar: antd no mostraba la barra
+              en una tabla vacía y el `<Pagination>` externo no debe introducir
+              ese ruido visual. */}
+          {this.state.pagination.total ? (
+            <Flex justify="center" align="center">
+              <Pagination
+                current={this.state.pagination.current ?? 1}
+                pageSize={this.state.pagination.pageSize ?? 10}
+                total={this.state.pagination.total ?? 0}
+                showSizeChanger
+                pageSizeOptions={["10", "50", "100"]}
+                showTotal={(total: number) =>
+                  `Total: ${total} records (${this.state.totalPages} pages)`
+                }
+                onChange={this.handlePageChange}
+              />
+            </Flex>
+          ) : null}
         </Flex>
       </>
     );

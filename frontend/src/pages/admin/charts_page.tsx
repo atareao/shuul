@@ -11,7 +11,6 @@ import EvolutionStacked from "@/components/charts/evolution_stacked";
 import BlockRateChart from "@/components/charts/block_rate_chart";
 import TopMethods from "@/components/charts/top_methods";
 import TopPaths from "@/components/charts/top_paths";
-import EvolutionByMethod from "@/components/charts/evolution_by_method";
 
 const Pie = lazy(() => import("@/components/charts/antd_pie"));
 
@@ -30,10 +29,6 @@ interface State {
   top_paths: Array<[string, number, number]>;
   top_fqdns: Array<[string, number, number]>;
   evolution_data: Array<{ id: string; data: Array<{ x: string; y: number }> }>;
-  evolution_by_method: Array<{
-    id: string;
-    data: Array<{ x: string; y: number }>;
-  }>;
   unit: string;
   last: number;
   total: number;
@@ -66,7 +61,6 @@ export class InnerPage extends react.Component<Props, State> {
       top_paths: [],
       top_fqdns: [],
       evolution_data: [],
-      evolution_by_method: [],
       unit: "hour",
       last: 24,
       total: 0,
@@ -89,7 +83,6 @@ export class InnerPage extends react.Component<Props, State> {
           top_methods_res,
           top_paths_res,
           top_fqdns_res,
-          evolution_by_method_res,
           stats_total_res,
           stats_blocked_res,
         ] = await Promise.all([
@@ -105,13 +98,6 @@ export class InnerPage extends react.Component<Props, State> {
           loadData("stats/top_methods"),
           loadData("stats/top_paths"),
           loadData("stats/top_fqdns"),
-          loadData(
-            "stats/evolution_by_method",
-            new Map([
-              ["unit", unit],
-              ["last", last.toString()],
-            ]),
-          ),
           loadData("stats/info", new Map([["option", "total"]])),
           loadData("stats/info", new Map([["option", "filtered"]])),
         ]);
@@ -149,13 +135,6 @@ export class InnerPage extends react.Component<Props, State> {
           evolution_data:
             evolution_data_res.status === 200
               ? (evolution_data_res.data as Array<{
-                  id: string;
-                  data: Array<{ x: string; y: number }>;
-                }>)
-              : [],
-          evolution_by_method:
-            evolution_by_method_res.status === 200
-              ? (evolution_by_method_res.data as Array<{
                   id: string;
                   data: Array<{ x: string; y: number }>;
                 }>)
@@ -207,7 +186,6 @@ export class InnerPage extends react.Component<Props, State> {
       top_paths,
       top_fqdns,
       evolution_data,
-      evolution_by_method,
       loading,
       error,
     } = this.state;
@@ -416,32 +394,6 @@ export class InnerPage extends react.Component<Props, State> {
                           >
                             <Typography.Text type="secondary">
                               No block rate data available
-                            </Typography.Text>
-                          </Flex>
-                        )}
-                      </div>
-                    </Card>
-                    <Card title="Evolution by Method" size="small">
-                      <div style={{ height: 300 }}>
-                        {evolution_by_method.length > 0 ? (
-                          <EvolutionByMethod
-                            data={evolution_by_method.flatMap((series) =>
-                              series.data.map((point) => ({
-                                category: series.id,
-                                time: fmtTime(point.x),
-                                requests: point.y,
-                              })),
-                            )}
-                            isDarkMode={isDarkMode}
-                          />
-                        ) : (
-                          <Flex
-                            justify="center"
-                            align="center"
-                            style={{ height: "100%" }}
-                          >
-                            <Typography.Text type="secondary">
-                              No method evolution data available
                             </Typography.Text>
                           </Flex>
                         )}
