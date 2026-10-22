@@ -17,6 +17,11 @@
 //! | **API de Docker** | `SHUUL_DOCKER_SOCKET` | `SHUUL_DOCKER_URL` (proxy) |
 //! | **`systemd-journal-gatewayd`** | `SHUUL_JOURNALD_SOCKET` | `SHUUL_JOURNALD_URL` |
 //!
+//! Las dos URL base aceptan `tcp://` como **sinónimo** de `http://`: es un
+//! alias del mismo transporte HTTP —no una variante—, así que produce la misma
+//! autoridad y la misma petición, y `endpoint_display()` normaliza siempre al
+//! esquema efectivo (`http`). El alias es compartido por los dos backends.
+//!
 //! La precedencia es: `SHUUL_DOCKER_SOCKET` → `SHUUL_DOCKER_URL` →
 //! `SHUUL_JOURNALD_SOCKET` → `SHUUL_JOURNALD_URL` → `http://localhost:19531`. Un
 //! valor ausente o en blanco cuenta como no definido. Dentro de un backend el
@@ -91,8 +96,10 @@
 //!
 //! Si el backend no está disponible se emite un `warn!` que **nombra el backend y
 //! el endpoint** —`docker api not available: {endpoint}` o `journald gateway not
-//! available`— y se reintenta cada [`DEFAULT_RETRY_DELAY`]. El texto de gatewayd
-//! se conserva literal: es el guardián de que el camino heredado no cambió.
+//! available`— y se reintenta cada [`DEFAULT_RETRY_DELAY`]. El texto base de
+//! gatewayd se conserva **intacto** —es el guardián de que el camino heredado no
+//! cambió— y sólo se le **añade** el sufijo ` (from {variable})` cuando el
+//! transporte es TCP, para nombrar la variable que contiene la URL base.
 //!
 //! ## Concurrencia
 //!
@@ -299,7 +306,8 @@ impl Drop for ConnectionTask {
 /// Transporte por el que se alcanza `systemd-journal-gatewayd`.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum JournaldTransport {
-    /// HTTP sobre TCP contra una URL base (`http://host:puerto`).
+    /// HTTP sobre TCP contra una URL base (`http://host:puerto`, o su alias
+    /// `tcp://host:puerto`).
     Tcp {
         /// URL base del endpoint HTTP de gatewayd, sin path de la petición.
         base_url: String,
@@ -311,7 +319,8 @@ pub enum JournaldTransport {
     },
     // Variantes aditivas del backend de la **API de Docker** (decisión D2 del
     // `design.md`): las construye `from_values` al resolver la precedencia.
-    /// API de logs de Docker sobre TCP contra una URL base (proxy).
+    /// API de logs de Docker sobre TCP contra una URL base (proxy),
+    /// `http://` o su alias `tcp://`.
     DockerTcp {
         /// URL base del endpoint HTTP de la API de Docker.
         base_url: String,
@@ -333,6 +342,22 @@ impl JournaldTransport {
     /// para no abrir una segunda bifurcación del camino de streaming.
     const fn is_docker(&self) -> bool {
         matches!(self, Self::DockerTcp { .. } | Self::DockerUnixSocket { .. })
+    }
+
+    /// Variable de entorno que contiene la URL base TCP de este backend, o
+    /// `None` si el transporte no se configura por URL (sockets `AF_UNIX`).
+    ///
+    /// El parseo de la URL es **compartido** por los dos backends TCP, así que
+    /// no puede saber de dónde salió el valor; el único punto que sí lo sabe es
+    /// el aviso de `run()`, que conoce el transporte. Esta etiqueta le permite
+    /// nombrar **la variable a corregir** sin abrir una segunda bifurcación del
+    /// diagnóstico.
+    const fn tcp_url_variable(&self) -> Option<&'static str> {
+        match self {
+            Self::Tcp { .. } => Some("SHUUL_JOURNALD_URL"),
+            Self::DockerTcp { .. } => Some("SHUUL_DOCKER_URL"),
+            Self::UnixSocket { .. } | Self::DockerUnixSocket { .. } => None,
+        }
     }
 }
 
@@ -901,18 +926,27 @@ impl JournaldReader {
     ///
     /// Nombra el backend y, en el caso de Docker, el endpoint efectivo —más la
     /// causa, que ya viene en `error`—: quien lee los logs no tiene que adivinar
-    /// cuál de los dos falló ni a dónde se está intentando conectar. El texto de
-    /// gatewayd se conserva **literal**, porque es el guardián de que el camino
-    /// heredado no cambió.
+    /// cuál de los dos falló ni a dónde se está intentando conectar. Cuando el
+    /// transporte es TCP, nombra además la variable que contiene la URL base,
+    /// para que una URL sin esquema diga **qué variable corregir** (el parseo
+    /// compartido no puede saberlo). El texto base de gatewayd (`journald
+    /// gateway not available: …`) se conserva **intacto** —es el guardián de que
+    /// el camino heredado no cambió— y sólo se le **añade** el sufijo
+    /// ` (from {variable})` cuando el transporte es TCP, para nombrar la
+    /// variable a corregir.
     fn warn_backend_unavailable(&self, error: &JournalError) {
         let retry = self.retry_delay.as_secs();
+        let source = self
+            .transport
+            .tcp_url_variable()
+            .map_or_else(String::new, |variable| format!(" (from {variable})"));
         if self.transport.is_docker() {
             warn!(
-                "docker api not available: {}: {error} (retrying in {retry}s)",
+                "docker api not available: {}: {error}{source} (retrying in {retry}s)",
                 self.endpoint_display()
             );
         } else {
-            warn!("journald gateway not available: {error} (retrying in {retry}s)");
+            warn!("journald gateway not available: {error}{source} (retrying in {retry}s)");
         }
     }
 
@@ -1132,7 +1166,9 @@ async fn connect_tcp(base_url: &str) -> Result<BoxedIo, JournalError> {
 ///
 /// Devuelve [`JournalError::Connection`] si la URL no es válida, no lleva
 /// esquema o usa `https`, que no está soportado (gatewayd se consulta en local
-/// y sin TLS por diseño).
+/// y sin TLS por diseño). `tcp` se acepta como **alias** de `http`, y la
+/// comparación es **insensible a mayúsculas** (`TCP://` ≡ `http://`), como
+/// manda RFC 3986.
 fn tcp_endpoint(base_url: &str) -> Result<TcpEndpoint, JournalError> {
     // Un path absoluto aquí es casi siempre el socket en la variable
     // equivocada: nombrar la variable correcta evita diagnósticos engañosos,
@@ -1148,7 +1184,14 @@ fn tcp_endpoint(base_url: &str) -> Result<TcpEndpoint, JournalError> {
     })?;
 
     match uri.scheme_str() {
-        Some("http") => {},
+        // `tcp` es un **alias** de `http`, no una variante: ambos producen el
+        // mismo transporte, la misma autoridad y la misma petición. La rama es
+        // compartida por los dos backends TCP (la API de Docker y gatewayd).
+        // La comparación es insensible a mayúsculas porque RFC 3986 declara el
+        // esquema *case-insensitive*: el parser de `http` normaliza a minúsculas
+        // **sólo** `http`/`https`, así que `tcp` llegaba crudo (`TCP://`).
+        Some(scheme)
+            if scheme.eq_ignore_ascii_case("http") || scheme.eq_ignore_ascii_case("tcp") => {},
         Some("https") => {
             return Err(JournalError::connection(format!(
                 "https is not supported for the gateway URL ({base_url}); use http or a unix socket"
@@ -5437,6 +5480,368 @@ mod tests_task7 {
                 );
             },
             other => panic!("expected a Connection error, got: {other:?}"),
+        }
+    }
+
+    // ── Task 2 (RED): el alias `tcp://` y el esquema efectivo ──
+    //
+    // Tests de la fase RED del change `tcp-url-alias`. Los que hoy ya se
+    // comportan bien quedan como **guardas de regresión**; los que fallan
+    // fijan lo que falta: el alias `tcp://` (aceptado como sinónimo de
+    // `http://`), el `endpoint_display()` normalizado al esquema efectivo y el
+    // nombrado de la variable en una URL sin esquema. No se toca el código de
+    // producción para hacerlos pasar: eso es el GREEN.
+
+    use super::JournaldTransport;
+    use super::tests_docker_transport::CUTOFF_MICROS;
+
+    /// 2.1 — `SHUUL_DOCKER_URL=tcp://host:2375` produce el **mismo** transporte
+    /// que `http://host:2375`: misma autoridad y misma petición.
+    #[test]
+    fn test_docker_tcp_url_accepts_the_tcp_alias_like_http() {
+        let docker =
+            |url: &str| JournaldReader::from_values(None, Some(url.to_string()), None, None, None);
+        let via_tcp = docker("tcp://host:2375");
+        let via_http = docker("http://host:2375");
+
+        assert_eq!(
+            via_tcp.transport,
+            JournaldTransport::DockerTcp {
+                base_url: "tcp://host:2375".to_string()
+            },
+            "SHUUL_DOCKER_URL must select the Docker API over TCP"
+        );
+        assert_eq!(
+            via_tcp.endpoint_display(),
+            via_http.endpoint_display(),
+            "the tcp:// alias must reach the same effective endpoint as http://"
+        );
+        assert_eq!(
+            via_tcp.endpoint_display(),
+            "docker:http://host:2375 (traefik)"
+        );
+
+        let tcp_req = via_tcp
+            .build_request(None, CUTOFF_MICROS)
+            .expect("the Docker request over tcp:// must build, like its http:// twin");
+        let http_req = via_http
+            .build_request(None, CUTOFF_MICROS)
+            .expect("the Docker request over http:// must build");
+        assert_eq!(
+            tcp_req.uri().to_string(),
+            http_req.uri().to_string(),
+            "both aliases must produce the same origin-form request"
+        );
+        assert_eq!(
+            tcp_req.headers()[header::HOST],
+            "host:2375",
+            "the Host header must be the authority, without any scheme"
+        );
+    }
+
+    /// 2.2 — el alias también vale en `SHUUL_JOURNALD_URL`.
+    #[test]
+    fn test_gatewayd_tcp_url_accepts_the_tcp_alias_like_http() {
+        let gateway =
+            |url: &str| JournaldReader::from_values(None, None, None, Some(url.to_string()), None);
+        let via_tcp = gateway("tcp://host:19531");
+        let via_http = gateway("http://host:19531");
+
+        assert_eq!(
+            via_tcp.transport,
+            JournaldTransport::Tcp {
+                base_url: "tcp://host:19531".to_string()
+            }
+        );
+        assert_eq!(via_tcp.endpoint_display(), via_http.endpoint_display());
+        assert_eq!(via_tcp.endpoint_display(), "http://host:19531");
+
+        let request = via_tcp
+            .build_request(None, CUTOFF_MICROS)
+            .expect("the gatewayd request over tcp:// must build");
+        assert_eq!(request.headers()[header::HOST], "host:19531");
+    }
+
+    /// 2.3 — `endpoint_display()` muestra el esquema efectivo y **nunca** `tcp`.
+    #[test]
+    fn test_endpoint_display_never_shows_the_tcp_scheme() {
+        let docker = JournaldReader::from_values(
+            None,
+            Some("tcp://docker-socket-proxy:2375".to_string()),
+            None,
+            None,
+            None,
+        );
+        assert_eq!(
+            docker.endpoint_display(),
+            "docker:http://docker-socket-proxy:2375 (traefik)"
+        );
+        assert!(
+            !docker.endpoint_display().contains("tcp"),
+            "the startup line must not exhibit a scheme the connection does not use, got: {}",
+            docker.endpoint_display()
+        );
+
+        let gateway = JournaldReader::from_values(
+            None,
+            None,
+            None,
+            Some("tcp://journald.example:19531".to_string()),
+            None,
+        );
+        assert_eq!(gateway.endpoint_display(), "http://journald.example:19531");
+        assert!(
+            !gateway.endpoint_display().contains("tcp"),
+            "the effective scheme is http, never tcp, got: {}",
+            gateway.endpoint_display()
+        );
+    }
+
+    /// 2.4 — `https://` sigue rechazado con un diagnóstico que lo **nombra** y
+    /// que no se confunde con un esquema desconocido.
+    #[test]
+    fn test_https_is_rejected_by_name_and_not_as_an_unknown_scheme() {
+        let err = tcp_endpoint("https://journald.example:19531")
+            .err()
+            .expect("https must be rejected: the TCP transports do not implement TLS");
+        let message = err.to_string();
+        assert!(
+            message.contains("https"),
+            "the diagnosis must name https, got: {message}"
+        );
+        assert!(
+            message.contains("not supported"),
+            "the diagnosis must say https is not supported, got: {message}"
+        );
+        assert!(
+            !message.contains("unsupported scheme"),
+            "https must not be reported as an unknown scheme, got: {message}"
+        );
+    }
+
+    /// 2.5 — un esquema desconocido se rechaza **nombrando el esquema**.
+    #[test]
+    fn test_an_unknown_scheme_is_rejected_by_name() {
+        let err = tcp_endpoint("ftp://host:2375")
+            .err()
+            .expect("an unknown scheme must be rejected");
+        let message = err.to_string();
+        assert!(
+            message.contains("ftp"),
+            "the diagnosis must name the scheme received, got: {message}"
+        );
+        assert!(
+            message.contains("unsupported scheme"),
+            "an unknown scheme must be reported as such, got: {message}"
+        );
+        assert!(
+            !message.contains("https"),
+            "the unknown-scheme diagnosis must not be confused with https, got: {message}"
+        );
+    }
+
+    /// 2.7 — el alias `tcp://` es **insensible a mayúsculas**: RFC 3986 declara
+    /// el esquema *case-insensitive*, así que `TCP://host:puerto` debe resolver
+    /// al mismo endpoint que `http://host:puerto`. El parser de `http` normaliza
+    /// a minúsculas **sólo** `http`/`https`; `tcp`, al ser un esquema de
+    /// extensión, llegaba crudo y caía en `unsupported scheme TCP`.
+    #[test]
+    fn test_the_tcp_alias_is_case_insensitive() {
+        let alias = tcp_endpoint("TCP://host:2375").expect(
+            "TCP:// must be accepted as an alias of http:// — schemes are case-insensitive (RFC 3986)",
+        );
+        let canonical = tcp_endpoint("http://host:2375").expect("http:// must parse");
+        assert_eq!(
+            alias.connect_host, canonical.connect_host,
+            "the upper-case alias must resolve the same host as http://"
+        );
+        assert_eq!(
+            alias.authority_host, canonical.authority_host,
+            "the upper-case alias must resolve the same authority host as http://"
+        );
+        assert_eq!(
+            alias.port, canonical.port,
+            "the upper-case alias must resolve the same port as http://"
+        );
+        assert_eq!(
+            alias.authority(),
+            "host:2375",
+            "the effective authority is identical to the lower-case form"
+        );
+    }
+
+    /// 2.6 — una URL sin esquema se rechaza **nombrando la variable** que la
+    /// contiene. El rechazo se observa por el aviso del bucle `run()`, que ya
+    /// nombra el backend y el endpoint, y que ahora también debe nombrar la
+    /// variable a corregir.
+    #[tokio::test]
+    async fn test_a_docker_url_without_a_scheme_names_the_variable() {
+        let (logs, _guard) = capture_logs_while_running();
+        let reader =
+            JournaldReader::from_values(None, Some("host:2375".to_string()), None, None, None)
+                .with_retry_delay(Duration::from_millis(50));
+        assert_eq!(
+            reader.transport,
+            JournaldTransport::DockerTcp {
+                base_url: "host:2375".to_string()
+            }
+        );
+
+        let app_state = build_test_app_state().await;
+        let (shutdown_tx, shutdown_rx) = tokio::sync::watch::channel(false);
+        let handle = tokio::spawn(async move { reader.run(app_state, shutdown_rx).await });
+
+        tokio::time::sleep(Duration::from_millis(200)).await;
+        let captured = logs.captured();
+
+        let _ = shutdown_tx.send(true);
+        let _ = tokio::time::timeout(Duration::from_secs(5), handle).await;
+
+        assert!(
+            captured.contains("SHUUL_DOCKER_URL"),
+            "a URL without a scheme must be rejected naming the variable that holds it; logs: \
+             {captured:?}"
+        );
+    }
+
+    /// 2.6 (gatewayd) — el mismo contrato para `SHUUL_JOURNALD_URL`.
+    #[tokio::test]
+    async fn test_a_gateway_url_without_a_scheme_names_the_variable() {
+        let (logs, _guard) = capture_logs_while_running();
+        let reader =
+            JournaldReader::from_values(None, None, None, Some("host:19531".to_string()), None)
+                .with_retry_delay(Duration::from_millis(50));
+        assert_eq!(
+            reader.transport,
+            JournaldTransport::Tcp {
+                base_url: "host:19531".to_string()
+            }
+        );
+
+        let app_state = build_test_app_state().await;
+        let (shutdown_tx, shutdown_rx) = tokio::sync::watch::channel(false);
+        let handle = tokio::spawn(async move { reader.run(app_state, shutdown_rx).await });
+
+        tokio::time::sleep(Duration::from_millis(200)).await;
+        let captured = logs.captured();
+
+        let _ = shutdown_tx.send(true);
+        let _ = tokio::time::timeout(Duration::from_secs(5), handle).await;
+
+        assert!(
+            captured.contains("SHUUL_JOURNALD_URL"),
+            "a URL without a scheme must be rejected naming the variable that holds it; logs: \
+             {captured:?}"
+        );
+    }
+
+    /// 2.7 — un path base se ignora con `tcp://` y se registra un warning que lo
+    /// nombra (con `http://` el comportamiento ya existe hoy y aquí queda como
+    /// guarda de regresión).
+    #[test]
+    fn test_the_base_path_is_ignored_with_a_warning_over_the_tcp_alias() {
+        let (logs, _guard) = capture_logs_while_running();
+        let reader = JournaldReader::from_values(
+            None,
+            Some("tcp://proxy:2375/docker".to_string()),
+            None,
+            None,
+            None,
+        );
+        assert_eq!(
+            reader.endpoint_display(),
+            "docker:http://proxy:2375 (traefik)",
+            "the base path must not appear in the effective endpoint"
+        );
+        let request = reader
+            .build_request(None, CUTOFF_MICROS)
+            .expect("the request must build and drop the base path");
+        assert_eq!(request.headers()[header::HOST], "proxy:2375");
+        assert!(
+            request
+                .uri()
+                .to_string()
+                .starts_with("/v1.44/containers/traefik/logs?"),
+            "the request must go in origin form, without the base path; got: {}",
+            request.uri()
+        );
+        assert!(
+            logs.captured().contains("ignoring base path /docker")
+                && logs.captured().contains("SHUUL_DOCKER_URL"),
+            "the ignored path must be reported once, naming the variable; logs: {:?}",
+            logs.captured()
+        );
+    }
+
+    /// 2.7 (http) — guarda de regresión: con `http://` el path base ya se ignora
+    /// hoy, con la misma forma de petición y el mismo aviso.
+    #[test]
+    fn test_the_base_path_is_ignored_with_a_warning_over_http() {
+        let (logs, _guard) = capture_logs_while_running();
+        let reader = JournaldReader::from_values(
+            None,
+            Some("http://proxy:2375/base".to_string()),
+            None,
+            None,
+            None,
+        );
+        assert_eq!(
+            reader.endpoint_display(),
+            "docker:http://proxy:2375 (traefik)"
+        );
+        let request = reader
+            .build_request(None, CUTOFF_MICROS)
+            .expect("the request must build and drop the base path");
+        assert_eq!(request.headers()[header::HOST], "proxy:2375");
+        assert!(
+            request
+                .uri()
+                .to_string()
+                .starts_with("/v1.44/containers/traefik/logs?"),
+            "the request must go in origin form, without the base path; got: {}",
+            request.uri()
+        );
+        assert!(
+            logs.captured().contains("ignoring base path /base"),
+            "the ignored path must be reported once; logs: {:?}",
+            logs.captured()
+        );
+    }
+
+    /// 2.8 — el rechazo es **recuperable**: el reader reintenta tras
+    /// `retry_delay` y no devuelve error fatal, ni con `https`, ni con un
+    /// esquema desconocido, ni con una URL sin esquema.
+    #[tokio::test]
+    async fn test_rejected_urls_are_recoverable_not_fatal() {
+        for (label, url) in [
+            ("https", "https://journald.example:19531"),
+            ("an unknown scheme", "ftp://host:2375"),
+            ("a URL without a scheme", "host:2375"),
+        ] {
+            let (logs, _guard) = capture_logs_while_running();
+            let reader = JournaldReader::from_values(None, None, None, Some(url.to_string()), None)
+                .with_retry_delay(Duration::from_millis(50));
+
+            let app_state = build_test_app_state().await;
+            let (shutdown_tx, shutdown_rx) = tokio::sync::watch::channel(false);
+            let handle = tokio::spawn(async move { reader.run(app_state, shutdown_rx).await });
+
+            tokio::time::sleep(Duration::from_millis(300)).await;
+            let captured = logs.captured();
+
+            let _ = shutdown_tx.send(true);
+            let result = tokio::time::timeout(Duration::from_secs(5), handle)
+                .await
+                .expect("run() must stay responsive to shutdown while retrying")
+                .expect("run() must not panic on a rejected URL");
+            assert!(
+                result.is_ok(),
+                "{label}: the rejection must be retryable, not fatal: {result:?}"
+            );
+            assert!(
+                captured.matches("retrying in").count() >= 2,
+                "{label}: the reader must retry after retry_delay; logs: {captured:?}"
+            );
         }
     }
 }
