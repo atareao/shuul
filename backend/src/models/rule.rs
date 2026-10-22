@@ -15,6 +15,7 @@ use regex::Regex;
 use serde::{Deserialize, Serialize};
 use sqlx::{Error, Row, SqlitePool, query, sqlite::SqliteRow};
 use std::fmt::Write;
+use tracing::debug;
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
 pub struct Rule {
@@ -173,18 +174,6 @@ impl CacheRule {
     /// Check if this rule matches a request.
     #[must_use]
     pub fn matches(&self, request: &NewRequest) -> bool {
-        let check_match = |rule_regex: Option<&Regex>, request_value: Option<&String>| -> bool {
-            match (rule_regex, request_value) {
-                (Some(regex), Some(value)) => {
-                    // Si la regla esta definida Y el valor existe, DEBE coincidir.
-                    regex.is_match(value)
-                },
-                // Si la regla no esta definida (None), la condicion se cumple por defecto (true).
-                // Si la regla esta definida pero el valor de la solicitud es None,
-                // asumimos que el valor no existe y la regla no se puede aplicar (true).
-                _ => true,
-            }
-        };
         let check_tor = |rule_tor: Option<bool>, request_tor: Option<bool>| -> bool {
             // If rule has is_tor = Some(true), only match when request is Tor.
             // If rule has is_tor = None or Some(false), the filter is neutral.
@@ -195,24 +184,82 @@ impl CacheRule {
             }
         };
         // Si CUALQUIERA de las comprobaciones devuelve 'false', el metodo devuelve 'false'.
-        check_match(self.ip_address.as_ref(), request.ip_address.as_ref())
-            && check_match(self.protocol.as_ref(), request.protocol.as_ref())
-            && check_match(self.fqdn.as_ref(), request.fqdn.as_ref())
-            && check_match(self.path.as_ref(), request.path.as_ref())
-            && check_match(self.query.as_ref(), request.query.as_ref())
-            && check_match(self.city_name.as_ref(), request.city_name.as_ref())
-            && check_match(self.country_name.as_ref(), request.country_name.as_ref())
-            && check_match(self.country_code.as_ref(), request.country_code.as_ref())
-            && check_match(self.user_agent.as_ref(), request.user_agent.as_ref())
-            && check_match(self.method.as_ref(), request.method.as_ref())
-            && check_match(self.referer.as_ref(), request.referer.as_ref())
-            && check_match(self.content_type.as_ref(), request.content_type.as_ref())
-            && check_match(
+        self.check_match(
+            "ip_address",
+            self.ip_address.as_ref(),
+            request.ip_address.as_ref(),
+        ) && self.check_match(
+            "protocol",
+            self.protocol.as_ref(),
+            request.protocol.as_ref(),
+        ) && self.check_match("fqdn", self.fqdn.as_ref(), request.fqdn.as_ref())
+            && self.check_match("path", self.path.as_ref(), request.path.as_ref())
+            && self.check_match("query", self.query.as_ref(), request.query.as_ref())
+            && self.check_match(
+                "city_name",
+                self.city_name.as_ref(),
+                request.city_name.as_ref(),
+            )
+            && self.check_match(
+                "country_name",
+                self.country_name.as_ref(),
+                request.country_name.as_ref(),
+            )
+            && self.check_match(
+                "country_code",
+                self.country_code.as_ref(),
+                request.country_code.as_ref(),
+            )
+            && self.check_match(
+                "user_agent",
+                self.user_agent.as_ref(),
+                request.user_agent.as_ref(),
+            )
+            && self.check_match("method", self.method.as_ref(), request.method.as_ref())
+            && self.check_match("referer", self.referer.as_ref(), request.referer.as_ref())
+            && self.check_match(
+                "content_type",
+                self.content_type.as_ref(),
+                request.content_type.as_ref(),
+            )
+            && self.check_match(
+                "accept_language",
                 self.accept_language.as_ref(),
                 request.accept_language.as_ref(),
             )
-            && check_match(self.x_request_id.as_ref(), request.x_request_id.as_ref())
+            && self.check_match(
+                "x_request_id",
+                self.x_request_id.as_ref(),
+                request.x_request_id.as_ref(),
+            )
             && check_tor(self.is_tor, request.is_tor)
+    }
+
+    /// Evalúa un filtro de la regla contra el valor de la petición.
+    ///
+    /// Es el **único** punto de decisión del matcheo: `matches()` lo invoca una
+    /// vez por cada uno de los 14 filtros. El contrato de los tres brazos es:
+    ///
+    /// - `(Some(regex), Some(valor))` → decide el regex: `true` si casa, `false` si no;
+    /// - `(Some(_), None)` → la regla **restringe** el campo y la petición **no** lo
+    ///   trae: la condición NO se cumple (`false`) y se emite un `debug!` que nombra
+    ///   el campo y la regla, de modo que el descarte no sea mudo;
+    /// - `(None, _)` → la regla **no** restringe el campo: es **neutral** y se cumple
+    ///   traiga la petición valor o no.
+    fn check_match(&self, field: &str, filter: Option<&Regex>, value: Option<&String>) -> bool {
+        match (filter, value) {
+            (Some(regex), Some(v)) => regex.is_match(v),
+            (Some(_), None) => {
+                debug!(
+                    field = field,
+                    rule_id = self.rule.id,
+                    rule_name = %self.rule.name,
+                    "regla descartada: la petición no trae el campo restringido"
+                );
+                false
+            },
+            (None, _) => true,
+        }
     }
 }
 
@@ -711,6 +758,7 @@ mod tests {
     use super::*;
     use crate::models::NewRequest;
     use chrono::Utc;
+    use std::sync::{Arc, Mutex};
 
     fn make_request(is_tor: Option<bool>) -> NewRequest {
         NewRequest {
@@ -810,5 +858,222 @@ mod tests {
 
         let rule = make_rule(Some(false));
         assert_eq!(rule.is_tor, Some(false));
+    }
+
+    // ── missing-header-fields: matcher (RED) ──
+
+    /// Construye una `CacheRule` desde la base de `make_rule` y aplica los
+    /// filtros que indique `configure` antes de compilar los regex.
+    fn make_rule_with(configure: impl FnOnce(&mut Rule)) -> CacheRule {
+        let mut cache = make_rule(None);
+        configure(&mut cache.rule);
+        CacheRule::from_rule(&cache.rule)
+    }
+
+    /// Construye un `NewRequest` desde la base de `make_request` y aplica los
+    /// campos que indique `configure`.
+    fn make_request_with(configure: impl FnOnce(&mut NewRequest)) -> NewRequest {
+        let mut request = make_request(None);
+        configure(&mut request);
+        request
+    }
+
+    /// Escenario: Restricted field absent makes the rule not match.
+    /// Regla con regex de `user_agent` y petición sin `user_agent` → NO casa.
+    ///
+    /// RED: hoy `check_match` devuelve `true` en `(Some(_), None)`, así que el
+    /// test falla en aserción (no en compilación).
+    #[test]
+    fn test_matches_restricted_field_absent_does_not_match() {
+        let rule = make_rule_with(|r| r.user_agent = Some("curl".to_string()));
+        let request = make_request(None); // user_agent ausente
+
+        assert!(
+            !rule.matches(&request),
+            "una regla que restringe user_agent no puede casar una petición sin esa cabecera"
+        );
+    }
+
+    /// Escenario: Restricted field present and matching.
+    /// Guardián: decide el regex; pasa ya y debe seguir pasando tras el GREEN.
+    #[test]
+    fn test_matches_restricted_field_present_and_matching() {
+        let rule = make_rule_with(|r| r.user_agent = Some(r"curl/8\.5".to_string()));
+        let request = make_request_with(|q| q.user_agent = Some("curl/8.5".to_string()));
+
+        assert!(
+            rule.matches(&request),
+            "el regex debe casar cuando el valor está presente y coincide"
+        );
+    }
+
+    /// Escenario: Restricted field present and not matching.
+    /// Guardián: con el valor presente decide el regex; pasa ya y debe seguir
+    /// pasando tras el GREEN.
+    #[test]
+    fn test_matches_restricted_field_present_and_not_matching() {
+        let rule = make_rule_with(|r| r.user_agent = Some(r"curl/8\.5".to_string()));
+        let request = make_request_with(|q| q.user_agent = Some("Mozilla/5.0".to_string()));
+
+        assert!(
+            !rule.matches(&request),
+            "un regex que no casa con el valor presente → la regla NO casa"
+        );
+    }
+
+    /// Escenario: One absent field discards a rule that matches on the others.
+    /// `path` casa pero `x_request_id` está ausente → la regla NO casa.
+    ///
+    /// RED: hoy el campo ausente es neutral y la regla casa → falla en aserción.
+    #[test]
+    fn test_matches_absent_field_discards_rule_matching_others() {
+        let rule = make_rule_with(|r| {
+            r.path = Some(r"^/admin$".to_string());
+            r.x_request_id = Some(r"^req-".to_string());
+        });
+        let request = make_request_with(|q| q.path = Some("/admin".to_string()));
+
+        assert!(
+            !rule.matches(&request),
+            "un único campo restringido y ausente descarta la regla aunque los demás casen"
+        );
+    }
+
+    /// Escenario: An unrestricted field is neutral.
+    /// Guardián: la regla sólo restringe `path`; los campos que no restringe
+    /// (`user_agent`, `referer`, `x_request_id`, ausentes) son neutrales → casa.
+    /// Pasa ya y vigila que el GREEN no toque la neutralidad de `(None, _)`.
+    #[test]
+    fn test_matches_unrestricted_fields_are_neutral() {
+        let rule = make_rule_with(|r| r.path = Some(r"^/admin$".to_string()));
+        let request = make_request_with(|q| q.path = Some("/admin".to_string()));
+
+        assert!(
+            rule.matches(&request),
+            "los campos que la regla no restringe deben ser neutrales aunque falten"
+        );
+    }
+
+    /// Escenario: A present but empty header counts as absent.
+    /// `from_request` colapsa la cabecera vacía a `None` y la regla NO casa.
+    ///
+    /// RED: el colapso a `None` ya pasa, pero la regla casa por el brazo
+    /// `(Some(_), None)` → la segunda aserción falla.
+    #[test]
+    fn test_matches_present_but_empty_header_counts_as_absent() {
+        let mut headers = http::HeaderMap::new();
+        headers.insert(http::header::REFERER, http::HeaderValue::from_static(""));
+        let request = NewRequest::from_request(&headers, None, None);
+
+        assert!(
+            request.referer.is_none(),
+            "una cabecera presente pero vacía debe colapsar a None"
+        );
+
+        let rule = make_rule_with(|r| r.referer = Some("https://example.com".to_string()));
+        assert!(
+            !rule.matches(&request),
+            "una cabecera vacía cuenta como ausente → la regla NO casa"
+        );
+    }
+
+    // ── captura de logs (copia privada del patrón de `journald_reader`) ──
+
+    #[derive(Clone, Default)]
+    struct CapturedLog(Arc<Mutex<Vec<u8>>>);
+
+    impl std::io::Write for CapturedLog {
+        fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
+            self.0
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .extend_from_slice(buf);
+            Ok(buf.len())
+        }
+
+        fn flush(&mut self) -> std::io::Result<()> {
+            Ok(())
+        }
+    }
+
+    /// Ejecuta `f` con un subscriber a nivel DEBUG que graba cada evento y
+    /// devuelve lo escrito. Es el único modo de observar el `debug!` del
+    /// matcher.
+    fn capture_debug<F: FnOnce()>(f: F) -> String {
+        let sink = Arc::new(Mutex::new(Vec::new()));
+        let writer = CapturedLog(Arc::clone(&sink));
+        let subscriber = tracing_subscriber::fmt()
+            .with_max_level(tracing::Level::DEBUG)
+            .with_ansi(false)
+            .without_time()
+            .with_writer(move || CapturedLog(Arc::clone(&writer.0)))
+            .finish();
+
+        tracing::subscriber::with_default(subscriber, f);
+
+        let bytes = sink
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .clone();
+        String::from_utf8_lossy(&bytes).to_string()
+    }
+
+    /// Escenario: Restricted field absent makes the rule not match (diagnóstico).
+    /// Un match descartado por campo ausente emite un `debug!` que nombra el
+    /// campo y la regla.
+    ///
+    /// RED: hoy no se emite nada → falla en aserción. No se fija el texto
+    /// literal del mensaje: sólo que nombre el campo y algo que identifique la
+    /// regla (su nombre o su id).
+    #[test]
+    fn test_matches_absent_field_emits_debug_diagnostic() {
+        let rule = make_rule_with(|r| {
+            r.id = 4242;
+            r.name = "regla-diagnostico".to_string();
+            r.user_agent = Some("curl".to_string());
+        });
+        let request = make_request(None);
+
+        let log = capture_debug(|| {
+            let _ = rule.matches(&request);
+        });
+
+        assert!(
+            log.contains("user_agent"),
+            "el diagnóstico debe nombrar el campo ausente; log capturado: {log:?}"
+        );
+        assert!(
+            log.contains("regla-diagnostico") || log.contains("4242"),
+            "el diagnóstico debe identificar la regla (nombre o id); log capturado: {log:?}"
+        );
+    }
+
+    /// Escenario: A legitimate regex no-match is not diagnosed as an absent field.
+    /// Con el valor presente y un regex que no casa NO se emite el `debug!` de
+    /// campo ausente.
+    ///
+    /// Guardián: hoy pasa trivialmente (no hay diagnóstico alguno) y debe
+    /// seguir pasando tras el GREEN.
+    #[test]
+    fn test_matches_legitimate_regex_no_match_emits_no_diagnostic() {
+        let rule = make_rule_with(|r| {
+            r.id = 4242;
+            r.name = "regla-diagnostico".to_string();
+            r.user_agent = Some("curl".to_string());
+        });
+        let request = make_request_with(|q| q.user_agent = Some("Mozilla/5.0".to_string()));
+
+        let log = capture_debug(|| {
+            let _ = rule.matches(&request);
+        });
+
+        assert!(
+            !log.contains("user_agent"),
+            "no debe diagnosticar campo ausente cuando el valor está presente; log: {log:?}"
+        );
+        assert!(
+            !log.contains("regla-diagnostico"),
+            "no debe nombrar la regla en un no-match legítimo por regex; log: {log:?}"
+        );
     }
 }

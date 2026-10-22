@@ -866,6 +866,40 @@ The journald backend is **kept**, not removed, so the rollback is environment va
 
 Database, rules, bans and WAF decisions do not change when the transport changes.
 
+### 2.15 The five header-derived fields, and how to recover them
+
+The reader maps 14 fields of the `ReportPayload` from the Traefik access log. **Five** of them do not come from the request line but from header keys: `request_User-Agent` → `user_agent`, `request_Referer` → `referer`, `request_Content-Type` → `content_type`, `request_Accept-Language` → `accept_language` and `request_X-Request-Id` → `x_request_id`.
+
+Traefik does **not** emit those keys by default: `accessLog.fields.headers.defaultMode` is `drop`. So on a default configuration the five fields always arrive **empty** — whatever the transport. Both the Docker API backend (2.13) and the gatewayd backend (2.2) carry the same access log JSON, and neither can invent the keys: availability depends on the **origin**, not on the transport.
+
+To recover them, declare them in your `traefik.yml`:
+
+```yaml
+accessLog:
+  format: json
+  fields:
+    headers:
+      defaultMode: drop
+      names:
+        User-Agent: keep
+        Referer: keep
+        Content-Type: keep
+        Accept-Language: keep
+        X-Request-Id: keep
+```
+
+That `traefik.yml` **lives outside this repository**: it belongs to the operator, and Shuul does not touch it. Shuul only reads the resulting access log.
+
+**What happens if you do not declare them.** A rule that filters on one of those fields **will not match** — this is not "matching too much": since the `missing-header-fields` change, a restricted field whose value is missing makes the rule **not** match. Matching without evidence is the dangerous failure — in the WAF a deny rule would reject every request lacking the header, and in the Jail it would pile up rate-limit observations against legitimate traffic — so the matcher simply does not apply a rule to a request that cannot satisfy it. The matcher reports it, naming the field and the rule, when debug logging is on (`RUST_LOG=backend=debug`):
+
+```
+DEBUG backend::models::rule: regla descartada: la petición no trae el campo restringido field="user_agent" rule_id=<id> rule_name="<name>"
+```
+
+The same holds for `country_code` when GeoIP cannot resolve the IP: a geographic rule stops matching instead of matching by absence. That sibling case has **real effect today** — with the previous semantics the `4 Geo blocking` rule denied IPs the GeoIP could not classify, which is exactly what this change corrects.
+
+> The exact key format was verified against `traefik:v3.7.5` (the version in production); see `openspec/changes/missing-header-fields/design.md` §Open Questions.
+
 ---
 
 ## 3. OIDC Provider Setup

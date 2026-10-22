@@ -790,4 +790,56 @@ mod tests {
             "no matching rules must log 'cleared' with status_code=404"
         );
     }
+
+    // ── missing-header-fields: misma semántica en el pipeline Jail ──
+
+    /// Escenario: The same semantics apply to both pipelines.
+    ///
+    /// Una regla Jail que filtra `user_agent` y un payload sin esa cabecera:
+    /// tras el GREEN la regla NO casa y NO se acumula ninguna observación de
+    /// rate limit. Hoy la regla casa (fail-open) y acumula → el test falla.
+    ///
+    /// Reutiliza el arnés `build_jail_app_state` sustituyendo sólo el filtro de
+    /// la regla, para no montar un arnés nuevo.
+    #[tokio::test]
+    async fn test_jail_rule_with_absent_user_agent_does_not_accumulate() {
+        let _guard = TEST_LOCK.lock().await;
+        if let Ok(mut collector) = LOG_COLLECTOR.lock() {
+            *collector = crate::models::log_collector::LogCollector::new(1000);
+        }
+
+        let app_state = build_jail_app_state(5).await;
+
+        // Sustituye la regla del arnés por una que filtra `user_agent`, con el
+        // mismo perfil de rate limit.
+        {
+            let mut rules = app_state.rules.lock().expect("rules lock");
+            let mut rule = rules[0].rule.clone();
+            rule.path = None;
+            rule.user_agent = Some("curl".to_string());
+            rules[0] = CacheRule::from_rule(&rule);
+        }
+
+        let payload = make_report_payload(401);
+        assert!(
+            payload.user_agent.is_none(),
+            "el payload del arnés no trae la cabecera user_agent"
+        );
+
+        let result = super::run_jail_pipeline(&app_state, &payload).await;
+        assert!(result.is_ok(), "run_jail_pipeline debe suceder: {result:?}");
+
+        let tracked_profiles = app_state.rate_limiter.lock().map(|g| g.len()).unwrap_or(0);
+        assert_eq!(
+            tracked_profiles, 0,
+            "sin la cabecera user_agent la regla no casa y no debe acumular observaciones"
+        );
+
+        let pending = app_state
+            .pending_bans
+            .lock()
+            .map(|g| g.len())
+            .unwrap_or_default();
+        assert_eq!(pending, 0, "no debe crearse un PendingBan");
+    }
 }
