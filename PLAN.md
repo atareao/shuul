@@ -440,6 +440,67 @@ Gates con los baselines intactos: **284 tests** backend, **5** frontend, lint **
 
 ---
 
+## FASE 7 — Bug del `PORT`: el bind ignora la variable de entorno
+
+### 7.1 Por qué
+
+`backend/src/main.rs:427` fija el bind en `0.0.0.0:3000` de forma literal. La
+variable `PORT` **se lee y se registra** (`main.rs:82-83`, «Port: 3000» en el log
+de arranque) pero **no se usa para escuchar**: el valor del log sale de la
+variable, el socket sale de la constante. Consecuencia: cualquier despliegue que
+ponga `PORT` a otro valor arranca escuchando en el puerto equivocado —
+`AddrInUse` si el 3000 está ocupado por otro proceso, o un servicio inalcanzable
+si nadie publica el 3000.
+
+**Hoy no muerde en `co1`** porque su `compose.yaml` (fuera del repo) fija
+`PORT: 3000`, que coincide con la constante. Pero ya bloqueó una verificación
+real: los intentos locales de la tarea 6.5 de `ban-manager-persistence` murieron
+con `AddrInUse` porque el puerto 3000 lo ocupaba un proceso ajeno, y no se podía
+mover el bind sin tocar código.
+
+### 7.2 Contrato
+
+- El bind SHALL usar el valor de `PORT`; su **valor por defecto** SHALL ser `3000`
+  cuando la variable falta o está en blanco.
+- Un `PORT` **no parseable** a `u16` SHALL producir un fallo explícito en el
+  arranque, con un mensaje que **nombre la variable y el valor rechazado** —
+  **no** un silencioso «escucha en 3000».
+- El log de arranque SHALL reflejar el puerto **efectivo** (el mismo que el bind),
+  no el valor crudo de la variable.
+
+### 7.3 Escenarios (Given / When / Then)
+
+- **GIVEN** `PORT` ausente, **WHEN** arranca, **THEN** escucha en `0.0.0.0:3000`.
+- **GIVEN** `PORT=8080`, **WHEN** arranca, **THEN** escucha en `0.0.0.0:8080` y el
+  log dice `Port: 8080`.
+- **GIVEN** `PORT=abc`, **WHEN** arranca, **THEN** falla con un mensaje que nombra
+  `PORT` y el valor `abc`, y el proceso termina sin escuchar.
+- **GIVEN** `PORT` en blanco, **WHEN** arranca, **THEN** escucha en `3000` (mismo
+  contrato que ausente).
+
+### 7.4 Tareas
+
+- [ ] **7.4.1** Change proposal de OpenSpec: `openspec new change port-ignored`, con la spec delta (el contrato de §7.2 y los escenarios de §7.3) y `tasks.md`. **Nada de código hasta la aprobación explícita del usuario (fase 1, SDD).**
+- [ ] **7.4.2** Tests en **RED**: el puerto efectivo del bind se deriva de `PORT` (default 3000, en blanco = default) y un `PORT` inválido produce un error que nombra la variable. Verificación: `cargo test` falla en aserción / el valor inválido no produce el error esperado.
+- [ ] **7.4.3** Implementación en **GREEN**: el bind usa el puerto resuelto. Verificación: `cargo test` en verde.
+- [ ] **7.4.4** **REFACTOR**: `cargo clippy -- -D warnings` y `cargo fmt --check` limpios, sin `#[allow]` nuevos.
+- [ ] **7.4.5** Documentación: `SELF-HOSTING.md` y `AGENTS.md` §V con la fila `PORT` corregida («puerto del bind», no solo «puerto»).
+- [ ] **7.4.6** Verificación en `co1`: arrancar con un `PORT` distinto del 3000 (contenedor desechable y un puerto libre) y confirmar que escucha donde toca. Verificación: el log nombra el puerto efectivo y el healthcheck responde en él.
+- [ ] **7.4.7** Archivar el change y consolidar la spec.
+
+### 7.5 Gates
+
+- `cargo test`, `cargo clippy -- -D warnings`, `cargo fmt --check`.
+- `openspec validate port-ignored --strict`.
+- El WAF y el Jail **no se tocan**: es un cambio de arranque, no de pipeline.
+
+### 7.6 Decisiones abiertas
+
+1. ¿El healthcheck del `compose.yaml` de `co1` usa `localhost:3000` literal? Vive **fuera del repo**; si se cambia `PORT` allí, hay que cambiarlo aquí también. Hoy `PORT: 3000` y healthcheck en 3000: coherentes.
+2. ¿Se endurece el contrato para **fallar** con `PORT` inválido (recomendado) o se avisa y se cae al 3000? Fallar evita un arranque «exitoso» en el puerto equivocado.
+
+---
+
 ## Protocolo de trabajo
 
 - **SDD:** no hay código nuevo sin change proposal aprobado en `openspec/changes/<feature>/`.
@@ -469,6 +530,18 @@ Gates con los baselines intactos: **284 tests** backend, **5** frontend, lint **
 
 ---
 
+## Registro de lo ya hecho (2026-10-21 / 2026-10-22)
+
+- **Fase 0 cerrada.** El change `docker-logs-transport` se fusionó y archivó (2026-10-21). La **API de Docker es el transporte preferido** y `systemd-journal-gatewayd` queda como alternativa de menor prioridad, sin retirarse. Desplegado en `co1` el **modo A** (socket directo, `SHUUL_DOCKER_SOCKET=/var/run/docker.sock`, `group_add: ["999"]`).
+- **Change `missing-header-fields`** (matcher): un campo restringido por una regla que llega sin valor **ya no casa por ausencia**; el matcher lo registra con un `debug!` que nombra el campo y la regla. Fusionado y archivado (2026-10-22). Consecuencia en producción: la regla `4 Geo blocking` deja de denegar IPs sin país resoluble, comportamiento que **ya no es expresable** con el matcher corregido (no hay operador de «campo ausente»).
+- **Change `ban-manager-persistence`** (seguridad del baneo). El `UPDATE` de `load_from_db` aplicaba un agregado **global** sobre el conjunto de todas las particiones: sobrevivía **una sola fila de toda la tabla** y todo lo demás se marcaba expirado, de modo que **un baneo no sobrevivía a un reinicio**. Corregido a `rowid IN (… WHERE rn > 1)` **por partición** `(ip_address, COALESCE(rule_id, 0))`, y `cleanup_expired_db` conectado al task de 60 s (antes código muerto con `#[allow(dead_code)]` y sin llamadas). Fusionado (PR #97) y archivado (PR #99). El `Contract` de la spec destino dejaba de consagrar el `MIN(rowid)` roto.
+- **Release `v0.16.1`** (PR #98 → `main`, merge `3224aeb`; tag `v0.16.1` sobre `f968645`): imagen en GHCR `0.16.1` / `0.16` / `latest` y GitHub Release publicada. `develop` y `main` sincronizados en `f968645`.
+- **Verificación 6.5 en `co1`** (imagen `v0.16.1`): la consulta literal `SELECT COUNT(*) FROM bans WHERE expired = 0 AND CAST(strftime('%s', banned_at) AS INTEGER) + ban_duration_seconds < CAST(strftime('%s','now') AS INTEGER)` devuelve **0**. Prueba fuerte: con **29 baneos activos en 29 particiones** (IPs repartidas en 2–3 reglas) el reinicio **conservó los 29** —el log registró `Loaded 29 active bans from database` en **dos arranques consecutivos**—, sin zombies tras el tick de 60 s. Con el código viejo habría colapsado a **1**.
+- **Con esto, las siete fases del plan (0–6) están cerradas** y no queda ningún change activo en OpenSpec. `develop` avanza por delante de `main` (el cierre del change va en `develop`: `8fbfce2`).
+- Anotado sin resolver (ajeno al plan): el `compose.yaml` de `co1` usa la **imagen sin tag** (`latest`) en vez de fijar `:0.16`; los `Secret` y `ClientSecret` de OIDC están **en claro** en el `dynamic.yaml` de Traefik; y siguen los avisos de ForwardAuth (`maxResponseBodySize`, `trustForwardHeader`).
+
+---
+
 ## Decisiones tomadas (2026-10-20)
 
 1. **Fase 0 — se implementan las dos entradas** (socket directo y proxy): no es una disyuntiva de código. Lo que se monte en `co1` se cambia con variables de entorno y un bloque del `compose.yaml`, **sin recompilar**. La reversión de la decisión anterior sobre el socket queda **aprobada**.
@@ -477,6 +550,7 @@ Gates con los baselines intactos: **284 tests** backend, **5** frontend, lint **
 
 ## Pendiente
 
-1. **Documentación, no bloqueo.** Con las dos entradas implementadas (ver `## Decisiones tomadas`), cuál se escribe como preferida es una línea del README y se cambia sin recompilar: **no impide iniciar la Fase 0**. Se decide con §0.2 delante toda.
-2. ¿Se retira el soporte de `systemd-journal-gatewayd` o se mantiene? Mantener dos transportes tiene un coste de test que hay que reconocer.
-3. Ajeno a este plan: no existe directorio `locales` ni JSON de traducción pese a ~88 llamadas a `t()`; i18next recibe 404 y devuelve la clave.
+1. **FASE 7 — bug del `PORT`** (§7): es el único trabajo de código abierto que queda en este plan. Requiere su propio change de OpenSpec antes de tocar código.
+2. **Documentación, no bloqueo.** Cuál de las dos entradas del transporte se documenta como preferida ya está **decidido** (§0.7.3): la API de Docker. Solo falta la línea del README.
+3. **`systemd-journal-gatewayd`** — **decidido** (§0.7.4): se mantiene como alternativa de menor prioridad; **no** se retira.
+4. **Ajeno a este plan:** no existe directorio `locales` ni JSON de traducción pese a ~88 llamadas a `t()`; i18next recibe 404 y devuelve la clave.
