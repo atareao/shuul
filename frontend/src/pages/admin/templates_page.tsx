@@ -5,6 +5,8 @@ import {
   Button,
   Typography,
   Flex,
+  Row,
+  Col,
   message,
   Input,
   InputNumber,
@@ -514,65 +516,80 @@ export default class TemplatesPage extends React.Component<
 
     return (
       <Flex vertical gap="middle" style={{ padding: 24 }}>
-        <Flex wrap gap="middle" align="center">
-          <Input
-            prefix={<SearchOutlined />}
-            aria-label="Search templates"
-            placeholder="Search templates..."
-            style={{ width: 320 }}
-            value={this.state.search}
-            onChange={(e) => this.setState({ search: e.target.value })}
-            allowClear
-          />
-          <Select
-            aria-label="Pipeline"
-            style={{ width: 140 }}
-            placeholder="All"
-            value={this.state.pipelineFilter === "all" ? undefined : this.state.pipelineFilter}
-            options={this.pipelineOptions}
-            onChange={(value: PipelineFilter) =>
-              this.setState({ pipelineFilter: value })
-            }
-          />
-          <Select
-            aria-label="Severity"
-            style={{ width: 140 }}
-            placeholder="All"
-            value={this.state.severityFilter === "all" ? undefined : this.state.severityFilter}
-            options={this.severityOptions()}
-            onChange={(value: string) =>
-              this.setState({ severityFilter: value })
-            }
-          />
-          <Select
-            aria-label="Category"
-            style={{ width: 220 }}
-            placeholder="All"
-            value={this.state.categoryFilter === "all" ? undefined : this.state.categoryFilter}
-            options={this.categoryOptions()}
-            onChange={(value: string) =>
-              this.setState({ categoryFilter: value })
-            }
-          />
-          <Select
-            aria-label="Action"
-            style={{ width: 140 }}
-            placeholder="All"
-            value={this.state.actionFilter === "all" ? undefined : this.state.actionFilter}
-            options={this.actionOptions}
-            onChange={(value: ActionFilter) =>
-              this.setState({ actionFilter: value })
-            }
-          />
-          <Flex gap={4} align="center">
-            <Switch
-              aria-label="Must have"
-              checked={this.state.mustHaveOnly}
-              onChange={(checked) => this.setState({ mustHaveOnly: checked })}
+        {/* El buscador ocupa su propia línea, a ancho completo, para no competir
+            por el espacio con los filtros. */}
+        <Input
+          prefix={<SearchOutlined />}
+          aria-label="Search templates"
+          placeholder="Search templates..."
+          style={{ width: "100%" }}
+          value={this.state.search}
+          onChange={(e) => this.setState({ search: e.target.value })}
+          allowClear
+        />
+
+        {/* Rejilla de anchos fijos: cada filtro mide lo mismo sea cual sea el
+            ancho de la ventana. `Row` envuelve por defecto. */}
+        <Row gutter={[12, 12]} align="middle">
+          <Col flex="0 0 160px">
+            <Select
+              aria-label="Pipeline"
+              style={{ width: "100%" }}
+              placeholder="All"
+              value={this.state.pipelineFilter === "all" ? undefined : this.state.pipelineFilter}
+              options={this.pipelineOptions}
+              onChange={(value: PipelineFilter) =>
+                this.setState({ pipelineFilter: value })
+              }
             />
-            <Text>Must have</Text>
-          </Flex>
-        </Flex>
+          </Col>
+          <Col flex="0 0 160px">
+            <Select
+              aria-label="Severity"
+              style={{ width: "100%" }}
+              placeholder="All"
+              value={this.state.severityFilter === "all" ? undefined : this.state.severityFilter}
+              options={this.severityOptions()}
+              onChange={(value: string) =>
+                this.setState({ severityFilter: value })
+              }
+            />
+          </Col>
+          <Col flex="0 0 240px">
+            <Select
+              aria-label="Category"
+              style={{ width: "100%" }}
+              placeholder="All"
+              value={this.state.categoryFilter === "all" ? undefined : this.state.categoryFilter}
+              options={this.categoryOptions()}
+              onChange={(value: string) =>
+                this.setState({ categoryFilter: value })
+              }
+            />
+          </Col>
+          <Col flex="0 0 160px">
+            <Select
+              aria-label="Action"
+              style={{ width: "100%" }}
+              placeholder="All"
+              value={this.state.actionFilter === "all" ? undefined : this.state.actionFilter}
+              options={this.actionOptions}
+              onChange={(value: ActionFilter) =>
+                this.setState({ actionFilter: value })
+              }
+            />
+          </Col>
+          <Col flex="0 0 auto">
+            <Flex gap={4} align="center">
+              <Switch
+                aria-label="Must have"
+                checked={this.state.mustHaveOnly}
+                onChange={(checked) => this.setState({ mustHaveOnly: checked })}
+              />
+              <Text>Must have</Text>
+            </Flex>
+          </Col>
+        </Row>
 
         <Text type="secondary">
           Browse the rule templates. Expand a row to see the full filters a
