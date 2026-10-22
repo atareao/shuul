@@ -280,16 +280,24 @@ impl BanManager {
 
 impl BanManager {
     /// Load all active (non-expired) bans from the database into a new
-    /// `BanManager` with sensible defaults.
+    /// `BanManager`, deduplicating by `(ip_address, COALESCE(rule_id, 0))`.
     ///
     /// This is useful on application startup to restore ban state from
     /// the previous session.
-    /// Loads bans from the database, deduplicating by `(ip_address, rule_id)`.
     ///
-    /// If multiple active (non-expired) rows exist for the same IP + `rule_id`
+    /// When several active (non-expired) rows exist for the same IP + `rule_id`
     /// pair, only the most recent row (by `banned_at`) is loaded. This handles
     /// the case where `persist_ban` did an UPDATE (leaving a single row) or
     /// where legacy code may have inserted duplicates.
+    ///
+    /// The same rule is then applied back to the database: exactly **one** row
+    /// stays active per `(ip_address, COALESCE(rule_id, 0))` partition —the most
+    /// recent one— and the leftover duplicates are marked `expired = 1`. Rows
+    /// belonging to *different* partitions are not touched, so two distinct IPs
+    /// —or the same IP with two different `rule_id`, including `NULL` vs a
+    /// numeric one— keep their ban and survive a restart. No aggregate may be
+    /// applied across partitions: a global `MIN(rowid)` would collapse the whole
+    /// table to a single active row.
     ///
     /// # Panics
     ///
@@ -416,19 +424,25 @@ impl BanManager {
             }
         }
 
-        // Mark legacy duplicates as expired in DB so they get cleaned up
-        // by the periodic cleanup task. Only the most recent ban per
-        // (ip_address, COALESCE(rule_id, 0)) is kept as active.
+        // Mark legacy duplicates as expired in DB so they get cleaned up by the
+        // periodic cleanup task. Exactly one row survives per
+        // (ip_address, COALESCE(rule_id, 0)) partition — the most recent one —
+        // and rows of *different* partitions are left untouched.
+        //
+        // There must be NO aggregate over the whole winner set (e.g. a global
+        // `MIN(rowid)`): that collapses the table to a single active row and
+        // marks every other ban as expired, so a ban would not survive a
+        // restart. Marking `rn > 1` keeps each partition's decision local.
         sqlx::query(
             "UPDATE bans SET expired = 1 \
              WHERE expired = 0 \
-               AND rowid NOT IN ( \
-                 SELECT MIN(rowid) FROM ( \
+               AND rowid IN ( \
+                 SELECT rowid FROM ( \
                    SELECT rowid, ROW_NUMBER() OVER ( \
                      PARTITION BY ip_address, COALESCE(rule_id, 0) \
                      ORDER BY banned_at DESC \
                    ) AS rn FROM bans WHERE expired = 0 \
-                 ) WHERE rn = 1 \
+                 ) WHERE rn > 1 \
                )",
         )
         .execute(pool)
@@ -548,15 +562,23 @@ impl BanManager {
         Ok(())
     }
 
-    /// Mark all expired (past their `ban_duration_seconds`) bans as expired in the DB.
+    /// Mark all expired (past their `ban_duration_seconds`) bans as expired in
+    /// the DB.
     ///
-    /// Call this periodically (e.g. via a cron-like task) to keep the DB clean.
-    #[allow(dead_code)]
-    /// Cleans up expired bans from the database.
+    /// A row is *temporarily dead* once `banned_at + ban_duration_seconds` has
+    /// passed; this marks it `expired = 1` while leaving still-live rows
+    /// untouched. Because `load_from_db` restores `escalation_counts` only from
+    /// the rows it loads (`expired = 0`), running this before a restart means
+    /// the escalation level decays with the bans instead of being resurrected by
+    /// rows that are no longer alive.
+    ///
+    /// This is invoked **periodically from the 60-second background cleanup
+    /// task** in `main.rs`, right after the in-memory
+    /// [`BanManager::cleanup_expired`].
     ///
     /// # Errors
     ///
-    /// Returns an error if the database delete fails.
+    /// Returns an error if the database update fails.
     pub async fn cleanup_expired_db(pool: &sqlx::SqlitePool) -> Result<(), sqlx::Error> {
         sqlx::query(
             "UPDATE bans SET expired = 1 \

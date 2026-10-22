@@ -309,6 +309,13 @@ async fn main() -> Result<(), Error> {
                     !rl.is_empty()
                 });
             }
+            // Persist the cleanup: mark temporarily-dead rows as expired in the
+            // DB so the table stops growing and the escalation level decays with
+            // the bans. Called outside every MutexGuard scope — no guard may
+            // survive an `.await`.
+            if let Err(e) = BanManager::cleanup_expired_db(&cleanup_state.pool).await {
+                warn!("DB ban cleanup failed: {e}");
+            }
         }
     });
 
