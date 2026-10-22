@@ -560,15 +560,19 @@ componentDidUpdate = async (prevProps, prevState) => {
 }
 ```
 
-#### `clientFilter` y `extraHeaderContent` en CustomTable
+#### `extraHeaderContent` en CustomTable
 
 ```typescript
 <CustomTable<Item>
     ...
     extraHeaderContent={<Select ... />}
-    clientFilter={(items) => items.filter(item => ...)}
 />
 ```
+
+`CustomTable` **no** expone un `clientFilter`: la tabla pagina en servidor y no aplica
+ningún filtrado local. Cualquier filtro de una vista viaja al servidor como parámetro
+de consulta (o se resuelve en la página, como en el Log Viewer, que pagina en cliente
+sobre su propio conjunto ya filtrado).
 
 #### `type: 'tag'` en FieldDefinition
 

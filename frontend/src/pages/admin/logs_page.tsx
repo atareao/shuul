@@ -34,13 +34,13 @@ function loadPersistedLogsState(): PersistedLogsState {
       const parsed = JSON.parse(raw);
       return {
         hiddenEvents: Array.isArray(parsed.hiddenEvents) ? parsed.hiddenEvents : [],
-        autoRefresh: typeof parsed.autoRefresh === "boolean" ? parsed.autoRefresh : false,
+        autoRefresh: typeof parsed.autoRefresh === "boolean" ? parsed.autoRefresh : true,
       };
     }
   } catch {
   // ignore parse errors
   }
-  return { hiddenEvents: [], autoRefresh: false };
+  return { hiddenEvents: [], autoRefresh: true };
 }
 
 function savePersistedLogsState(hiddenEvents: string[], autoRefresh: boolean): void {
@@ -185,21 +185,18 @@ export class InnerPage extends React.Component<Props, State> {
         : [...prevState.hiddenEvents, event];
       return { hiddenEvents };
     }, () => {
-      this.updateUrl();
       savePersistedLogsState(this.state.hiddenEvents, this.state.autoRefresh);
     });
   };
 
   showAllEvents = () => {
     this.setState({ hiddenEvents: [] }, () => {
-      this.updateUrl();
       savePersistedLogsState([], this.state.autoRefresh);
     });
   };
 
   toggleAutoRefresh = (checked: boolean) => {
     this.setState({ autoRefresh: checked }, () => {
-      this.updateUrl();
       savePersistedLogsState(this.state.hiddenEvents, checked);
     });
     if (checked) {
@@ -214,39 +211,9 @@ export class InnerPage extends React.Component<Props, State> {
     }
   };
 
-  updateUrl = () => {
-    const { hiddenEvents, autoRefresh } = this.state;
-    const params = new URLSearchParams();
-    if (hiddenEvents.length > 0) {
-      params.set("hidden", hiddenEvents.join(","));
-    }
-    if (autoRefresh) {
-      params.set("autoRefresh", "true");
-    }
-    const newUrl = params.toString()
-      ? `${window.location.pathname}?${params.toString()}`
-      : window.location.pathname;
-    window.history.replaceState(null, "", newUrl);
-  };
-
   componentDidMount = async () => {
-    // Restore state from URL search params
-    const params = new URLSearchParams(window.location.search);
-    const hiddenParam = params.get("hidden");
-    const autoRefreshParam = params.get("autoRefresh");
-    const hiddenEvents = hiddenParam
-      ? hiddenParam.split(",").filter((e) => e.trim() !== "")
-      : [];
-    const autoRefresh = autoRefreshParam === "true";
-
-    this.setState({ hiddenEvents, autoRefresh }, () => {
-      if (autoRefresh) {
-        this.pollTimer = setInterval(() => {
-          this.refreshData();
-        }, 3000);
-      }
-    });
-
+    // `localStorage` es la única fuente de verdad del estado: la query string de
+    // la URL no se lee ni se escribe.
     try {
       await this.refreshData();
       if (this.state.autoRefresh) {
