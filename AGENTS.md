@@ -401,12 +401,22 @@ rules → rate_limiter → ban_manager
 
 Nunca se adquiere un lock en orden inverso para evitar deadlocks. Este patrón se ve explícitamente en `shuul.rs` y `report.rs` — todo el trabajo síncrono (lock, read, match, release) se hace dentro de un bloque `{ }` cuyo ámbito termina antes de cualquier operación async.
 
+### Persistencia de baneos (BanManager)
+
+La unidad de duplicidad de un baneo es la partición `(ip_address, COALESCE(rule_id, 0))`. Por cada partición sobrevive **exactamente una** fila activa —la de `banned_at` más reciente— y las filas de particiones distintas **no se tocan**: dos IPs distintas, o la misma IP con dos `rule_id` (incluido `NULL` frente a uno numérico), conservan su baneo.
+
+`load_from_db()` deduplica en memoria con `ROW_NUMBER()` y a continuación marca `expired = 1` **solo** los duplicados de verdad (`rowid IN (… WHERE rn > 1)`). **Prohibido** cualquier agregado global (`MIN(rowid)` / `MAX(rowid)`) sobre el conjunto de ganadores: colapsa la tabla a **una sola** fila activa y marca el resto como expirado, de modo que **un baneo no sobrevive a un reinicio** (fue el bug real, con evidencia medida en producción). La deduplicación tiene que ser local a cada partición.
+
+El task de fondo de 60 s ejecuta `BanManager::cleanup_expired_db(&pool)` (limpieza **en** DB: marca `expired = 1` las filas temporalmente muertas) además de `cleanup_expired()` (limpieza **en memoria**). La llamada va **fuera** de los ámbitos de `MutexGuard` — ningún guard sobrevive a un `.await`. Marcarlas **no** borra filas (`bans` solo crece): lo que evita es que esas filas zombis se carguen al arrancar y **resuciten el nivel de escalado**. La restauración de `escalation_counts` solo ve, pues, los baneos **vivos** en la carga —siempre que el tick haya corrido antes del apagado: un `kill -9` deja filas muertas con `expired = 0` que sí restauran el nivel hasta el primer tick—, así que el escalado decae con los baneos en lugar de perpetuarse por filas muertas.
+
+La API de bans sirve desde **memoria** (`list_handler` → `active_bans()`), no desde la DB: la tabla es solo el almacén durable y su limpieza no altera lo que muestra la UI.
+
 ### Background Tasks
 
 | Tarea | Intervalo | Propósito |
 |---|---|---|
 | OIDC init | Cada 30s (hasta éxito) | Fetch metadata + JWKS del proveedor OIDC |
-| Ban cleanup | Cada 60s | Eliminar bans expirados, limpiar rate limiters |
+| Ban cleanup | Cada 60s | Eliminar bans expirados en memoria (`cleanup_expired`) y en DB (`cleanup_expired_db`), limpiar rate limiters |
 | Stats persist | Cada 1800s (30 min) | Guardar snapshot de StatsCollector en SQLite |
 | JournaldReader | Streaming continuo (reintento cada 30s) | Leer access logs de Traefik vía la API de Docker (socket o proxy TCP; gatewayd como backend alternativo de menor prioridad) y alimentar el pipeline Jail |
 
