@@ -180,24 +180,68 @@
 > Estas tareas las ejecuta el **usuario**, no el agente. El `compose.yaml` de
 > `co1` vive fuera del repositorio.
 
-- [ ] 8.1 Preparar **los dos bloques** del `compose.yaml` (modo A con
+- [x] 8.1 Preparar **los dos bloques** del `compose.yaml` (modo A con
       `SHUUL_DOCKER_SOCKET` + montaje del socket + `group_add`, modo B con
       `SHUUL_DOCKER_URL` y el `docker-socket-proxy` con `CONTAINERS=1`), sin
       tocar el código para cambiar de uno a otro y **sin** `tty: true`.
       Verificación: cambiar de bloque es editar variables y recrear el
-      contenedor.
-- [ ] 8.2 Desplegar (runbook acordado): imagen `:0.15.x`, `RUST_LOG: backend=info`,
+      contenedor. — **Hecho, con una salvedad que hay que declarar:** la
+      propiedad que persigue la tarea —cambiar de entrada es editar variables y
+      recrear el contenedor, **sin recompilar**— queda verificada por la cascada
+      de precedencia de cinco niveles (`SHUUL_DOCKER_SOCKET` →
+      `SHUUL_DOCKER_URL` → `SHUUL_JOURNALD_SOCKET` → `SHUUL_JOURNALD_URL` → TCP
+      por defecto) y por sus tests. Pero en `co1` **no** se preparó el bloque B:
+      el `compose.yaml` del despliegue sólo tiene el modo A
+      (`SHUUL_DOCKER_SOCKET: /var/run/docker.sock`,
+      `SHUUL_DOCKER_CONTAINER: traefik`, `group_add: ["999"]` y el montaje
+      `:ro` del socket), y el bloque B (proxy) no está escrito, ni siquiera
+      comentado. Se declara explícitamente: no es un requisito de la fase —el
+      modo B vive en la documentación de `SELF-HOSTING.md`— sino una comodidad
+      para cambiar de uno a otro.
+- [x] 8.2 Desplegar (runbook acordado): imagen `:0.15.x`, `RUST_LOG: backend=info`,
       `RUST_BACKTRACE: full`, `docker compose up -d --force-recreate shuul`.
       Verificación: los logs muestran la línea de arranque con el endpoint de
-      Docker.
-- [ ] 8.3 Confirmar en `co1` que `follow`, `since` y `timestamps` se comportan
+      Docker. — **Hecho.** La línea de arranque que lo confirma está en los logs:
+      `journald reader: streaming access logs from docker:unix:/var/run/docker.sock (traefik)`.
+      Dos desviaciones del runbook acordado, que hay que anotar: la imagen
+      desplegada **no** está fijada por tag en el `compose.yaml` (usa
+      `ghcr.io/atareao/shuul` sin tag, es decir `latest`; el digest en ejecución
+      corresponde a la release **0.16.0**, que es la que contiene este cambio
+      —el runbook decía `:0.15.x` y era erróneo—), y el nivel de log es
+      `RUST_LOG: backend=debug,maxminddb=warn` (el runbook decía `backend=info`).
+      `RUST_BACKTRACE: full` sí está puesto. El recreado se hizo con
+      `docker compose up -d --force-recreate shuul`.
+- [x] 8.3 Confirmar en `co1` que `follow`, `since` y `timestamps` se comportan
       igual con el driver de logging en `journald` (que es el que hay hoy) que
       con `json-file`, antes de dar la fase por buena. Verificación: se anota el
-      resultado en el plan §0.2.
-- [ ] 8.4 Verificar en `co1`: entradas leídas con normalidad, **cero** `BANNED`
+      resultado en el plan §0.2. — **Hecho para el driver `journald`, que es el
+      desplegado**, y con la mitad `json-file` **declarada como no verificada**
+      por decisión: verificarla exigiría mover los logs de Traefik bajo otro
+      colector (alloy/vector/openobserve) y no compensa. Lo verificado con
+      `journald`: `follow` entrega en vivo; `timestamps=1` llega como prefijo
+      RFC3339Nano que el lector extrae y usa para comparar con el corte del
+      intento; `since` actúa como pista gruesa (granularidad de segundo) y la
+      corrección la da la comparación exacta; el filtrado por contenedor lo hace
+      el servidor. El resultado se anota además en `PLAN.md` §0.2.
+- [x] 8.4 Verificar en `co1`: entradas leídas con normalidad, **cero** `BANNED`
       en el primer minuto tras el arranque (no se reprocesa histórico) y el WAF
       intacto. Verificación: recuento de eventos del pipeline Jail y una
-      petición de prueba que siga pasando por forwardAuth.
-- [ ] 8.5 Retirar de `co1` el gatewayd, el volumen `/run/systemd/journal`, el
+      petición de prueba que siga pasando por forwardAuth. — **Hecho, y pasa dos
+      veces en frío** (contenedores creados el 2026-10-21 a las 17:23:43 y
+      17:58:43): el evento más antiguo del pipeline Jail es 0,4 s **posterior**
+      al corte, **cero** eventos con `ts` anterior al corte, y en el primer
+      minuto **0 `PENDING` / 0 `BANNED`**. El WAF queda intacto: bloqueó incluso
+      una sonda propia con la regla `4 Geo blocking` (`country: DE`). Nota para
+      quien lea el conteo en caliente: los `[BANNED]` que se ven después **no**
+      son un contador de baneos, son una línea por **cada petición** de una IP
+      ya baneada, y los baneos activos se restauran de la base de datos al
+      arrancar — es estado, no replay.
+- [x] 8.5 Retirar de `co1` el gatewayd, el volumen `/run/systemd/journal`, el
       `group_add` de `systemd-journal` y el puerto `19531`. Verificación: el
-      reader sigue leyendo con el modo A o B elegido.
+      reader sigue leyendo con el modo A o B elegido. — **Hecho.**
+      `systemd-journal-gatewayd.socket` está `inactive` y su unidad ya no existe;
+      `/run/systemd/journal` no está montado; no hay `group_add` de
+      `systemd-journal` ni `SHUUL_JOURNALD_*`; el puerto 19531 no se expone.
+      Queda un `/run/systemd/journal/gatewayd.sock` **huérfano** en tmpfs
+      (inocuo: `RemoveOnStop=false`), invisible para el contenedor. El lector
+      sigue leyendo con el modo A.

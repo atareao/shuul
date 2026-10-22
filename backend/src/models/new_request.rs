@@ -38,6 +38,12 @@ impl NewRequest {
     /// Para campos de encabezado HTTP estándar, se usa primero el prefijo
     /// `x-forwarded-*` y como fallback el encabezado original.
     /// Build a `NewRequest` from HTTP headers and optional `GeoIP` data.
+    ///
+    /// Los cinco campos derivados de cabecera —`user_agent`, `referer`,
+    /// `content_type`, `accept_language` y `x_request_id`— se resuelven a `None`
+    /// cuando la cabecera falta o está presente pero vacía: el filtro
+    /// `.filter(|s| !s.is_empty())` colapsa ambos casos a `None`. A efectos del
+    /// matcheo, una cabecera ausente y una presente pero vacía son indistinguibles.
     #[allow(clippy::too_many_lines, clippy::option_if_let_else)]
     pub fn from_request(
         headers: &http::HeaderMap,

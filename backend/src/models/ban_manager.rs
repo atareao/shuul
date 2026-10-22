@@ -280,16 +280,24 @@ impl BanManager {
 
 impl BanManager {
     /// Load all active (non-expired) bans from the database into a new
-    /// `BanManager` with sensible defaults.
+    /// `BanManager`, deduplicating by `(ip_address, COALESCE(rule_id, 0))`.
     ///
     /// This is useful on application startup to restore ban state from
     /// the previous session.
-    /// Loads bans from the database, deduplicating by `(ip_address, rule_id)`.
     ///
-    /// If multiple active (non-expired) rows exist for the same IP + `rule_id`
+    /// When several active (non-expired) rows exist for the same IP + `rule_id`
     /// pair, only the most recent row (by `banned_at`) is loaded. This handles
     /// the case where `persist_ban` did an UPDATE (leaving a single row) or
     /// where legacy code may have inserted duplicates.
+    ///
+    /// The same rule is then applied back to the database: exactly **one** row
+    /// stays active per `(ip_address, COALESCE(rule_id, 0))` partition —the most
+    /// recent one— and the leftover duplicates are marked `expired = 1`. Rows
+    /// belonging to *different* partitions are not touched, so two distinct IPs
+    /// —or the same IP with two different `rule_id`, including `NULL` vs a
+    /// numeric one— keep their ban and survive a restart. No aggregate may be
+    /// applied across partitions: a global `MIN(rowid)` would collapse the whole
+    /// table to a single active row.
     ///
     /// # Panics
     ///
@@ -416,19 +424,25 @@ impl BanManager {
             }
         }
 
-        // Mark legacy duplicates as expired in DB so they get cleaned up
-        // by the periodic cleanup task. Only the most recent ban per
-        // (ip_address, COALESCE(rule_id, 0)) is kept as active.
+        // Mark legacy duplicates as expired in DB so they get cleaned up by the
+        // periodic cleanup task. Exactly one row survives per
+        // (ip_address, COALESCE(rule_id, 0)) partition — the most recent one —
+        // and rows of *different* partitions are left untouched.
+        //
+        // There must be NO aggregate over the whole winner set (e.g. a global
+        // `MIN(rowid)`): that collapses the table to a single active row and
+        // marks every other ban as expired, so a ban would not survive a
+        // restart. Marking `rn > 1` keeps each partition's decision local.
         sqlx::query(
             "UPDATE bans SET expired = 1 \
              WHERE expired = 0 \
-               AND rowid NOT IN ( \
-                 SELECT MIN(rowid) FROM ( \
+               AND rowid IN ( \
+                 SELECT rowid FROM ( \
                    SELECT rowid, ROW_NUMBER() OVER ( \
                      PARTITION BY ip_address, COALESCE(rule_id, 0) \
                      ORDER BY banned_at DESC \
                    ) AS rn FROM bans WHERE expired = 0 \
-                 ) WHERE rn = 1 \
+                 ) WHERE rn > 1 \
                )",
         )
         .execute(pool)
@@ -548,15 +562,23 @@ impl BanManager {
         Ok(())
     }
 
-    /// Mark all expired (past their `ban_duration_seconds`) bans as expired in the DB.
+    /// Mark all expired (past their `ban_duration_seconds`) bans as expired in
+    /// the DB.
     ///
-    /// Call this periodically (e.g. via a cron-like task) to keep the DB clean.
-    #[allow(dead_code)]
-    /// Cleans up expired bans from the database.
+    /// A row is *temporarily dead* once `banned_at + ban_duration_seconds` has
+    /// passed; this marks it `expired = 1` while leaving still-live rows
+    /// untouched. Because `load_from_db` restores `escalation_counts` only from
+    /// the rows it loads (`expired = 0`), running this before a restart means
+    /// the escalation level decays with the bans instead of being resurrected by
+    /// rows that are no longer alive.
+    ///
+    /// This is invoked **periodically from the 60-second background cleanup
+    /// task** in `main.rs`, right after the in-memory
+    /// [`BanManager::cleanup_expired`].
     ///
     /// # Errors
     ///
-    /// Returns an error if the database delete fails.
+    /// Returns an error if the database update fails.
     pub async fn cleanup_expired_db(pool: &sqlx::SqlitePool) -> Result<(), sqlx::Error> {
         sqlx::query(
             "UPDATE bans SET expired = 1 \
@@ -850,6 +872,12 @@ mod db_tests {
         .unwrap();
         pool
     }
+
+    /// SQL de inserción de una fila de `bans`, compartido por los tests para no
+    /// repetir el esquema de columnas. Siempre inserta con `expired = 0`.
+    const INSERT_BAN: &str = "INSERT INTO bans (ip_address, rule_id, reason, banned_at, \
+         ban_duration_seconds, escalation_level, expired, created_at) \
+         VALUES (?, ?, ?, ?, ?, ?, 0, ?)";
 
     // ------------------------------------------------------------------
     // persist_ban tests
@@ -1513,42 +1541,51 @@ mod db_tests {
     #[tokio::test]
     async fn test_load_from_db_does_not_affect_unique_bans() {
         let pool = create_pool_and_schema().await;
-        let ip: IpAddr = "1.2.3.4".parse().unwrap();
         let now = Utc::now();
 
-        // Insert 1 single ban for IP + rule_id
-        sqlx::query(
-            "INSERT INTO bans (ip_address, rule_id, reason, banned_at, \
-             ban_duration_seconds, escalation_level, expired, created_at) \
-             VALUES (?, ?, ?, ?, ?, ?, 0, ?)",
-        )
-        .bind(ip.to_string())
-        .bind(Some(1i32))
-        .bind("single-ban")
-        .bind(now)
-        .bind(3600i64)
-        .bind(0i32)
-        .bind(now)
-        .execute(&pool)
-        .await
-        .unwrap();
+        // Tres particiones DISTINTAS, cada una con UNA sola fila: ninguna es
+        // duplicado de otra. Antes este test insertaba una única fila en toda
+        // la tabla, con lo que MIN(rowid) era esa fila y el barrido no marcaba
+        // nada: pasaba en verde sin probar lo que promete su nombre.
+        for (ip, rule_id, reason) in [
+            ("1.2.3.4", 1i32, "unique-1"),
+            ("5.6.7.8", 2i32, "unique-2"),
+            ("9.9.9.9", 3i32, "unique-3"),
+        ] {
+            sqlx::query(INSERT_BAN)
+                .bind(ip)
+                .bind(Some(rule_id))
+                .bind(reason)
+                .bind(now)
+                .bind(3600i64)
+                .bind(0i32)
+                .bind(now)
+                .execute(&pool)
+                .await
+                .unwrap();
+        }
 
         // Act: load_from_db
         let (manager, _) = BanManager::load_from_db(&pool).await.unwrap();
 
-        // Assert: 1 ban loaded in memory
-        let bans = manager.bans_for_ip(&ip);
-        assert_eq!(bans.len(), 1, "should load the single ban");
-        assert_eq!(bans[0].reason, "single-ban");
+        // Assert: las tres se cargan en memoria
+        for ip in ["1.2.3.4", "5.6.7.8", "9.9.9.9"] {
+            let parsed: IpAddr = ip.parse().unwrap();
+            assert_eq!(
+                manager.bans_for_ip(&parsed).len(),
+                1,
+                "should load the single ban of {ip}"
+            );
+        }
 
-        // Assert: DB still has 1 active row, 0 expired rows
+        // Assert: DB conserva las 3 filas activas y NINGUNA marcada
         let active_count: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM bans WHERE expired = 0")
             .fetch_one(&pool)
             .await
             .unwrap();
         assert_eq!(
-            active_count, 1,
-            "unique ban should remain active (expired=0)"
+            active_count, 3,
+            "ninguna partición es duplicado de otra: las 3 deben seguir activas"
         );
 
         let expired_count: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM bans WHERE expired = 1")
@@ -1557,7 +1594,7 @@ mod db_tests {
             .unwrap();
         assert_eq!(
             expired_count, 0,
-            "no rows should be marked as expired for a unique ban"
+            "no rows should be marked as expired for unique bans"
         );
     }
 
@@ -1624,6 +1661,415 @@ mod db_tests {
             escalation2.unwrap().0,
             3,
             "IP 5.6.7.8 should have escalation_level 3"
+        );
+    }
+
+    // ------------------------------------------------------------------
+    // ban-manager-persistence — limpieza de duplicados de load_from_db
+    //
+    // Todos estos tests asertan el estado de la DB, no solo la memoria: el
+    // UPDATE de limpieza corre DESPUÉS de la carga en memoria, así que con el
+    // bug (`MIN(rowid)` global) la memoria queda bien y solo la DB se corrompe.
+    // ------------------------------------------------------------------
+
+    /// RED (A1). Con `MIN(rowid)` global, de toda la tabla sobrevive una sola
+    /// fila activa; dos particiones distintas deben conservar su baneo.
+    #[tokio::test]
+    async fn test_load_from_db_two_distinct_ips_keep_their_ban() {
+        let pool = create_pool_and_schema().await;
+        let ip1: IpAddr = "1.2.3.4".parse().unwrap();
+        let ip2: IpAddr = "5.6.7.8".parse().unwrap();
+        let now = Utc::now();
+
+        for (ip, rule_id, reason) in [(ip1, 1i32, "ban-1.2.3.4"), (ip2, 2i32, "ban-5.6.7.8")] {
+            sqlx::query(INSERT_BAN)
+                .bind(ip.to_string())
+                .bind(Some(rule_id))
+                .bind(reason)
+                .bind(now)
+                .bind(3600i64)
+                .bind(0i32)
+                .bind(now)
+                .execute(&pool)
+                .await
+                .unwrap();
+        }
+
+        let (manager, _) = BanManager::load_from_db(&pool).await.unwrap();
+
+        let active: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM bans WHERE expired = 0")
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+        assert_eq!(
+            active, 2,
+            "las dos particiones deben seguir activas; el MIN(rowid) global deja una sola"
+        );
+
+        let expired: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM bans WHERE expired = 1")
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+        assert_eq!(expired, 0, "ninguna fila es duplicado de otra");
+
+        assert_eq!(manager.bans_for_ip(&ip1).len(), 1);
+        assert_eq!(manager.bans_for_ip(&ip2).len(), 1);
+    }
+
+    /// RED (A2). Misma IP con dos `rule_id` distintos: son particiones
+    /// distintas y ninguna es duplicado de la otra.
+    #[tokio::test]
+    async fn test_load_from_db_same_ip_two_rule_ids_keep_both() {
+        let pool = create_pool_and_schema().await;
+        let ip: IpAddr = "1.2.3.4".parse().unwrap();
+        let now = Utc::now();
+
+        for (rule_id, reason) in [(1i32, "rule-1"), (3i32, "rule-3")] {
+            sqlx::query(INSERT_BAN)
+                .bind(ip.to_string())
+                .bind(Some(rule_id))
+                .bind(reason)
+                .bind(now)
+                .bind(3600i64)
+                .bind(0i32)
+                .bind(now)
+                .execute(&pool)
+                .await
+                .unwrap();
+        }
+
+        let (manager, _) = BanManager::load_from_db(&pool).await.unwrap();
+
+        let active: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM bans WHERE expired = 0")
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+        assert_eq!(
+            active, 2,
+            "las particiones (1.2.3.4, 1) y (1.2.3.4, 3) son distintas y deben seguir activas"
+        );
+
+        let expired: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM bans WHERE expired = 1")
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+        assert_eq!(expired, 0, "ninguna fila es duplicado de otra");
+
+        assert_eq!(manager.bans_for_ip(&ip).len(), 2);
+    }
+
+    /// RED (A3). Mezcla: 3 particiones sin duplicados + 1 partición con 2
+    /// duplicados legacy. Sobreviven N + 1 filas activas (una por partición) y
+    /// solo los duplicados se marcan.
+    #[tokio::test]
+    async fn test_load_from_db_mixed_unique_and_duplicates_keeps_n_plus_one() {
+        let pool = create_pool_and_schema().await;
+        let duplicated_ip: IpAddr = "1.1.1.1".parse().unwrap();
+        let unique_ips: [IpAddr; 3] = [
+            "2.2.2.2".parse().unwrap(),
+            "3.3.3.3".parse().unwrap(),
+            "4.4.4.4".parse().unwrap(),
+        ];
+
+        // Partición duplicada (1.1.1.1, rule_id=1): 1 fila vigente + 2
+        // duplicados legacy con banned_at anterior.
+        let newest = Utc.with_ymd_and_hms(2026, 9, 3, 0, 0, 0).unwrap();
+        let older = Utc.with_ymd_and_hms(2026, 8, 1, 0, 0, 0).unwrap();
+        let oldest = Utc.with_ymd_and_hms(2026, 7, 1, 0, 0, 0).unwrap();
+        for (banned_at, reason) in [
+            (newest, "dup-newest"),
+            (older, "dup-legacy-1"),
+            (oldest, "dup-legacy-2"),
+        ] {
+            sqlx::query(INSERT_BAN)
+                .bind(duplicated_ip.to_string())
+                .bind(Some(1i32))
+                .bind(reason)
+                .bind(banned_at)
+                .bind(86_400i64)
+                .bind(0i32)
+                .bind(banned_at)
+                .execute(&pool)
+                .await
+                .unwrap();
+        }
+
+        // Tres particiones sin duplicados.
+        for (ip, rule_id) in [
+            (unique_ips[0], 2i32),
+            (unique_ips[1], 3i32),
+            (unique_ips[2], 4i32),
+        ] {
+            sqlx::query(INSERT_BAN)
+                .bind(ip.to_string())
+                .bind(Some(rule_id))
+                .bind("unique")
+                .bind(newest)
+                .bind(86_400i64)
+                .bind(0i32)
+                .bind(newest)
+                .execute(&pool)
+                .await
+                .unwrap();
+        }
+
+        let (manager, _) = BanManager::load_from_db(&pool).await.unwrap();
+
+        let active: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM bans WHERE expired = 0")
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+        assert_eq!(
+            active, 4,
+            "N + 1: una fila por cada partición única (3) más la ganadora de la partición duplicada"
+        );
+
+        let expired: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM bans WHERE expired = 1")
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+        assert_eq!(expired, 2, "solo los 2 duplicados legacy se marcan");
+
+        // Ninguna de las 3 particiones únicas se marca.
+        for ip in unique_ips {
+            let marked: i64 = sqlx::query_scalar(
+                "SELECT COUNT(*) FROM bans WHERE ip_address = ? AND expired = 1",
+            )
+            .bind(ip.to_string())
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+            assert_eq!(marked, 0, "la partición única {ip} no debe marcarse");
+        }
+
+        assert_eq!(manager.bans_for_ip(&duplicated_ip).len(), 1);
+        for ip in unique_ips {
+            assert_eq!(manager.bans_for_ip(&ip).len(), 1);
+        }
+    }
+
+    /// RED (A4). `rule_id = NULL` y `rule_id = 1` son particiones distintas
+    /// (`COALESCE(rule_id, 0)`).
+    #[tokio::test]
+    async fn test_load_from_db_null_rule_id_and_numeric_rule_id_are_distinct_partitions() {
+        let pool = create_pool_and_schema().await;
+        let ip: IpAddr = "1.2.3.4".parse().unwrap();
+        let now = Utc::now();
+
+        for (rule_id, reason) in [(None::<i32>, "null-rule"), (Some(1i32), "rule-1")] {
+            sqlx::query(INSERT_BAN)
+                .bind(ip.to_string())
+                .bind(rule_id)
+                .bind(reason)
+                .bind(now)
+                .bind(3600i64)
+                .bind(0i32)
+                .bind(now)
+                .execute(&pool)
+                .await
+                .unwrap();
+        }
+
+        let (_manager, _) = BanManager::load_from_db(&pool).await.unwrap();
+
+        let active: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM bans WHERE expired = 0")
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+        assert_eq!(
+            active, 2,
+            "COALESCE(rule_id, 0) hace que NULL y 1 sean particiones distintas"
+        );
+
+        let expired: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM bans WHERE expired = 1")
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+        assert_eq!(expired, 0, "ninguna fila es duplicado de otra");
+    }
+
+    /// RED (A5). De cada partición sobrevive la fila más reciente
+    /// (`ORDER BY banned_at DESC` no se invierte).
+    #[tokio::test]
+    async fn test_load_from_db_keeps_the_newest_of_each_partition() {
+        let pool = create_pool_and_schema().await;
+        let ip1: IpAddr = "1.2.3.4".parse().unwrap();
+        let ip2: IpAddr = "5.6.7.8".parse().unwrap();
+
+        let old1 = Utc.with_ymd_and_hms(2026, 1, 1, 0, 0, 0).unwrap();
+        let new1 = Utc.with_ymd_and_hms(2026, 6, 1, 0, 0, 0).unwrap();
+        let old2 = Utc.with_ymd_and_hms(2026, 2, 1, 0, 0, 0).unwrap();
+        let new2 = Utc.with_ymd_and_hms(2026, 7, 1, 0, 0, 0).unwrap();
+
+        for (ip, rule_id, banned_at, reason) in [
+            (ip1, 1i32, old1, "partition-1-old"),
+            (ip1, 1i32, new1, "partition-1-new"),
+            (ip2, 2i32, old2, "partition-2-old"),
+            (ip2, 2i32, new2, "partition-2-new"),
+        ] {
+            sqlx::query(INSERT_BAN)
+                .bind(ip.to_string())
+                .bind(Some(rule_id))
+                .bind(reason)
+                .bind(banned_at)
+                .bind(86_400i64)
+                .bind(0i32)
+                .bind(banned_at)
+                .execute(&pool)
+                .await
+                .unwrap();
+        }
+
+        let (manager, _) = BanManager::load_from_db(&pool).await.unwrap();
+
+        let active: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM bans WHERE expired = 0")
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+        assert_eq!(
+            active, 2,
+            "una fila activa por partición: la más reciente de cada una"
+        );
+
+        let expired: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM bans WHERE expired = 1")
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+        assert_eq!(
+            expired, 2,
+            "la fila vieja de cada partición queda expired=1"
+        );
+
+        for (ip, reason) in [(ip1, "partition-1-new"), (ip2, "partition-2-new")] {
+            let survivor: String =
+                sqlx::query_scalar("SELECT reason FROM bans WHERE ip_address = ? AND expired = 0")
+                    .bind(ip.to_string())
+                    .fetch_one(&pool)
+                    .await
+                    .unwrap();
+            assert_eq!(
+                survivor, reason,
+                "debe sobrevivir la fila más reciente de la partición"
+            );
+        }
+
+        assert_eq!(manager.bans_for_ip(&ip1)[0].reason, "partition-1-new");
+        assert_eq!(manager.bans_for_ip(&ip2)[0].reason, "partition-2-new");
+    }
+
+    // ------------------------------------------------------------------
+    // ban-manager-persistence — limpieza periódica de la DB (B2)
+    //
+    // CARACTERIZACIÓN: estos dos tests PASAN hoy y deben seguir pasando después
+    // del GREEN. No existía ningún test de `cleanup_expired_db` y el GREEN se
+    // apoya en este contrato. Fijan la SEMÁNTICA, no el cableado del task: la
+    // llamada periódica vive dentro de `main()` (`main.rs:292-313`) y no es
+    // observable in-process.
+    // ------------------------------------------------------------------
+
+    /// Caracterización (B1). `cleanup_expired_db` marca las filas temporalmente
+    /// muertas y deja intactas las vivas.
+    #[tokio::test]
+    async fn test_cleanup_expired_db_marks_dead_rows_and_leaves_live_ones() {
+        let pool = create_pool_and_schema().await;
+        let now = Utc::now();
+
+        // Fila muerta: banned_at + ban_duration_seconds ya pasó.
+        sqlx::query(INSERT_BAN)
+            .bind("9.9.9.9")
+            .bind(Some(1i32))
+            .bind("dead")
+            .bind(now - chrono::Duration::hours(2))
+            .bind(3600i64)
+            .bind(0i32)
+            .bind(now - chrono::Duration::hours(2))
+            .execute(&pool)
+            .await
+            .unwrap();
+
+        // Fila viva: banned_at + ban_duration_seconds todavía no ha pasado.
+        sqlx::query(INSERT_BAN)
+            .bind("8.8.8.8")
+            .bind(Some(2i32))
+            .bind("live")
+            .bind(now)
+            .bind(3600i64)
+            .bind(0i32)
+            .bind(now)
+            .execute(&pool)
+            .await
+            .unwrap();
+
+        BanManager::cleanup_expired_db(&pool).await.unwrap();
+
+        let dead_expired: i64 =
+            sqlx::query_scalar("SELECT expired FROM bans WHERE reason = 'dead'")
+                .fetch_one(&pool)
+                .await
+                .unwrap();
+        assert_eq!(dead_expired, 1, "la fila caducada se marca expired=1");
+
+        let live_expired: i64 =
+            sqlx::query_scalar("SELECT expired FROM bans WHERE reason = 'live'")
+                .fetch_one(&pool)
+                .await
+                .unwrap();
+        assert_eq!(live_expired, 0, "la fila viva sigue activa");
+    }
+
+    /// Caracterización (B2). Con las filas muertas ya marcadas `expired = 1`
+    /// **antes** de la carga, la restauración de `escalation_counts` solo ve los
+    /// baneos vivos. El test invoca la función suelta `cleanup_expired_db`, **no**
+    /// el task periódico de `main()` (que vive en línea y no es observable
+    /// in-process): fija la semántica de la restauración, no el cableado.
+    #[tokio::test]
+    async fn test_escalation_restoration_ignores_rows_cleaned_before_load() {
+        let pool = create_pool_and_schema().await;
+        let ip: IpAddr = "1.2.3.4".parse().unwrap();
+        let now = Utc::now();
+
+        // Ban caducado con nivel histórico alto (5), todavía con expired=0.
+        sqlx::query(INSERT_BAN)
+            .bind(ip.to_string())
+            .bind(Some(1i32))
+            .bind("stale-high-escalation")
+            .bind(now - chrono::Duration::hours(2))
+            .bind(3600i64)
+            .bind(5i32)
+            .bind(now - chrono::Duration::hours(2))
+            .execute(&pool)
+            .await
+            .unwrap();
+
+        // Ban vivo con nivel 1.
+        sqlx::query(INSERT_BAN)
+            .bind(ip.to_string())
+            .bind(Some(2i32))
+            .bind("live-low-escalation")
+            .bind(now)
+            .bind(3600i64)
+            .bind(1i32)
+            .bind(now)
+            .execute(&pool)
+            .await
+            .unwrap();
+
+        // Tick del task periódico de limpieza de la DB.
+        BanManager::cleanup_expired_db(&pool).await.unwrap();
+
+        let (mut manager, _) = BanManager::load_from_db(&pool).await.unwrap();
+
+        let level = manager.escalation_counts.get(&ip).map(|(l, _)| *l);
+        assert_eq!(
+            level,
+            Some(1),
+            "solo el ban vivo (nivel 1) restaura el escalado; el caducado (nivel 5) ya está expired=1"
+        );
+
+        let next = manager.ban(ip, Some(3), "after-restart".to_string(), None);
+        assert_eq!(
+            next.escalation_level, 1,
+            "el siguiente ban parte del nivel restaurado (1), no del histórico (5)"
         );
     }
 }
