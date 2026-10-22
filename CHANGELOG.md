@@ -1,4 +1,35 @@
 # Changelog
+## [0.17.0] - 2026-10-22
+
+### Bug Fixes
+
+- *(frontend)* Corrige el tipo de FILTER_DETAIL_FIELDS que rompía el build
+
+### Documentation
+
+- *(plan)* Registra el cierre de la fase 0, los changes del 21-22 y abre la FASE 7
+- *(openspec)* Propone admin-ui-fixes (paginación, preferencias del Log Viewer, retirada del gráfico)
+- *(openspec)* Propone templates-listing (listado único filtrable, perfiles fuera)
+- *(openspec)* Propone tcp-url-alias (aceptar tcp:// como sinónimo de http://)
+
+### Features
+
+- *(frontend)* CustomTable como único paginador, preferencias del Log Viewer sin URL y retirada del gráfico Evolution by Method
+- *(templates)* Listado único filtrable y perfiles fuera de la API
+- *(backend)* Acepta tcp:// como sinónimo de http:// en las URL de transporte
+
+### Miscellaneous Tasks
+
+- *(frontend)* Declara @testing-library/react y user-event, que estaban en uso sin declarar
+- *(frontend)* Declara @testing-library/react y user-event, que el test importa
+
+### Styling
+
+- *(frontend)* Rejilla estable en la barra de filtros de templates
+
+### Testing
+
+- *(spec)* Archiva ban-manager-persistence y consolida la spec
 ## [0.16.1] - 2026-10-22
 
 ### Bug Fixes
@@ -15,6 +46,10 @@
 - *(openspec)* Propuesta del change ban-manager-persistence
 - *(openspec)* Aprueba el change ban-manager-persistence con B2
 - *(ban-manager)* Documenta el contrato de persistencia y cierra el change
+
+### Miscellaneous Tasks
+
+- Release v0.16.1
 
 ### Testing
 
