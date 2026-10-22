@@ -87,6 +87,17 @@ La semántica es la que fija el delta de spec: **por cada partición
 Ningún agregado global —`MIN(rowid)`, `MAX(rowid)` ni equivalente— puede volver a
 aparecer: reduciría la tabla entera a una sola fila activa.
 
+**Limitación conocida de la clave de partición.** `COALESCE(rule_id, 0)` hace
+colisionar `rule_id = NULL` con `rule_id = 0`: ambas caen en la partición `0`. Hoy
+es **inofensivo** porque `bans.rule_id` referencia `rules.id`, que es
+`INTEGER PRIMARY KEY AUTOINCREMENT` y por tanto **nunca vale 0** (los ids empiezan
+en 1), así que un `rule_id = 0` real no existe. Si algún día se permitiera un
+`rule_id` 0 —o se cambiara el esquema—, dos particiones distintas se tratarían como
+una y una de las dos filas se marcaría como duplicado. La alternativa
+(`COALESCE(rule_id, -1)` o particionar por `rule_id IS NULL` + `rule_id`) no aporta
+nada mientras el id sea `AUTOINCREMENT`; se deja escrito para que la decisión sea
+consciente y no accidental.
+
 **Rationale.** El `ROW_NUMBER()` por partición ya contiene toda la información
 necesaria: la fila `rn = 1` es el ganador de su partición y las `rn > 1` son sus
 duplicados. El `MIN(rowid)` era un intento de colapsar «los ganadores» a un
@@ -135,9 +146,11 @@ abierta.
 
 El problema es real y medido: `cleanup_expired_db` es código muerto y **22 filas**
 con `expired = 0` ya están caducadas (la más antigua, el `rowid = 1` del 22 de
-septiembre). La tabla crece sin límite: 1410 filas, de las que 1379 ya están
-marcadas. **No hay impacto en la UI** (`list_handler` sirve desde memoria y
-`cleanup_expired()` descarta las caducadas cada 60 s).
+septiembre). Esas filas zombis **se siguen cargando como vivas al arrancar** y
+resucitan el nivel de escalado. Marcarlas **no** acota el tamaño de la tabla
+—nada borra filas de `bans`: hoy son 1410, de las que 1379 ya están marcadas—,
+pero sí impide esa restauración. **No hay impacto en la UI** (`list_handler`
+sirve desde memoria y `cleanup_expired()` descarta las caducadas cada 60 s).
 
 La consecuencia que se asume con esta decisión es de **semántica del escalado**:
 hoy las filas caducadas pero no marcadas **restauran `escalation_counts` al
@@ -146,10 +159,20 @@ de 60 s marcándolas `expired = 1`, sólo los baneos **vivos en el momento de la
 carga** restaurarán su nivel. Es un cambio observable y **asumido**: un IP con
 historial de bans ya caducados vuelve a empezar en nivel 0 tras el reinicio.
 
+**Matiz: el decaimiento depende de que el tick haya corrido.** La afirmación
+«sólo los baneos vivos restauran su nivel» está garantizada **si el tick de 60 s
+llegó a ejecutarse antes del apagado**. Un apagado abrupto (`kill -9`, OOM-killer,
+corte de corriente) deja filas ya muertas con `expired = 0`, y ésas **sí** vuelven
+a restaurar el escalado al reiniciar, hasta que el primer tick las marque. No es
+una regresión —es el comportamiento previo a este change— pero conviene no
+afirmar más de lo que el mecanismo garantiza: la limpieza es periódica, no
+transaccional con el apagado.
+
 **Rationale de la decisión.** El bug y el código muerto son la misma historia: el
 `UPDATE` de `load_from_db` existe precisamente «para que la limpieza periódica los
 elimine» (doc-comment), y esa limpieza periódica **nunca se conectó**. Arreglar B1
-sin B2 dejaría la tabla creciendo sin límite y la promesa del contrato a medias. El
+sin B2 dejaría las filas zombis cargándose y **resucitando el escalado en cada
+reinicio**, con la promesa del contrato a medias. El
 cambio de semántica del escalado es **el comportamiento correcto**: el escalado
 debe decaer con los baneos, no perpetuarse por filas que ya no están vivas.
 Aprovecha que ya se toca el fichero y el mismo requisito de persistencia. El
@@ -160,10 +183,12 @@ considera los baneos vivos en la carga— es **normativo**.
 
 - **B2 fuera, en un change propio.** Mantendría este change mínimo y con un solo
   efecto (el `UPDATE`), lo que hace la regresión más fácil de atribuir. Descartada:
-  deja el código muerto en pie y la tabla creciendo, y obliga a un segundo
+  deja el código muerto en pie y las filas zombis resucitando el escalado en cada
+  reinicio, y obliga a un segundo
   archivado para algo que comparte causa raíz con B1.
-- **B2 nunca.** Descartada: el crecimiento de la tabla es ilimitado y el
-  `#[allow(dead_code)]` señala una intención incumplida desde su creación.
+- **B2 nunca.** Descartada: las filas zombis seguirían resucitando el escalado en
+  cada reinicio y el `#[allow(dead_code)]` señala una intención incumplida desde su
+  creación.
 
 ### D4. Alcance: sin frontend, sin migración, y sin rescate de lo barrido
 
@@ -187,8 +212,10 @@ script de rescate**. Este change arregla el futuro, no el pasado.
   marcará sólo lo que es duplicado. Es el arreglo, pero es observable en la DB:
   el recuento de filas activas sube y deja de colapsar a una sola.
 - **La restauración del escalado cambia** (§D3, decidido): sólo los baneos vivos
-  al cargar restauran su nivel. Es intencionado —el escalado decae con los baneos—
-  y es el precio asumido de conectar la limpieza periódica.
+  al cargar restauran su nivel, **siempre que el tick de 60 s haya corrido antes
+  del apagado** (un `kill -9` deja filas muertas con `expired = 0` que sí lo
+  restauran hasta el primer tick). Es intencionado —el escalado decae con los
+  baneos— y es el precio asumido de conectar la limpieza periódica.
 - **Los baneos ya perdidos en producción no se recuperan** (§D4, decidido por el
   usuario): no se prepara script de rescate. Este change arregla el futuro, no el
   pasado.

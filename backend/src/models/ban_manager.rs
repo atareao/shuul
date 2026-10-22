@@ -2017,10 +2017,13 @@ mod db_tests {
         assert_eq!(live_expired, 0, "la fila viva sigue activa");
     }
 
-    /// Caracterización (B2). Tras el tick del task periódico, la restauración de
-    /// `escalation_counts` solo ve los baneos vivos en el momento de la carga.
+    /// Caracterización (B2). Con las filas muertas ya marcadas `expired = 1`
+    /// **antes** de la carga, la restauración de `escalation_counts` solo ve los
+    /// baneos vivos. El test invoca la función suelta `cleanup_expired_db`, **no**
+    /// el task periódico de `main()` (que vive en línea y no es observable
+    /// in-process): fija la semántica de la restauración, no el cableado.
     #[tokio::test]
-    async fn test_escalation_restoration_ignores_rows_cleaned_by_the_periodic_task() {
+    async fn test_escalation_restoration_ignores_rows_cleaned_before_load() {
         let pool = create_pool_and_schema().await;
         let ip: IpAddr = "1.2.3.4".parse().unwrap();
         let now = Utc::now();

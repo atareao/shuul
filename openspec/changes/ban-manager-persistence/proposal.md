@@ -29,9 +29,11 @@ No está incompleta: está equivocada.
 - **B. Limpieza periódica de la DB.** `BanManager::cleanup_expired_db(pool)`
   existe, está marcado `#[allow(dead_code)]` y **nunca se llama**. El task de
   fondo de 60 s limpia memoria (`cleanup_expired()`) y rate limiters, pero no la
-  tabla: las filas temporalmente muertas se quedan con `expired = 0` para siempre
-  y la tabla crece sin límite. Conectar la llamada tiene una **consecuencia
-  semántica asumida** (aprobada el 2026-10-22): sólo los baneos vivos en el
+  tabla: las filas temporalmente muertas se quedan con `expired = 0` para siempre.
+  Marcarlas **no** acota el tamaño de la tabla —nada borra filas de `bans`—, pero
+  evita que se carguen al arrancar y **resuciten el nivel de escalado** como si
+  siguieran vivas. Conectar la llamada tiene una **consecuencia semántica
+  asumida** (aprobada el 2026-10-22): sólo los baneos vivos en el
   momento de la carga restauran su nivel de escalado entre reinicios. El
   requirement nuevo (`cleanup_expired_db` en el task periódico) es normativo.
 
