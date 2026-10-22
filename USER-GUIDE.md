@@ -128,6 +128,8 @@ For Jail rules:
   Each profile tracks the IP separately
 ```
 
+**Missing fields do not match.** A rule matches only when **every** field it restricts matches. If a rule restricts a field and the request does not carry a value for it — the header is absent *or* present but empty — the rule does **not** match. This is the safe failure: a `User-Agent` rule will not silently match every request that has no `User-Agent`. It matters most for the five header-derived fields (`User-Agent`, `Referer`, `Content-Type`, `Accept-Language`, `X-Request-ID`) and for `Country Code` when GeoIP cannot resolve the IP. Traefik only emits those request headers when `accessLog.fields.headers.names` declares them (see the Self-Hosting guide, §2.15), so by default they arrive empty; a restricted field with no value simply does not match — it never matches by absence. When debug logging is on, the matcher reports each discard, naming the field and the rule.
+
 ### Rule Modes
 
 | Mode | Behaviour |

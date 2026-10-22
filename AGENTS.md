@@ -235,6 +235,21 @@ de los otros como transporte.
   **directo** a esa función: **no** pasa por `extract_report_payload` ni por
   `is_traefik_entry`, que **exigen el campo `CONTAINER_NAME`** —que las cargas del stream no
   traen— y descartarían el **100 %** de las líneas en silencio.
+- **Campos del `ReportPayload` y lo que el transporte no puede aportar:** el lector mapea 14
+  campos; **cinco** dependen de que Traefik emita las claves de cabecera del access log
+  (`request_User-Agent` → `user_agent`, `request_Referer` → `referer`,
+  `request_Content-Type` → `content_type`, `request_Accept-Language` → `accept_language`,
+  `request_X-Request-Id` → `x_request_id`). Traefik **no** las emite por defecto
+  (`accessLog.fields.headers.defaultMode: drop`), así que en una configuración por defecto
+  llegan **siempre** vacías. **Ningún backend las inventa**: la API de Docker y gatewayd
+  transportan el mismo JSON, así que la disponibilidad depende del **origen**
+  (`accessLog.fields.headers.names` del `traefik.yml`, que vive **fuera** de este
+  repositorio), no del transporte. Cuando la clave falta, el mapeo resuelve el campo a
+  `None` **sin descartar la línea** (un access log sin `request_*` sigue siendo válido).
+  Desde `missing-header-fields`, una regla que **restrinja** uno de esos campos y reciba
+  `None` **no casa** —antes casaba por ausencia— y el matcher lo registra con un `debug!`
+  que nombra el campo y la regla (`RUST_LOG=backend=debug`). El mismo contrato vale para
+  `country_code` cuando el GeoIP no resuelve la IP. Ver `SELF-HOSTING.md` §2.15.
 - **Corte por intento de conexión:** cada intento fija su corte en el instante en que
   empieza (µs) y sólo se entrega al pipeline lo **estrictamente posterior**. `since` es el
   **filtro grueso del servidor** —granularidad de segundo— y una mera **pista**, con el

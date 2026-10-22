@@ -231,3 +231,19 @@ las reglas y el cambio es de lógica, no de almacenamiento.
   otras formas). No se resuelve aquí: se verifica en `tasks.md` y, si la
   medición lo exige, se abre un cambio propio para el parser. Escribirlo aquí es
   lo que evita que alguien lo dé por hecho.
+  - **Resuelto (2026-10-22).** Medido en un contenedor de usar y tirar con la
+    **misma versión que producción** (`traefik:v3.7.5`): config
+    `accessLog.format: json` + `fields.headers.defaultMode: drop` + los cinco
+    nombres declarados como `keep`, y una petición `GET` con esas cinco cabeceras
+    a un path sin router (404 de Traefik). Claves emitidas, literales:
+    `request_User-Agent`, `request_Referer`, `request_Content-Type`,
+    `request_Accept-Language`, `request_X-Request-Id`. **Coinciden exactamente**
+    con las que espera el parser (struct `TraefikAccessLog` de
+    `backend/src/journald_reader.rs`), así que la recuperación documentada en
+    `SELF-HOSTING.md` §2.15 **funciona**: **no** hace falta ningún alias de
+    capitalización y **no** se abre ningún cambio para el parser. Dos
+    observaciones del mismo experimento: las cabeceras de **respuesta** usan un
+    prefijo distinto y en minúsculas (`downstream_Content-Type`), que no es lo
+    que lee el parser; y una respuesta generada por el propio Traefik llega con
+    `OriginStatus: 0`, coherente con que el Jail la ignore (ya estaba
+    documentado).
