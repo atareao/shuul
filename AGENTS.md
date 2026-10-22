@@ -635,13 +635,13 @@ Precedencia del transporte del `JournaldReader`: `SHUUL_DOCKER_SOCKET` → `SHUU
 
 ## Templates
 
-81 plantillas de reglas y 9 perfiles de rate limit preconfigurados.
+42 plantillas de reglas (24 WAF + 18 JAIL) y 9 perfiles de rate limit preconfigurados. Los 9 perfiles siguen existiendo como datos de la tabla `rate_limit_profiles` y solo se sirven desde `GET /api/v1/rate-limit-profiles`; **no** viajan en el payload de `GET /api/v1/templates`, que devuelve exclusivamente las claves `waf` y `jail`.
 
-#### Categorías WAF (35 templates)
+#### Categorías WAF (24 templates)
 
 WordPress, Drupal, Laravel, GraphQL, Adminer, Sensitive Files, Known Bots, Geo blocking, SSTI, SQLi, XSS, Path Traversal, Log4j, Swagger, Symfony, Docker socket, etc.
 
-#### Categorías Jail (46 templates)
+#### Categorías Jail (18 templates)
 
 Auth Brute Force, Admin Guard, Path Scanning, API Abuse, Scraping, Global Shield, Scanner Aggressive - con paths específicos para cada servicio (wp-login, grafana, nextcloud, jenkins, kubernetes, portainer, etc.)
 

@@ -1,7 +1,6 @@
 import React from "react";
 import {
-  Card,
-  Collapse,
+  Table,
   Tag,
   Button,
   Typography,
@@ -10,35 +9,21 @@ import {
   Input,
   InputNumber,
   Modal,
-  Tabs,
+  Select,
   Spin,
   Empty,
   Switch,
 } from "antd";
-import type { CollapseProps, TabsProps } from "antd";
+import type { TableColumnsType } from "antd";
 import {
   CheckCircleOutlined,
   CloseCircleOutlined,
   ThunderboltOutlined,
   SearchOutlined,
   LockOutlined,
-  GlobalOutlined,
-  ApiOutlined,
-  WarningOutlined,
-  RobotOutlined,
-  CloudServerOutlined,
-  MailOutlined,
-  AppstoreOutlined,
-  SafetyOutlined,
-  CodeOutlined,
 } from "@ant-design/icons";
-import type {
-  RuleTemplate,
-  RateLimitProfileTemplate,
-  TemplatesResponse,
-} from "@/models/template";
+import type { RuleTemplate, TemplatesResponse } from "@/models/template";
 import type Rule from "@/models/rule";
-import type RateLimitProfile from "@/models/rate_limit_profile";
 import { loadData } from "@/common/utils";
 import { BASE_URL } from "@/constants";
 
@@ -87,12 +72,6 @@ type RuleCreatePayload = Pick<
     active: boolean;
   };
 
-/** Cuerpo de `POST /api/v1/rate-limit-profiles` al aplicar un template. */
-type RateLimitProfileCreatePayload = Omit<
-  RateLimitProfile,
-  "id" | "created_at" | "updated_at"
->;
-
 const SEVERITY_COLORS: Record<string, string> = {
   critico: "red",
   alto: "orange",
@@ -105,23 +84,6 @@ const SEVERITY_LABELS: Record<string, string> = {
   alto: "🔴 Alto",
   medio: "🟡 Medio",
   bajo: "🟢 Bajo",
-};
-
-const CATEGORY_ICONS: Record<string, React.ReactNode> = {
-  wordpress: <AppstoreOutlined />,
-  joomla: <AppstoreOutlined />,
-  drupal: <AppstoreOutlined />,
-  laravel: <CodeOutlined />,
-  paneles: <LockOutlined />,
-  api: <ApiOutlined />,
-  servidores: <CloudServerOutlined />,
-  seguridad: <SafetyOutlined />,
-  bots: <RobotOutlined />,
-  geo: <GlobalOutlined />,
-  cms: <AppstoreOutlined />,
-  infra: <CloudServerOutlined />,
-  probes: <WarningOutlined />,
-  webmail: <MailOutlined />,
 };
 
 const CATEGORY_LABELS: Record<string, string> = {
@@ -141,14 +103,44 @@ const CATEGORY_LABELS: Record<string, string> = {
   webmail: "Webmail",
 };
 
+/** Filtros de una plantilla, en el orden en que se muestran al expandir la fila. */
+const FILTER_DETAIL_FIELDS: { key: TemplateFilterFields; label: string }[] = [
+  { key: "path", label: "Path" },
+  { key: "query", label: "Query" },
+  { key: "method", label: "Method" },
+  { key: "protocol", label: "Protocol" },
+  { key: "country_code", label: "Country code" },
+  { key: "country_name", label: "Country" },
+  { key: "city_name", label: "City" },
+  { key: "ip_address", label: "IP" },
+  { key: "user_agent", label: "User agent" },
+  { key: "referer", label: "Referer" },
+  { key: "content_type", label: "Content type" },
+  { key: "accept_language", label: "Accept language" },
+  { key: "x_request_id", label: "X-Request-Id" },
+  { key: "is_tor", label: "TOR" },
+];
+
+type PipelineFilter = "all" | "waf" | "jail";
+type ActionFilter = "all" | "allow" | "deny";
+
+interface SelectOption {
+  value: string;
+  label: string;
+}
+
 interface State {
   wafTemplates: RuleTemplate[];
   jailTemplates: RuleTemplate[];
-  profiles: RateLimitProfileTemplate[];
   loading: boolean;
+  loadError: string | null;
   applying: string | null;
   search: string;
-  activeTab: string;
+  pipelineFilter: PipelineFilter;
+  severityFilter: string;
+  categoryFilter: string;
+  actionFilter: ActionFilter;
+  mustHaveOnly: boolean;
   // Rule template apply modal
   modalVisible: boolean;
   selectedTemplate: RuleTemplate | null;
@@ -158,9 +150,6 @@ interface State {
   ruleDescription: string;
   ruleWeight: number;
   ruleActive: boolean;
-  // Profile template apply modal
-  profileModalVisible: boolean;
-  selectedProfile: RateLimitProfileTemplate | null;
 }
 
 export default class TemplatesPage extends React.Component<
@@ -172,11 +161,15 @@ export default class TemplatesPage extends React.Component<
     this.state = {
       wafTemplates: [],
       jailTemplates: [],
-      profiles: [],
       loading: false,
+      loadError: null,
       applying: null,
       search: "",
-      activeTab: "waf",
+      pipelineFilter: "all",
+      severityFilter: "all",
+      categoryFilter: "all",
+      actionFilter: "all",
+      mustHaveOnly: false,
       modalVisible: false,
       selectedTemplate: null,
       fqdn: "",
@@ -185,8 +178,6 @@ export default class TemplatesPage extends React.Component<
       ruleDescription: "",
       ruleWeight: 100,
       ruleActive: true,
-      profileModalVisible: false,
-      selectedProfile: null,
     };
   }
 
@@ -197,14 +188,22 @@ export default class TemplatesPage extends React.Component<
   };
 
   private loadTemplates = async () => {
+    // `loadData` nunca rechaza: en error devuelve `{ status, message }` sin
+    // `data`, así que aquí se distingue el fallo de un catálogo legítimamente
+    // vacío y se hace visible al usuario en vez de descartarlo en silencio.
     const response = await loadData<TemplatesResponse>("templates", new Map());
     if (response.status === 200 && response.data) {
       this.setState({
         wafTemplates: response.data.waf,
         jailTemplates: response.data.jail,
-        profiles: response.data.profiles,
+        loadError: null,
       });
+      return;
     }
+    const msg =
+      response.message || "Failed to load templates. Please try again.";
+    message.error(msg);
+    this.setState({ loadError: msg });
   };
 
   // --- Rule Template apply modal ---
@@ -302,471 +301,206 @@ export default class TemplatesPage extends React.Component<
     }
   };
 
-  // --- Profile apply modal ---
+  // --- Listing: filtering, ordering and rendering ---
 
-  private openProfileApplyModal = (profile: RateLimitProfileTemplate) => {
-    this.setState({
-      profileModalVisible: true,
-      selectedProfile: profile,
-    });
-  };
+  /**
+   * Catálogo completo (WAF + JAIL) filtrado por los filtros activos y el
+   * buscador, y ordenado con las `must_have` primero y el resto por peso.
+   */
+  private visibleTemplates = (): RuleTemplate[] => {
+    const search = this.state.search.trim().toLowerCase();
+    const {
+      pipelineFilter,
+      severityFilter,
+      categoryFilter,
+      actionFilter,
+      mustHaveOnly,
+    } = this.state;
 
-  private closeProfileModal = () => {
-    this.setState({
-      profileModalVisible: false,
-      selectedProfile: null,
-    });
-  };
-
-  private confirmApplyProfile = async () => {
-    const profile = this.state.selectedProfile;
-    if (!profile) return;
-
-    this.setState({ applying: profile.name, profileModalVisible: false });
-    try {
-      const body: RateLimitProfileCreatePayload = {
-        name: profile.name,
-        description: profile.description,
-        max_retry: profile.max_retry,
-        find_time_seconds: profile.find_time_seconds,
-        ban_time_seconds: profile.ban_time_seconds,
-        bantime_increment: profile.bantime_increment,
-        bantime_multipliers: profile.bantime_multipliers,
-        bantime_maxtime_seconds: profile.bantime_maxtime_seconds,
-        ban_count_decay_days: profile.ban_count_decay_days,
-        fail_codes: profile.fail_codes,
-      };
-      const token = localStorage.getItem("token");
-      const response = await fetch(`${BASE_URL}/api/v1/rate-limit-profiles`, {
-        method: "POST",
-        headers: {
-          "Content-Type": "application/json",
-          ...(token ? { Authorization: `Bearer ${token}` } : {}),
-        },
-        body: JSON.stringify(body),
-      });
-      if (response.ok) {
-        message.success(
-          `Rate limit profile "${profile.name}" created successfully`,
-        );
-      } else {
-        if (response.status === 401) {
-          window.location.href = "/login";
-          return;
+    const filtered = [...this.state.wafTemplates, ...this.state.jailTemplates].filter(
+      (t) => {
+        if (
+          search &&
+          !t.name.toLowerCase().includes(search) &&
+          !t.description.toLowerCase().includes(search)
+        ) {
+          return false;
         }
-        const err = await response.json();
-        message.error(
-          `Failed to create profile: ${err.message || response.statusText}`,
-        );
-      }
-    } catch (e) {
-      message.error(`Error: ${e instanceof Error ? e.message : String(e)}`);
-    } finally {
-      this.setState({ applying: null });
-    }
-  };
-
-  // --- Grouping and rendering ---
-
-  private groupedByCategory = (
-    templates: RuleTemplate[],
-  ): Map<string, RuleTemplate[]> => {
-    const groups = new Map<string, RuleTemplate[]>();
-    const searchLower = this.state.search.toLowerCase();
-    const filtered = templates.filter(
-      (t) =>
-        t.name.toLowerCase().includes(searchLower) ||
-        t.description.toLowerCase().includes(searchLower) ||
-        t.category.toLowerCase().includes(searchLower),
+        if (pipelineFilter !== "all" && t.pipeline !== pipelineFilter) {
+          return false;
+        }
+        if (severityFilter !== "all" && t.severity !== severityFilter) {
+          return false;
+        }
+        if (categoryFilter !== "all" && t.category !== categoryFilter) {
+          return false;
+        }
+        if (actionFilter !== "all") {
+          const action = t.allow ? "allow" : "deny";
+          if (action !== actionFilter) return false;
+        }
+        if (mustHaveOnly && !t.must_have) return false;
+        return true;
+      },
     );
-    // Separate must_have templates into their own group
-    const mustHave: RuleTemplate[] = [];
-    for (const template of filtered) {
-      if (template.must_have) {
-        mustHave.push(template);
-      } else {
-        const cat = template.category;
-        if (!groups.has(cat)) {
-          groups.set(cat, []);
-        }
-        groups.get(cat)!.push(template);
-      }
-    }
-    if (mustHave.length > 0) {
-      groups.set("__must_have__", mustHave);
-    }
-    return groups;
+
+    return filtered.sort((a, b) => {
+      if (a.must_have !== b.must_have) return a.must_have ? -1 : 1;
+      return a.weight - b.weight;
+    });
   };
 
-  private renderTemplateCard = (t: RuleTemplate) => {
-    const isJail = t.pipeline === "jail";
+  private categoryOptions = (): SelectOption[] => {
+    const categories = [
+      ...new Set(
+        [...this.state.wafTemplates, ...this.state.jailTemplates].map(
+          (t) => t.category,
+        ),
+      ),
+    ].sort((a, b) => a.localeCompare(b));
+    return [
+      { value: "all", label: "All" },
+      ...categories.map((category) => ({ value: category, label: category })),
+    ];
+  };
 
-    // Collect all filter tags for the "+N more" logic
-    const filterTags: { key: string; label: string; color: string }[] = [];
-    if (t.path)
-      filterTags.push({ key: "path", label: `Path: ${t.path}`, color: "blue" });
-    if (t.query)
-      filterTags.push({
-        key: "query",
-        label: `Query: ${t.query}`,
-        color: "purple",
-      });
-    if (t.country_code)
-      filterTags.push({
-        key: "country_code",
-        label: `Geo: ${t.country_code}`,
-        color: "cyan",
-      });
-    if (t.user_agent)
-      filterTags.push({
-        key: "user_agent",
-        label: `UA: ${t.user_agent}`,
-        color: "volcano",
-      });
-    if (t.method)
-      filterTags.push({
-        key: "method",
-        label: `Method: ${t.method}`,
-        color: "magenta",
-      });
-    if (t.referer)
-      filterTags.push({
-        key: "referer",
-        label: `Referer: ${t.referer}`,
-        color: "purple",
-      });
-    if (t.content_type)
-      filterTags.push({
-        key: "content_type",
-        label: `Content-Type: ${t.content_type}`,
-        color: "cyan",
-      });
-    if (t.city_name)
-      filterTags.push({
-        key: "city_name",
-        label: `City: ${t.city_name}`,
-        color: "geekblue",
-      });
-    if (t.country_name)
-      filterTags.push({
-        key: "country_name",
-        label: `Country: ${t.country_name}`,
-        color: "green",
-      });
-    if (t.ip_address)
-      filterTags.push({
-        key: "ip_address",
-        label: `IP: ${t.ip_address}`,
-        color: "lime",
-      });
-    if (t.protocol)
-      filterTags.push({
-        key: "protocol",
-        label: `Protocol: ${t.protocol}`,
-        color: "gold",
-      });
-    if (t.accept_language)
-      filterTags.push({
-        key: "accept_language",
-        label: `Accept-Lang: ${t.accept_language}`,
-        color: "orange",
-      });
-    if (t.x_request_id)
-      filterTags.push({
-        key: "x_request_id",
-        label: `X-Request-ID: ${t.x_request_id}`,
-        color: "default",
-      });
+  private severityOptions = (): SelectOption[] => [
+    { value: "all", label: "All" },
+    { value: "critico", label: "critico" },
+    { value: "alto", label: "alto" },
+    { value: "medio", label: "medio" },
+    { value: "bajo", label: "bajo" },
+  ];
 
-    const maxVisible = 4;
-    const visibleTags = filterTags.slice(0, maxVisible);
-    const extraCount = filterTags.length - maxVisible;
+  private pipelineOptions: SelectOption[] = [
+    { value: "all", label: "All" },
+    { value: "waf", label: "WAF" },
+    { value: "jail", label: "Jail" },
+  ];
 
-    return (
-      <Card
-        key={t.name}
-        size="small"
-        variant="outlined"
-        style={{ width: "48%", minWidth: 380, marginBottom: 8 }}
-        actions={[
-          <Button
-            type="primary"
-            icon={<ThunderboltOutlined />}
-            loading={this.state.applying === t.name}
-            onClick={() => this.openApplyModal(t)}
-          >
-            Apply
-          </Button>,
-        ]}
-      >
-        <Flex vertical gap="small">
-          <Flex justify="space-between" align="center">
-            <Flex gap="small" align="center">
-              <Text strong style={{ fontSize: 14 }}>
-                {t.name}
-              </Text>
-              {t.must_have && (
-                <Tag color="red" style={{ fontSize: 11, fontWeight: "bold" }}>
-                  🔴 MUST HAVE
-                </Tag>
-              )}
-            </Flex>
-            <Tag color={SEVERITY_COLORS[t.severity] || "default"}>
-              {SEVERITY_LABELS[t.severity] || t.severity}
-            </Tag>
-          </Flex>
-          <Text type="secondary" style={{ fontSize: 12 }}>
-            {t.description}
+  private actionOptions: SelectOption[] = [
+    { value: "all", label: "All" },
+    { value: "allow", label: "Allow" },
+    { value: "deny", label: "Deny" },
+  ];
+
+  private columns = (): TableColumnsType<RuleTemplate> => [
+    {
+      title: "Name",
+      key: "name",
+      render: (_, t) => (
+        <Flex gap={4} align="center">
+          <Text strong style={{ fontSize: 14 }}>
+            {t.name}
           </Text>
-          <Flex wrap gap={4} align="center">
-            {isJail ? (
-              <Tag icon={<LockOutlined />} color="orange">
-                Jail
-              </Tag>
-            ) : (
-              <Tag
-                icon={
-                  t.allow ? <CheckCircleOutlined /> : <CloseCircleOutlined />
-                }
-                color={t.allow ? "success" : "error"}
-              >
-                {t.allow ? "Allow" : "Deny"}
-              </Tag>
-            )}
-            {visibleTags.map((ft) => (
-              <Tag key={ft.key} color={ft.color}>
-                {ft.label}
-              </Tag>
-            ))}
-            {extraCount > 0 && (
-              <Tag
-                color="default"
-                style={{ cursor: "pointer" }}
-                title={filterTags
-                  .slice(maxVisible)
-                  .map((ft) => ft.label)
-                  .join("\n")}
-              >
-                +{extraCount} more
-              </Tag>
-            )}
-          </Flex>
-          {isJail && t.rate_limit_profile_name && (
-            <Tag color="orange" style={{ fontSize: 11 }}>
-              Profile: {t.rate_limit_profile_name}
+          {t.must_have && (
+            <Tag color="red" style={{ fontSize: 11, fontWeight: "bold" }}>
+              MUST HAVE
             </Tag>
           )}
         </Flex>
-      </Card>
-    );
-  };
-
-  private renderSection = (templates: RuleTemplate[], pipeline: string) => {
-    const groups = this.groupedByCategory(templates);
-    const isJail = pipeline === "jail";
-
-    if (groups.size === 0) {
-      return (
-        <Empty
-          description={`No ${isJail ? "Jail" : "WAF"} templates found`}
-          style={{ padding: 48 }}
-        />
-      );
-    }
-
-    // Build collapse items: must_have first, then rest alphabetically
-    const collapseItems: NonNullable<CollapseProps["items"]> = [];
-
-    // Must-have group (always first)
-    const mustHaveGroup = groups.get("__must_have__");
-    if (mustHaveGroup) {
-      collapseItems.push({
-        key: "__must_have__",
-        label: (
-          <Flex
-            justify="space-between"
-            style={{ width: "100%", paddingRight: 16 }}
+      ),
+    },
+    {
+      title: "Pipeline",
+      key: "pipeline",
+      render: (_, t) =>
+        t.pipeline === "jail" ? (
+          <Tag icon={<LockOutlined />} color="orange">
+            Jail
+          </Tag>
+        ) : (
+          <Tag color="blue">WAF</Tag>
+        ),
+    },
+    {
+      title: "Category",
+      key: "category",
+      render: (_, t) => <Tag>{CATEGORY_LABELS[t.category] || t.category}</Tag>,
+    },
+    {
+      title: "Severity",
+      key: "severity",
+      render: (_, t) => (
+        <Tag color={SEVERITY_COLORS[t.severity] || "default"}>
+          {SEVERITY_LABELS[t.severity] || t.severity}
+        </Tag>
+      ),
+    },
+    {
+      title: "Action",
+      key: "action",
+      render: (_, t) =>
+        t.pipeline === "jail" ? (
+          <Tag color="purple">Rate limit</Tag>
+        ) : (
+          <Tag
+            icon={t.allow ? <CheckCircleOutlined /> : <CloseCircleOutlined />}
+            color={t.allow ? "success" : "error"}
           >
-            <Flex gap="small" align="center">
-              <SafetyOutlined style={{ color: "#ff4d4f" }} />
-              <Text strong style={{ fontSize: 15, color: "#ff4d4f" }}>
-                🔴 Must Have
-              </Text>
-            </Flex>
-            <Tag color="red">
-              {mustHaveGroup.length} template
-              {mustHaveGroup.length !== 1 ? "s" : ""}
-            </Tag>
-          </Flex>
+            {t.allow ? "Allow" : "Deny"}
+          </Tag>
         ),
-        children: (
-          <Flex wrap gap="small" style={{ width: "100%" }}>
-            {mustHaveGroup.map((t) => this.renderTemplateCard(t))}
-          </Flex>
+    },
+    {
+      title: "Profile",
+      key: "profile",
+      render: (_, t) =>
+        t.pipeline === "jail" && t.rate_limit_profile_name ? (
+          <Tag color="orange" style={{ fontSize: 11 }}>
+            {t.rate_limit_profile_name}
+          </Tag>
+        ) : (
+          <Text type="secondary">—</Text>
         ),
-        style: { background: "#fff1f0", borderRadius: 6 },
-      });
-    }
+    },
+    {
+      title: "Actions",
+      key: "apply",
+      width: 140,
+      render: (_, t) => (
+        <Button
+          type="primary"
+          aria-label={`Apply template ${t.name}`}
+          icon={<ThunderboltOutlined />}
+          loading={this.state.applying === t.name}
+          onClick={() => this.openApplyModal(t)}
+        >
+          Apply
+        </Button>
+      ),
+    },
+  ];
 
-    // Alphabetical groups
-    const alphaItems = Array.from(groups.entries())
-      .filter(([key]) => key !== "__must_have__")
-      .sort(([a], [b]) => a.localeCompare(b))
-      .map(([category, templates]) => ({
-        key: category,
-        label: (
-          <Flex
-            justify="space-between"
-            style={{ width: "100%", paddingRight: 16 }}
-          >
-            <Flex gap="small" align="center">
-              {CATEGORY_ICONS[category] || <AppstoreOutlined />}
-              <Text strong style={{ fontSize: 15 }}>
-                {CATEGORY_LABELS[category] ||
-                  category.charAt(0).toUpperCase() + category.slice(1)}
-              </Text>
-            </Flex>
-            <Tag>
-              {templates.length} template{templates.length !== 1 ? "s" : ""}
-            </Tag>
-          </Flex>
-        ),
-        children: (
-          <Flex wrap gap="small" style={{ width: "100%" }}>
-            {templates.map((t) => this.renderTemplateCard(t))}
-          </Flex>
-        ),
-      }));
+  private renderFilterDetails = (t: RuleTemplate): React.ReactNode => {
+    const details = FILTER_DETAIL_FIELDS.flatMap(({ key, label }) => {
+      const value = t[key];
+      if (value === null || value === undefined) return [];
+      const display = typeof value === "boolean" ? (value ? "yes" : "no") : value;
+      return [
+        <Tag key={key} color="blue">
+          {label}: {display}
+        </Tag>,
+      ];
+    });
 
-    collapseItems.push(...alphaItems);
-
-    // Default active keys: must_have (always) + first 2 alphabetical
-    const defaultActiveKeys = [
-      "__must_have__",
-      ...alphaItems.slice(0, 2).map((c) => c.key),
-    ];
-
-    return (
-      <Collapse
-        items={collapseItems}
-        defaultActiveKey={defaultActiveKeys}
-        size="small"
-        style={{ background: "transparent" }}
-      />
-    );
-  };
-
-  private renderProfilesSection = () => {
-    const searchLower = this.state.search.toLowerCase();
-    const filtered = this.state.profiles.filter(
-      (p) =>
-        p.name.toLowerCase().includes(searchLower) ||
-        p.description.toLowerCase().includes(searchLower),
-    );
-
-    if (filtered.length === 0) {
+    if (details.length === 0) {
       return (
-        <Empty
-          description="No rate limit profiles found"
-          style={{ padding: 48 }}
-        />
+        <Text type="secondary">
+          No filters — this template matches all traffic.
+        </Text>
       );
     }
 
     return (
-      <Flex wrap gap="small" style={{ width: "100%" }}>
-        {filtered.map((p) => (
-          <Card
-            key={p.id}
-            size="small"
-            variant="outlined"
-            style={{ width: "48%", minWidth: 380, marginBottom: 8 }}
-            actions={[
-              <Button
-                type="primary"
-                icon={<ThunderboltOutlined />}
-                loading={this.state.applying === p.name}
-                onClick={() => this.openProfileApplyModal(p)}
-              >
-                Apply
-              </Button>,
-            ]}
-          >
-            <Flex vertical gap="small">
-              <Text strong style={{ fontSize: 14 }}>
-                {p.name}
-              </Text>
-              <Text type="secondary" style={{ fontSize: 12 }}>
-                {p.description}
-              </Text>
-              <Flex wrap gap={4} align="center">
-                <Tag>Max retry: {p.max_retry}</Tag>
-                <Tag>Find time: {p.find_time_seconds}s</Tag>
-                <Tag>Ban time: {p.ban_time_seconds}s</Tag>
-                {p.bantime_increment && (
-                  <Tag color="orange">
-                    Escalation: {p.bantime_multipliers.join("×, ")}×
-                  </Tag>
-                )}
-                <Tag>
-                  Max ban:{" "}
-                  {p.bantime_maxtime_seconds >= 86400
-                    ? `${Math.floor(p.bantime_maxtime_seconds / 86400)}d`
-                    : `${p.bantime_maxtime_seconds}s`}
-                </Tag>
-                <Tag>Decay: {p.ban_count_decay_days}d</Tag>
-                <Tag color="red">Fail: {p.fail_codes.join(", ")}</Tag>
-              </Flex>
-            </Flex>
-          </Card>
-        ))}
+      <Flex wrap gap={4} align="center">
+        {details}
       </Flex>
     );
   };
 
   render = () => {
     const selected = this.state.selectedTemplate;
-    const selectedProfile = this.state.selectedProfile;
-
-    const tabItems: TabsProps["items"] = [
-      {
-        key: "waf",
-        label: (
-          <Flex gap={4} align="center">
-            <CheckCircleOutlined style={{ color: "#52c41a" }} />
-            <span>WAF Templates</span>
-            <Tag style={{ marginLeft: 4 }}>
-              {this.state.wafTemplates.length}
-            </Tag>
-          </Flex>
-        ),
-        children: this.renderSection(this.state.wafTemplates, "waf"),
-      },
-      {
-        key: "jail",
-        label: (
-          <Flex gap={4} align="center">
-            <LockOutlined style={{ color: "#fa8c16" }} />
-            <span>Jail Templates</span>
-            <Tag style={{ marginLeft: 4 }}>
-              {this.state.jailTemplates.length}
-            </Tag>
-          </Flex>
-        ),
-        children: this.renderSection(this.state.jailTemplates, "jail"),
-      },
-      {
-        key: "profiles",
-        label: (
-          <Flex gap={4} align="center">
-            <WarningOutlined style={{ color: "#722ed1" }} />
-            <span>Rate Limit Profiles</span>
-            <Tag style={{ marginLeft: 4 }}>{this.state.profiles.length}</Tag>
-          </Flex>
-        ),
-        children: this.renderProfilesSection(),
-      },
-    ];
 
     if (this.state.loading) {
       return (
@@ -776,29 +510,89 @@ export default class TemplatesPage extends React.Component<
       );
     }
 
+    const templates = this.visibleTemplates();
+
     return (
       <Flex vertical gap="middle" style={{ padding: 24 }}>
-        <Flex justify="space-between" align="center">
+        <Flex wrap gap="middle" align="center">
           <Input
             prefix={<SearchOutlined />}
+            aria-label="Search templates"
             placeholder="Search templates..."
             style={{ width: 320 }}
             value={this.state.search}
             onChange={(e) => this.setState({ search: e.target.value })}
             allowClear
           />
+          <Select
+            aria-label="Pipeline"
+            style={{ width: 140 }}
+            placeholder="All"
+            value={this.state.pipelineFilter === "all" ? undefined : this.state.pipelineFilter}
+            options={this.pipelineOptions}
+            onChange={(value: PipelineFilter) =>
+              this.setState({ pipelineFilter: value })
+            }
+          />
+          <Select
+            aria-label="Severity"
+            style={{ width: 140 }}
+            placeholder="All"
+            value={this.state.severityFilter === "all" ? undefined : this.state.severityFilter}
+            options={this.severityOptions()}
+            onChange={(value: string) =>
+              this.setState({ severityFilter: value })
+            }
+          />
+          <Select
+            aria-label="Category"
+            style={{ width: 220 }}
+            placeholder="All"
+            value={this.state.categoryFilter === "all" ? undefined : this.state.categoryFilter}
+            options={this.categoryOptions()}
+            onChange={(value: string) =>
+              this.setState({ categoryFilter: value })
+            }
+          />
+          <Select
+            aria-label="Action"
+            style={{ width: 140 }}
+            placeholder="All"
+            value={this.state.actionFilter === "all" ? undefined : this.state.actionFilter}
+            options={this.actionOptions}
+            onChange={(value: ActionFilter) =>
+              this.setState({ actionFilter: value })
+            }
+          />
+          <Flex gap={4} align="center">
+            <Switch
+              aria-label="Must have"
+              checked={this.state.mustHaveOnly}
+              onChange={(checked) => this.setState({ mustHaveOnly: checked })}
+            />
+            <Text>Must have</Text>
+          </Flex>
         </Flex>
+
         <Text type="secondary">
-          Browse templates from your existing rules. Select a template to apply
-          it as a new rule. Templates are grouped by category and pipeline (WAF
-          for allow/deny, Jail for rate limiting).
+          Browse the rule templates. Expand a row to see the full filters a
+          template carries, or apply it to create a new rule.
         </Text>
-        <Tabs
-          defaultActiveKey="waf"
-          items={tabItems}
-          size="large"
-          onChange={(key) => this.setState({ activeTab: key })}
-        />
+
+        {templates.length === 0 ? (
+          <Empty
+            description={this.state.loadError ?? "No templates found"}
+            style={{ padding: 48 }}
+          />
+        ) : (
+          <Table<RuleTemplate>
+            rowKey={(t) => t.name}
+            columns={this.columns()}
+            dataSource={templates}
+            pagination={false}
+            expandable={{ expandedRowRender: this.renderFilterDetails }}
+          />
+        )}
 
         {/* Rule Template Apply modal */}
         <Modal
@@ -1096,101 +890,6 @@ export default class TemplatesPage extends React.Component<
                 allowClear
               />
             </Flex>
-          </Flex>
-        </Modal>
-
-        {/* Profile Template Apply modal */}
-        <Modal
-          title={`Apply Profile: ${selectedProfile?.name || ""}`}
-          open={this.state.profileModalVisible}
-          onOk={this.confirmApplyProfile}
-          onCancel={this.closeProfileModal}
-          okText="Create Profile"
-          cancelText="Cancel"
-          width={560}
-        >
-          <Flex vertical gap="middle">
-            <Text type="secondary">{selectedProfile?.description}</Text>
-
-            {/* ── Preview: what will be created ── */}
-            <div
-              style={{
-                background: "var(--color-bg-layout)",
-                borderRadius: 8,
-                border: "1px solid var(--color-border)",
-                padding: 16,
-              }}
-            >
-              <Text
-                strong
-                style={{ fontSize: 15, marginBottom: 12, display: "block" }}
-              >
-                ⚡ Rate limit profile to be created
-              </Text>
-
-              <Flex vertical gap="small">
-                <Flex align="center" gap="small">
-                  <Text strong style={{ width: 100 }}>
-                    Max retry:
-                  </Text>
-                  <Tag>{selectedProfile?.max_retry} requests</Tag>
-                </Flex>
-                <Flex align="center" gap="small">
-                  <Text strong style={{ width: 100 }}>
-                    Find time:
-                  </Text>
-                  <Tag>{selectedProfile?.find_time_seconds}s</Tag>
-                </Flex>
-                <Flex align="center" gap="small">
-                  <Text strong style={{ width: 100 }}>
-                    Ban time:
-                  </Text>
-                  <Tag>{selectedProfile?.ban_time_seconds}s</Tag>
-                </Flex>
-                <Flex align="center" gap="small">
-                  <Text strong style={{ width: 100 }}>
-                    Escalation:
-                  </Text>
-                  {selectedProfile?.bantime_increment ? (
-                    <Tag color="orange">
-                      Enabled (
-                      {selectedProfile?.bantime_multipliers.join("×, ")}×)
-                    </Tag>
-                  ) : (
-                    <Tag>Disabled</Tag>
-                  )}
-                </Flex>
-                <Flex align="center" gap="small">
-                  <Text strong style={{ width: 100 }}>
-                    Max ban:
-                  </Text>
-                  <Tag>
-                    {(selectedProfile?.bantime_maxtime_seconds ?? 0) >= 86400
-                      ? `${Math.floor((selectedProfile?.bantime_maxtime_seconds ?? 0) / 86400)}d`
-                      : `${selectedProfile?.bantime_maxtime_seconds ?? 0}s`}
-                  </Tag>
-                </Flex>
-                <Flex align="center" gap="small">
-                  <Text strong style={{ width: 100 }}>
-                    Decay:
-                  </Text>
-                  <Tag>{selectedProfile?.ban_count_decay_days}d</Tag>
-                </Flex>
-                <Flex align="center" gap="small">
-                  <Text strong style={{ width: 100 }}>
-                    Fail codes:
-                  </Text>
-                  <Tag color="red">
-                    {selectedProfile?.fail_codes.join(", ")}
-                  </Tag>
-                </Flex>
-              </Flex>
-            </div>
-
-            <Text style={{ fontSize: 12 }}>
-              This will create a new rate limit profile with the settings above.
-              You can then assign it to rules from the Rules page.
-            </Text>
           </Flex>
         </Modal>
       </Flex>
