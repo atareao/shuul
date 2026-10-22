@@ -79,13 +79,6 @@ entre sí.
 
 ### Requirement: Limpieza periódica de baneos caducados en DB
 
-> **Marcador de la propuesta — decisión pendiente de aprobación.** Este requisito
-> se implementa sólo si el usuario aprueba la opción B2 de `design.md` §D3; si la
-> rechaza, se retira este requirement del delta antes del archivado. Conectar la
-> limpieza cambia la semántica de la restauración del escalado: sólo los baneos
-> vivos en el momento de la carga restaurarían su nivel. Este párrafo se elimina
-> al aprobar la opción.
-
 El task de fondo de limpieza —el que corre cada 60 s en `backend/src/main.rs`—
 SHALL invocar `BanManager::cleanup_expired_db(pool)` además de
 `BanManager::cleanup_expired()` (limpieza en memoria), de modo que las filas cuyo

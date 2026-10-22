@@ -127,10 +127,11 @@ y sólo la DB se corrompe. Un test que sólo mira `manager.bans` o
 que hace hoy `test_load_from_db_multiple_ips`—. El punto de observación tiene que
 ser la DB.
 
-### D3. ¿Entra B2 (limpieza periódica de la DB) en este change? — DECISIÓN PENDIENTE
+### D3. B2 entra en este change (decidido por el usuario el 2026-10-22)
 
-**Esta decisión se somete explícitamente al usuario.** El requirement nuevo queda
-escrito en el delta, pero su implementación **no** se aborda sin aprobación.
+**B2 está aprobado: la conexión de `cleanup_expired_db` al task de 60 s entra en
+este change.** Decisión explícita del usuario (2026-10-22); ya no es una opción
+abierta.
 
 El problema es real y medido: `cleanup_expired_db` es código muerto y **22 filas**
 con `expired = 0` ya están caducadas (la más antigua, el `rowid = 1` del 22 de
@@ -138,35 +139,31 @@ septiembre). La tabla crece sin límite: 1410 filas, de las que 1379 ya están
 marcadas. **No hay impacto en la UI** (`list_handler` sirve desde memoria y
 `cleanup_expired()` descarta las caducadas cada 60 s).
 
-La consecuencia que exige aprobación es de **semántica del escalado**: hoy las
-filas caducadas pero no marcadas **restauran `escalation_counts` al arrancar**
-(`load_from_db` restaura el nivel máximo histórico por IP). Si el task de 60 s las
-marca `expired = 1`, sólo los baneos **vivos en el momento de la carga**
-restaurarán su nivel. Es un cambio observable: un IP con historial de bans ya
-caducados volvería a empezar en nivel 0 tras el reinicio.
+La consecuencia que se asume con esta decisión es de **semántica del escalado**:
+hoy las filas caducadas pero no marcadas **restauran `escalation_counts` al
+arrancar** (`load_from_db` restaura el nivel máximo histórico por IP). Con el task
+de 60 s marcándolas `expired = 1`, sólo los baneos **vivos en el momento de la
+carga** restaurarán su nivel. Es un cambio observable y **asumido**: un IP con
+historial de bans ya caducados vuelve a empezar en nivel 0 tras el reinicio.
 
-**Opciones, con recomendación:**
+**Rationale de la decisión.** El bug y el código muerto son la misma historia: el
+`UPDATE` de `load_from_db` existe precisamente «para que la limpieza periódica los
+elimine» (doc-comment), y esa limpieza periódica **nunca se conectó**. Arreglar B1
+sin B2 dejaría la tabla creciendo sin límite y la promesa del contrato a medias. El
+cambio de semántica del escalado es **el comportamiento correcto**: el escalado
+debe decaer con los baneos, no perpetuarse por filas que ya no están vivas.
+Aprovecha que ya se toca el fichero y el mismo requisito de persistencia. El
+scenario correspondiente del delta —la restauración de `escalation_counts` sólo
+considera los baneos vivos en la carga— es **normativo**.
 
-- **B2 dentro de este change (recomendado).** El bug y el código muerto son la
-  misma historia: el `UPDATE` de `load_from_db` existe precisamente «para que la
-  limpieza periódica los elimine» (doc-comment), y esa limpieza periódica **nunca
-  se conectó**. Arreglar B1 sin B2 deja la tabla creciendo sin límite y la
-  promesa del contrato a medias. El cambio de semántica del escalado es **el
-  comportamiento correcto**: el escalado debe decaer con los baneos, no
-  perpetuarse por filas que ya no están vivas. Aprovecha que ya se toca el
-  fichero y el mismo requisito de persistencia.
-- **B2 fuera, en un change propio.** Mantiene este change mínimo y con un solo
-  efecto (el `UPDATE`), lo que hace la regresión más fácil de atribuir. A cambio,
+**Alternativas descartadas.**
+
+- **B2 fuera, en un change propio.** Mantendría este change mínimo y con un solo
+  efecto (el `UPDATE`), lo que hace la regresión más fácil de atribuir. Descartada:
   deja el código muerto en pie y la tabla creciendo, y obliga a un segundo
-  archivado para algo que comparte causa raíz. Elegible si el usuario quiere
-  **sólo** B1 («B1 sí, B2 no»).
-- **B2 nunca.** No se recomienda: el crecimiento de la tabla es ilimitado y el
+  archivado para algo que comparte causa raíz con B1.
+- **B2 nunca.** Descartada: el crecimiento de la tabla es ilimitado y el
   `#[allow(dead_code)]` señala una intención incumplida desde su creación.
-
-Si el usuario aprueba B2, el enunciado del escalado en `design.md` §D3 y el
-scenario correspondiente del delta pasan a ser normativos. Si lo rechaza, se
-**elimina** el requirement ADDED y su scenario, y el `proposal.md` pasa a
-declarar B2 como non-goal.
 
 ### D4. Alcance: sin frontend, sin migración, y sin rescate de lo barrido
 
@@ -174,26 +171,27 @@ El change es **sólo backend**. No hay cambio de esquema ni migración: el `UPDA
 es lógica, y la columna `expired` ya existe. El frontend no cambia: `list_handler`
 sirve desde memoria.
 
-**Los baneos ya barridos en `co1` no se recuperan.** El `UPDATE` los marcó
-`expired = 1` y no hay forma fiable de distinguirlos de los caducados de verdad
-—el marcado no guarda la causa—. La única vía de rescate sería recalcular
-`banned_at + ban_duration_seconds` sobre las filas `expired = 1`, que hoy daría
-**7 filas** todavía válidas; pero ese cálculo no distingue una fila barrida por el
-bug de una caducada de verdad que el task ya hubiera tocado, ni de una desbaneada
-a mano. Se deja como **pregunta abierta** (§Open Questions): valorar si merece la
-pena un script de rescate de una sola vez es una decisión del usuario, no un
-supuesto de este change.
+**Los baneos ya barridos en `co1` no se recuperan: decisión explícita del usuario
+(2026-10-22), no un supuesto.** El `UPDATE` los marcó `expired = 1` y no hay forma
+fiable de distinguirlos de los caducados de verdad —el marcado no guarda la
+causa—. La única vía de rescate sería recalcular `banned_at +
+ban_duration_seconds` sobre las filas `expired = 1`, que hoy daría **7 filas**
+todavía válidas; pero ese cálculo no distingue una fila barrida por el bug de una
+caducada de verdad que el task ya hubiera tocado, ni de una **desbaneada a mano**
+—resucitaría un baneo que un operador levantó—. Por eso **no se prepara ningún
+script de rescate**. Este change arregla el futuro, no el pasado.
 
 ## Risks / Trade-offs
 
 - **Cambio de comportamiento de la limpieza**: hoy se marca casi todo; después se
   marcará sólo lo que es duplicado. Es el arreglo, pero es observable en la DB:
   el recuento de filas activas sube y deja de colapsar a una sola.
-- **Si se aprueba B2, la restauración del escalado cambia** (§D3): sólo los baneos
-  vivos al cargar restauran su nivel. Es intencionado, pero es un cambio
-  observable y por eso se somete a aprobación explícita.
-- **Los baneos ya perdidos en producción no se recuperan** (§D4). Este change
-  arregla el futuro, no el pasado; el rescate es una pregunta abierta.
+- **La restauración del escalado cambia** (§D3, decidido): sólo los baneos vivos
+  al cargar restauran su nivel. Es intencionado —el escalado decae con los baneos—
+  y es el precio asumido de conectar la limpieza periódica.
+- **Los baneos ya perdidos en producción no se recuperan** (§D4, decidido por el
+  usuario): no se prepara script de rescate. Este change arregla el futuro, no el
+  pasado.
 - **`MIN(rowid)` podría reaparecer** en un futuro refactor. Mitigación: el
   `#### Contract` del delta lo prohíbe por escrito y el enunciado fija la
   semántica por partición; el test de «varias particiones intactas» (D2) lo
@@ -209,18 +207,22 @@ No hay migración de datos ni de esquema.
 2. Verificar en la DB de producción que el recuento de filas activas ya no colapsa
    a 1: `SELECT COUNT(*) FROM bans WHERE expired = 0` debe ser ≥ el número de
    particiones activas.
-3. Si se aprueba B2, comprobar que el task de 60 s marca las filas caducadas
-   (`expired = 0 AND banned_at + ban_duration_seconds < now` → 0 filas).
+3. El task de 60 s marca las filas caducadas: comprobar que
+   `expired = 0 AND banned_at + ban_duration_seconds < now` devuelve 0 filas.
 4. Rollback: revertir la imagen. No hay estado que deshacer —el único efecto es
    sobre la columna `expired`, y el comportamiento anterior no requiere
    restaurarla.
 
 ## Open Questions
 
-- **¿Entra B2 en este change?** Es §D3 y requiere decisión explícita del usuario.
-  Recomendación: **sí**. Si la respuesta es «B1 sí, B2 no», se elimina el
-  requirement ADDED del delta y su scenario.
+Ninguna abierta. Las dos preguntas que planteaba este change quedaron **resueltas
+por el usuario el 2026-10-22**, y se dejan aquí como memoria de la decisión:
+
+- **¿Entra B2 en este change?** **Sí, entra.** Resuelto en §D3: la conexión de
+  `cleanup_expired_db` al task de 60 s es parte del alcance aprobado, con la
+  consecuencia asumida sobre la restauración del escalado.
 - **¿Merece la pena un script de rescate de los baneos ya barridos en `co1`?**
-  Hoy el cálculo `banned_at + ban_duration_seconds` da **7 filas** todavía
-  válidas, pero no distingue las barridas por el bug de las caducadas de verdad o
-  desbaneadas a mano. Se deja abierta (§D4); no forma parte de este change.
+  **No.** Decisión explícita del usuario: no se rescata y no se prepara script. El
+  cálculo `banned_at + ban_duration_seconds` daría **7 filas** todavía válidas,
+  pero no distingue las barridas por el bug de las caducadas de verdad ni de las
+  desbaneadas a mano —resucitaría un baneo levantado por un operador—. Ver §D4.

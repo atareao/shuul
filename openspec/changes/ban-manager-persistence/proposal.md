@@ -26,16 +26,14 @@ No está incompleta: está equivocada.
   **MODIFIED** del requirement `load_from_db limpia duplicados legacy en DB`,
   incluido su `#### Contract`, que hoy consagra el SQL roto.
 
-- **B. (Sujeto a aprobación — ver §D3 de `design.md`.) Limpieza periódica de la
-  DB.** `BanManager::cleanup_expired_db(pool)` existe, está marcado
-  `#[allow(dead_code)]` y **nunca se llama**. El task de fondo de 60 s limpia
-  memoria (`cleanup_expired()`) y rate limiters, pero no la tabla: las filas
-  temporalmente muertas se quedan con `expired = 0` para siempre y la tabla crece
-  sin límite. Conectar la llamada tiene una **consecuencia semántica** que hay
-  que aprobar explícitamente: sólo los baneos vivos en el momento de la carga
-  restaurarían su nivel de escalado entre reinicios. El requirement nuevo
-  (`cleanup_expired_db` en el task periódico) queda escrito, pero su
-  implementación **no** se aborda sin la aprobación del usuario.
+- **B. Limpieza periódica de la DB.** `BanManager::cleanup_expired_db(pool)`
+  existe, está marcado `#[allow(dead_code)]` y **nunca se llama**. El task de
+  fondo de 60 s limpia memoria (`cleanup_expired()`) y rate limiters, pero no la
+  tabla: las filas temporalmente muertas se quedan con `expired = 0` para siempre
+  y la tabla crece sin límite. Conectar la llamada tiene una **consecuencia
+  semántica asumida** (aprobada el 2026-10-22): sólo los baneos vivos en el
+  momento de la carga restauran su nivel de escalado entre reinicios. El
+  requirement nuevo (`cleanup_expired_db` en el task periódico) es normativo.
 
 - **C. Tests que asertan la DB.** Los tests nuevos consultan **las filas de la
   tabla `bans`** (`expired`), no sólo el estado en memoria. El agujero que dejó
@@ -61,9 +59,8 @@ contrato de una ya existente (`ban-manager`).
   - *load_from_db limpia duplicados legacy en DB* (**MODIFIED**): su
     `#### Contract` sustituye el `MIN(rowid)` global por la marcación de
     `rn > 1` por partición, y su semántica queda fijada en el enunciado.
-  - *Limpieza periódica de baneos caducados en DB* (**ADDED**, pendiente de
-    aprobación según §D3): el task de fondo de 60 s invoca
-    `cleanup_expired_db(pool)`.
+  - *Limpieza periódica de baneos caducados en DB* (**ADDED**): el task de fondo
+    de 60 s invoca `cleanup_expired_db(pool)`.
 
 ## Impact
 
@@ -73,11 +70,11 @@ contrato de una ya existente (`ban-manager`).
     decide qué es un duplicado.
   - `cleanup_expired_db` (líneas **554-570**): pasa de código muerto
     (`#[allow(dead_code)]`, sin llamadas en todo `backend/src/`) a invocarse desde
-    el task periódico — **si se aprueba B**.
+    el task periódico.
   - el módulo `tests` (≈1446-1560): los tests de duplicados asertan el estado de
     la DB.
 - `backend/src/main.rs` (líneas **292-313**): el task de limpieza de 60 s añade
-  la llamada a `cleanup_expired_db(&pool)` — **si se aprueba B**.
+  la llamada a `cleanup_expired_db(&pool)`.
 - `openspec/specs/ban-manager/spec.md`: el contrato que este change corrige.
 - **Beneficio, no regresión.** Un baneo deja de desaparecer tras un reinicio; el
   WAF y el Jail no cambian su comportamiento en caliente, y la UI no cambia
@@ -125,11 +122,12 @@ con ese mismo `MIN(rowid)`) y los tests no cubren el caso que rompe:
 
 ## Non-goals
 
-- **No se recuperan los baneos ya barridos en `co1`.** El `UPDATE` los marcó y no
-  hay forma fiable de distinguirlos de los caducados de verdad, salvo por el
-  cálculo `banned_at + ban_duration_seconds` —que hoy da 7 filas válidas—. Un
-  script de rescate de una sola vez queda como pregunta abierta (§D4), no como
-  parte de este change.
+- **No se recuperan los baneos ya barridos en `co1`** — **decisión explícita del
+  usuario (2026-10-22), no una duda pendiente**. El `UPDATE` los marcó y no hay
+  forma fiable de distinguirlos de los caducados de verdad, salvo por el cálculo
+  `banned_at + ban_duration_seconds` —que hoy da 7 filas válidas—, que además
+  resucitaría baneos levantados a mano. **No se prepara ningún script de rescate**
+  (§D4).
 - **No se cambia** la API HTTP, ni el `list_handler`, ni el frontend: la UI sirve
   desde memoria y muestra exactamente lo mismo.
 - **No se añade** ninguna migración: el esquema no cambia.
