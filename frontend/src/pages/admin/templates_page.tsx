@@ -106,7 +106,7 @@ const CATEGORY_LABELS: Record<string, string> = {
 };
 
 /** Filtros de una plantilla, en el orden en que se muestran al expandir la fila. */
-const FILTER_DETAIL_FIELDS: { key: TemplateFilterFields; label: string }[] = [
+const FILTER_DETAIL_FIELDS: { key: keyof TemplateFilterFields; label: string }[] = [
   { key: "path", label: "Path" },
   { key: "query", label: "Query" },
   { key: "method", label: "Method" },
