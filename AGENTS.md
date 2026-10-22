@@ -192,6 +192,11 @@ implementaciones de la petición ni del parseo.
 | **gatewayd** | Socket Unix (`AF_UNIX`) | Backend de menor prioridad: sólo si mantienes gatewayd. Sin puerto, sin regla de firewall | `SHUUL_JOURNALD_SOCKET` |
 | **gatewayd** | TCP | Sólo para un gatewayd en otra máquina o cuando no se puede montar el socket | `SHUUL_JOURNALD_URL` |
 
+Las dos URL base TCP (`SHUUL_DOCKER_URL` y `SHUUL_JOURNALD_URL`) aceptan
+`tcp://` como **sinónimo** de `http://`: es un alias del mismo transporte —misma
+autoridad y misma petición, no una variante— y `endpoint_display()` normaliza
+siempre al esquema efectivo (`http`).
+
 **Precedencia completa** (primer valor definido y no vacío gana; un valor en
 blanco equivale a no definido):
 
@@ -629,10 +634,10 @@ Lógica: si tiene `rate_limit_profile_id` → jail. Si tiene algún filtro → w
 | `MAXMIND_DB_PATH` | ❌ | Ruta a GeoIP database |
 | `RUST_LOG` | ❌ | Nivel de log |
 | `SHUUL_DOCKER_SOCKET` | ❌ | Path del socket de Docker (default: sin definir). Activa la **API de Docker** por `AF_UNIX`; **máxima prioridad** del transporte. En `compose.yml` modo A: `/var/run/docker.sock` |
-| `SHUUL_DOCKER_URL` | ❌ | URL base de un **proxy** de la API de Docker (default: sin definir). Activa la **API de Docker** por TCP. Sólo se usa si `SHUUL_DOCKER_SOCKET` no está definida; un path base en la URL se ignora (y se avisa con `warn!`) |
+| `SHUUL_DOCKER_URL` | ❌ | URL base de un **proxy** de la API de Docker (default: sin definir). Activa la **API de Docker** por TCP; `tcp://` es sinónimo de `http://`. Sólo se usa si `SHUUL_DOCKER_SOCKET` no está definida; un path base en la URL se ignora (y se avisa con `warn!`) |
 | `SHUUL_DOCKER_CONTAINER` | ❌ | Contenedor cuyos access logs se leen. Si falta o está en blanco, cae en `SHUUL_JOURNALD_CONTAINER`; si tampoco, `traefik` |
 | `SHUUL_JOURNALD_SOCKET` | ❌ | Path del socket de gatewayd (default: sin definir). Backend de **menor prioridad** que la API de Docker. Si está definida y no vacía **tiene prioridad** sobre `SHUUL_JOURNALD_URL`. En `compose.yml`: `/run/systemd/journal/gatewayd.sock` |
-| `SHUUL_JOURNALD_URL` | ❌ | URL base de un gatewayd por TCP (default: `http://localhost:19531`). Sólo se usa si ni `SHUUL_DOCKER_*` ni `SHUUL_JOURNALD_SOCKET` están definidas |
+| `SHUUL_JOURNALD_URL` | ❌ | URL base de un gatewayd por TCP (default: `http://localhost:19531`); `tcp://` es sinónimo de `http://`. Sólo se usa si ni `SHUUL_DOCKER_*` ni `SHUUL_JOURNALD_SOCKET` están definidas |
 | `SHUUL_JOURNALD_CONTAINER` | ❌ | Contenedor cuyos access logs se leen (default: `traefik`). Fallback de `SHUUL_DOCKER_CONTAINER` |
 
 Precedencia del transporte del `JournaldReader`: `SHUUL_DOCKER_SOCKET` → `SHUUL_DOCKER_URL` → `SHUUL_JOURNALD_SOCKET` → `SHUUL_JOURNALD_URL` → `http://localhost:19531`. Un valor en blanco cuenta como no definido; dentro de cada backend el socket gana a su URL y se avisa con un `warn!`. Pasar del modo A (socket) al modo B (proxy) —o al revés— es cambiar dos variables y un bloque del `compose.yml`: **nunca recompilar**. El modo TCP de gatewayd sólo hace falta para un gatewayd remoto o cuando no se puede montar el socket; con gatewayd en el mismo host requiere `extra_hosts: host.docker.internal:host-gateway` y exponer `19531` únicamente a la subred del bridge.
