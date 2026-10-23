@@ -272,7 +272,10 @@ describe("LogsPage — state persistence", () => {
   // ─── Scenario 8 (H2.1): el Log Viewer pagina en cliente ──────────────────
 
   it("5.1 pagina en cliente: ocultar un tipo de evento re-pagina las entradas restantes", async () => {
-    // Buffer de 120 entradas (40 «banned» + 80 «admitted»), tamaño de página 50.
+    // Buffer de 120 entradas (40 «banned» + 80 «admitted»). El escenario fija
+    // explícitamente un tamaño de página de 50 (su premisa literal, no el valor
+    // por defecto del visor, que ahora es 10): por eso se elige 50 en el
+    // selector de tamaño antes de medir.
     const entries = [
       ...Array.from({ length: 40 }, (_, i) => makeEntry("banned", i)),
       ...Array.from({ length: 80 }, (_, i) => makeEntry("admitted", i + 40)),
@@ -284,6 +287,17 @@ describe("LogsPage — state persistence", () => {
     getItemSpy.mockReturnValue(null);
 
     render(<InnerPage {...mockProps} />);
+
+    await screen.findByRole("button", { name: "banned" });
+
+    // El selector de tamaño de página lo genera la `Pagination` de antd: su
+    // combobox es el único con nombre accesible "Page Size" y sus opciones son
+    // `role="option"` con `title="<n> / page"`.
+    const user = userEvent.setup();
+    const combo = await screen.findByRole("combobox", { name: "Page Size" });
+    await user.click(combo);
+    await user.click(await screen.findByTitle("50 / page"));
+    await waitFor(() => expect(logRowCount()).toBe(50));
 
     // Sin filtro: 120 entradas, la página muestra 50 y el total reportado es 120.
     await screen.findByRole("button", { name: "banned" });

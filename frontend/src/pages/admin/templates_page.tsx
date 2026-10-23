@@ -143,6 +143,9 @@ interface State {
   categoryFilter: string;
   actionFilter: ActionFilter;
   mustHaveOnly: boolean;
+  // Paginación en cliente: 10 plantillas por página y rangos 10/50/100.
+  page: number;
+  pageSize: number;
   // Rule template apply modal
   modalVisible: boolean;
   selectedTemplate: RuleTemplate | null;
@@ -172,6 +175,8 @@ export default class TemplatesPage extends React.Component<
       categoryFilter: "all",
       actionFilter: "all",
       mustHaveOnly: false,
+      page: 1,
+      pageSize: 10,
       modalVisible: false,
       selectedTemplate: null,
       fqdn: "",
@@ -516,15 +521,20 @@ export default class TemplatesPage extends React.Component<
 
     return (
       <Flex vertical gap="middle" style={{ padding: 24 }}>
-        {/* El buscador ocupa su propia línea, a ancho completo, para no competir
-            por el espacio con los filtros. */}
+        {/* El listado filtra y busca en cliente, así que el conjunto filtrado
+            puede ser más corto que la página actual: si `page` no volviera a 1,
+            el usuario se quedaría en una página fuera de rango y vería la tabla
+            vacía. Por eso la búsqueda y todos los filtros resetean `page`; es el
+            mismo reset que ya aplica `CustomTable`.
+            El buscador, además, ocupa su propia línea a ancho completo para no
+            competir por el espacio con los filtros. */}
         <Input
           prefix={<SearchOutlined />}
           aria-label="Search templates"
           placeholder="Search templates..."
           style={{ width: "100%" }}
           value={this.state.search}
-          onChange={(e) => this.setState({ search: e.target.value })}
+          onChange={(e) => this.setState({ search: e.target.value, page: 1 })}
           allowClear
         />
 
@@ -539,7 +549,7 @@ export default class TemplatesPage extends React.Component<
               value={this.state.pipelineFilter === "all" ? undefined : this.state.pipelineFilter}
               options={this.pipelineOptions}
               onChange={(value: PipelineFilter) =>
-                this.setState({ pipelineFilter: value })
+                this.setState({ pipelineFilter: value, page: 1 })
               }
             />
           </Col>
@@ -551,7 +561,7 @@ export default class TemplatesPage extends React.Component<
               value={this.state.severityFilter === "all" ? undefined : this.state.severityFilter}
               options={this.severityOptions()}
               onChange={(value: string) =>
-                this.setState({ severityFilter: value })
+                this.setState({ severityFilter: value, page: 1 })
               }
             />
           </Col>
@@ -563,7 +573,7 @@ export default class TemplatesPage extends React.Component<
               value={this.state.categoryFilter === "all" ? undefined : this.state.categoryFilter}
               options={this.categoryOptions()}
               onChange={(value: string) =>
-                this.setState({ categoryFilter: value })
+                this.setState({ categoryFilter: value, page: 1 })
               }
             />
           </Col>
@@ -575,7 +585,7 @@ export default class TemplatesPage extends React.Component<
               value={this.state.actionFilter === "all" ? undefined : this.state.actionFilter}
               options={this.actionOptions}
               onChange={(value: ActionFilter) =>
-                this.setState({ actionFilter: value })
+                this.setState({ actionFilter: value, page: 1 })
               }
             />
           </Col>
@@ -584,7 +594,7 @@ export default class TemplatesPage extends React.Component<
               <Switch
                 aria-label="Must have"
                 checked={this.state.mustHaveOnly}
-                onChange={(checked) => this.setState({ mustHaveOnly: checked })}
+                onChange={(checked) => this.setState({ mustHaveOnly: checked, page: 1 })}
               />
               <Text>Must have</Text>
             </Flex>
@@ -606,7 +616,24 @@ export default class TemplatesPage extends React.Component<
             rowKey={(t) => t.name}
             columns={this.columns()}
             dataSource={templates}
-            pagination={false}
+            pagination={{
+              current: this.state.page,
+              pageSize: this.state.pageSize,
+              pageSizeOptions: ["10", "50", "100"],
+              showSizeChanger: true,
+              // Controlada desde el estado. `onChange` se dispara tanto al
+              // navegar entre páginas como al cambiar el tamaño (la `Pagination`
+              // de antd lo emite con el nuevo `pageSize`). Cambiar el tamaño deja
+              // la página en 1 por el mismo motivo que los filtros: una página
+              // distinta de la actual ya no existiría.
+              onChange: (page, pageSize) =>
+                this.setState({
+                  pageSize,
+                  // Cambiar el tamaño deja la página en 1: una página distinta de
+                  // la nueva ya no existiría. Al navegar, la página es la elegida.
+                  page: pageSize !== this.state.pageSize ? 1 : page,
+                }),
+            }}
             expandable={{ expandedRowRender: this.renderFilterDetails }}
           />
         )}

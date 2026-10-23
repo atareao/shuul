@@ -187,6 +187,61 @@ async function typeSearch(user: UserEvent, text: string): Promise<void> {
   await user.type(box, text);
 }
 
+/**
+ * Fija el tamaño de página al máximo ofrecido (100) para poder afirmar el
+ * catálogo entero de una sola vez.
+ *
+ * El listado pagina a 10 por defecto, pero estos tests afirman el conjunto
+ * completo (las 42 plantillas, los 18 JAIL, las 16 `must_have`…) tal y como
+ * hacían antes de que existiera la paginación. Fijar el rango —que es uno de
+ * los ofrecidos por el propio selector— permite seguir afirmando exactamente lo
+ * mismo sin tocar ninguna aserción.
+ *
+ * Debe llamarse cuando el listado ya tenga filas: mientras `dataSource` está
+ * vacío antd no renderiza la paginación y el combobox de tamaño no existe.
+ */
+async function showWholeCatalog(): Promise<void> {
+  await waitFor(() => expect(getDataRows().length).toBeGreaterThan(0));
+
+  // El selector de tamaño lo genera la `Pagination` de antd; su nombre
+  // accesible `"Page Size"` lo inyecta el locale `en_US` de
+  // `@rc-component/pagination`, y cada opción es un `role="option"` con
+  // `title="<n> / page"`.
+  const user = userEvent.setup();
+  const combo = await screen.findByRole("combobox", { name: "Page Size" });
+  await user.click(combo);
+  const listbox = await screen.findByRole("listbox");
+  const dropdown = listbox.closest<HTMLElement>(".ant-select-dropdown");
+  if (!dropdown) {
+    throw new Error("Ant Select dropdown container not found");
+  }
+  await user.click(await within(dropdown).findByTitle("100 / page"));
+
+  // Al cerrarse, el desplegable entra en su animación de salida y queda colgado
+  // en el DOM (`display: flex` con las clases `ant-slide-up-leave`), porque
+  // jsdom **no dispara** el evento de fin de animación y rc-motion no llega a
+  // desmontarlo. Un desplegable huérfano rompería el siguiente `selectOption`:
+  // `findByRole` encontraría dos `listbox` (el del filtro recién abierto y
+  // éste). Se emiten a mano los eventos que sí emitiría un navegador de verdad
+  // y se espera a que el nodo salga del árbol, de modo que el DOM quede limpio
+  // para el test siguiente.
+  //
+  // El nombre bajo el que rc-motion espera el evento depende del entorno: en
+  // jsdom, que expone `TransitionEvent` pero **no** `AnimationEvent`, la
+  // resolución con prefijo de proveedor se queda en `webkitAnimationEnd` (un
+  // navegador registra `animationend`); `transitionend` lo registra en ambos
+  // casos. Se emiten los tres candidatos, y `waitFor` los reintenta porque los
+  // listeners se enganchan un par de frames después, al alcanzar el paso activo.
+  await waitFor(() => {
+    for (const type of ["animationend", "webkitAnimationEnd", "transitionend"]) {
+      dropdown.dispatchEvent(new Event(type, { bubbles: true }));
+    }
+    expect(screen.queryAllByRole("listbox")).toHaveLength(0);
+  });
+
+  await waitFor(() => expect(getDataRows().length).toBeGreaterThan(10));
+}
+
 beforeEach(() => {
   fixture = buildFixture();
   all = [...fixture.waf, ...fixture.jail];
@@ -198,6 +253,7 @@ describe("TemplatesPage — listado único y filtrable", () => {
   // ─── Escenario: All rule templates appear in one list ────────────────────
   it("renders the whole catalog as a single listing of 42 rows, with no tabs and no rate-limit-profiles section", async () => {
     renderPage();
+    await showWholeCatalog();
 
     const rows = await expectRows(42);
     expect(rows).toHaveLength(42);
@@ -217,6 +273,7 @@ describe("TemplatesPage — listado único y filtrable", () => {
   it("filters by pipeline to the 18 JAIL templates and restores the full catalog when cleared", async () => {
     const user = userEvent.setup();
     renderPage();
+    await showWholeCatalog();
 
     await selectOption(user, /pipeline/i, "Jail");
     await expectRows(JAIL_COUNT_TOTAL);
@@ -229,6 +286,7 @@ describe("TemplatesPage — listado único y filtrable", () => {
   it("filters by severity", async () => {
     const user = userEvent.setup();
     renderPage();
+    await showWholeCatalog();
 
     const expected = all.filter((t) => t.severity === "critico").length;
     await selectOption(user, /severity/i, "critico");
@@ -242,6 +300,7 @@ describe("TemplatesPage — listado único y filtrable", () => {
   it("filters by category", async () => {
     const user = userEvent.setup();
     renderPage();
+    await showWholeCatalog();
 
     const expected = all.filter((t) => t.category === "api").length;
     await selectOption(user, /category/i, "api");
@@ -255,6 +314,7 @@ describe("TemplatesPage — listado único y filtrable", () => {
   it("filters by action", async () => {
     const user = userEvent.setup();
     renderPage();
+    await showWholeCatalog();
 
     const expectedAllow = all.filter((t) => t.allow).length;
     await selectOption(user, /action/i, "Allow");
@@ -268,6 +328,7 @@ describe("TemplatesPage — listado único y filtrable", () => {
   it("treats must_have as a filter with 16 matches and keeps the full catalog reachable", async () => {
     const user = userEvent.setup();
     renderPage();
+    await showWholeCatalog();
 
     const toggle = await screen.findByRole("switch", { name: /must have/i });
     await user.click(toggle);
@@ -281,6 +342,7 @@ describe("TemplatesPage — listado único y filtrable", () => {
   it("combines the pipeline filter with free-text search", async () => {
     const user = userEvent.setup();
     renderPage();
+    await showWholeCatalog();
 
     await selectOption(user, /pipeline/i, "Jail");
     await expectRows(JAIL_COUNT_TOTAL);
@@ -293,6 +355,7 @@ describe("TemplatesPage — listado único y filtrable", () => {
   // ─── Escenario: Default order (must_have first, then by weight) ──────────
   it("orders must_have templates first and the rest by weight", async () => {
     renderPage();
+    await showWholeCatalog();
 
     const rows = await expectRows(42);
     const names = rows.map(nameOfRow);
@@ -325,6 +388,7 @@ describe("TemplatesPage — listado único y filtrable", () => {
     vi.stubGlobal("fetch", fetchMock);
 
     renderPage();
+    await showWholeCatalog();
     await expectRows(42);
 
     const applyButtons = await screen.findAllByRole("button", {
@@ -423,6 +487,7 @@ describe("TemplatesPage — listado único y filtrable", () => {
   // ─── Guarda de regresión: columna Profile ────────────────────────────────
   it("shows the rate limit profile on JAIL rows and a placeholder on WAF rows", async () => {
     renderPage();
+    await showWholeCatalog();
 
     const rows = await expectRows(42);
     const jailRow = rows.find(
