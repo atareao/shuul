@@ -1,4 +1,13 @@
 # Changelog
+## [0.18.1] - 2026-10-23
+
+### Documentation
+
+- *(openspec)* Propone secret-hygiene (el secreto nunca al log, aviso si es débil)
+
+### Testing
+
+- *(frontend)* Da margen a los tests que ensanchan el catálogo
 ## [0.18.0] - 2026-10-23
 
 ### Documentation
@@ -10,6 +19,10 @@
 
 - *(frontend)* Arranca las tablas en 10 filas con los rangos 10/50/100
 - *(frontend)* Identifica cada fila de la tabla de baneos por su partición
+
+### Miscellaneous Tasks
+
+- Release v0.18.0
 ## [0.17.0] - 2026-10-22
 
 ### Bug Fixes
