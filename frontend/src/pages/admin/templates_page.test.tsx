@@ -199,6 +199,13 @@ async function typeSearch(user: UserEvent, text: string): Promise<void> {
  *
  * Debe llamarse cuando el listado ya tenga filas: mientras `dataSource` está
  * vacío antd no renderiza la paginación y el combobox de tamaño no existe.
+ *
+ * Ensanchar el rango renderiza el catálogo entero **dos veces** —la página de
+ * 10 filas primero y las 42 después— dentro de jsdom, lo que en un runner de CI
+ * cuesta varios segundos (y más en el primer test, que además paga la carga
+ * inicial de los módulos de antd). Por eso los tests que lo usan pasan un
+ * límite explícito de 15000 ms como tercer argumento de `it`: el resto de la
+ * suite conserva el límite por defecto, que es el que delata una lentitud real.
  */
 async function showWholeCatalog(): Promise<void> {
   await waitFor(() => expect(getDataRows().length).toBeGreaterThan(0));
@@ -267,7 +274,7 @@ describe("TemplatesPage — listado único y filtrable", () => {
     // Nada de perfiles de rate limit en la página.
     expect(screen.queryByText("Rate Limit Profiles")).toBeNull();
     expect(screen.queryByRole("button", { name: /apply profile/i })).toBeNull();
-  });
+  }, 15000);
 
   // ─── Escenario: Filtering by pipeline ────────────────────────────────────
   it("filters by pipeline to the 18 JAIL templates and restores the full catalog when cleared", async () => {
@@ -280,7 +287,7 @@ describe("TemplatesPage — listado único y filtrable", () => {
 
     await selectOption(user, /pipeline/i, "All");
     await expectRows(42);
-  });
+  }, 15000);
 
   // ─── Escenario: Filtering by severity ────────────────────────────────────
   it("filters by severity", async () => {
@@ -294,7 +301,7 @@ describe("TemplatesPage — listado único y filtrable", () => {
 
     await selectOption(user, /severity/i, "All");
     await expectRows(42);
-  });
+  }, 15000);
 
   // ─── Filtro por categoría (del requisito) ────────────────────────────────
   it("filters by category", async () => {
@@ -308,7 +315,7 @@ describe("TemplatesPage — listado único y filtrable", () => {
 
     await selectOption(user, /category/i, "All");
     await expectRows(42);
-  });
+  }, 15000);
 
   // ─── Filtro por acción (del requisito) ───────────────────────────────────
   it("filters by action", async () => {
@@ -322,7 +329,7 @@ describe("TemplatesPage — listado único y filtrable", () => {
 
     await selectOption(user, /action/i, "All");
     await expectRows(42);
-  });
+  }, 15000);
 
   // ─── Escenario: Must-have is a filter ────────────────────────────────────
   it("treats must_have as a filter with 16 matches and keeps the full catalog reachable", async () => {
@@ -336,7 +343,7 @@ describe("TemplatesPage — listado único y filtrable", () => {
 
     await user.click(toggle);
     await expectRows(42);
-  });
+  }, 15000);
 
   // ─── Escenario: Filters combine with free-text search ────────────────────
   it("combines the pipeline filter with free-text search", async () => {
@@ -350,7 +357,7 @@ describe("TemplatesPage — listado único y filtrable", () => {
     await typeSearch(user, "scanner");
     const rows = await expectRows(1);
     expect(nameOfRow(rows[0])).toBe("Scanner Aggressive");
-  });
+  }, 15000);
 
   // ─── Escenario: Default order (must_have first, then by weight) ──────────
   it("orders must_have templates first and the rest by weight", async () => {
@@ -371,7 +378,7 @@ describe("TemplatesPage — listado único y filtrable", () => {
       [...mustHaveNames].sort(),
     );
     expect(names.slice(mustHaveNames.length)).toEqual(restNames);
-  });
+  }, 15000);
 
   // ─── Flujo Apply (task 3.5): sigue creando la regla ─────────────────────
   afterEach(() => {
@@ -412,7 +419,7 @@ describe("TemplatesPage — listado único y filtrable", () => {
     };
     expect(body.pipeline).toBe("waf");
     expect(body.name).toBe(all.filter((t) => t.must_have)[0].name);
-  });
+  }, 15000);
 
   // ─── Escenario: fallo de carga visible ───────────────────────────────────
   it("surfaces a load error instead of an empty catalog when the request fails", async () => {
@@ -510,7 +517,7 @@ describe("TemplatesPage — listado único y filtrable", () => {
     expect(
       within(wafRow as HTMLElement).getAllByText("—").length,
     ).toBeGreaterThan(0);
-  });
+  }, 15000);
 });
 
 describe("pagination", () => {
