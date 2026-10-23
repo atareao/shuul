@@ -6,12 +6,17 @@
 - [ ] 1.2 `backend/tests/`: guarda que falla si el `RUST_LOG` por defecto del `compose.yml`
       contiene `debug`.
 - [ ] 1.3 `cargo test`: las dos guardas nuevas **fallan** y los tests existentes siguen en verde.
+- [ ] 1.4 `backend/src/main.rs`: test unitario de la función que decide el aviso
+      (`#[cfg(test)] mod tests`), cubriendo los dos escenarios del requisito «Un secreto débil se
+      denuncia al arrancar»: un secreto de 10 caracteres dispara el aviso, uno de 64 no.
 
 ## 2. GREEN
 - [ ] 2.1 `backend/src/main.rs`: fuera el `debug!("Secret: {}", secret)`.
 - [ ] 2.2 `backend/src/main.rs`: aviso si el secreto mide menos de 32 caracteres.
 - [ ] 2.3 `compose.yml`: `RUST_LOG` por defecto a `backend=info,maxminddb=warn`.
 - [ ] 2.4 `cargo test` en verde.
+- [ ] 2.5 `backend/src/main.rs`: implementar el cuerpo de `weak_secret_warning` (hoy provisional:
+      devuelve siempre `None`), de modo que el test del secreto corto pase y el del largo siga verde.
 
 ## 3. REFACTOR
 - [ ] 3.1 `cargo clippy -- -D warnings` sin avisos.
