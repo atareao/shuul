@@ -1,4 +1,15 @@
 # Changelog
+## [0.18.0] - 2026-10-23
+
+### Documentation
+
+- *(openspec)* Propone pagination-defaults (10 filas por defecto y rangos 10/50/100)
+- *(openspec)* Propone ban-row-identity (identidad de fila en la tabla de baneos)
+
+### Features
+
+- *(frontend)* Arranca las tablas en 10 filas con los rangos 10/50/100
+- *(frontend)* Identifica cada fila de la tabla de baneos por su partición
 ## [0.17.0] - 2026-10-22
 
 ### Bug Fixes
@@ -22,6 +33,7 @@
 
 - *(frontend)* Declara @testing-library/react y user-event, que estaban en uso sin declarar
 - *(frontend)* Declara @testing-library/react y user-event, que el test importa
+- Release v0.17.0
 
 ### Styling
 
