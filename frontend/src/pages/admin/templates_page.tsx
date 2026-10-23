@@ -216,6 +216,10 @@ export default class TemplatesPage extends React.Component<
   // --- Rule Template apply modal ---
 
   private openApplyModal = (template: RuleTemplate) => {
+    // El peso de un template de Jail se fija a 0 ya en la apertura: el campo no
+    // llega a ofrecerse y así el valor por defecto (o el de una aplicación
+    // anterior) no se arrastra hasta el payload. El WAF sí conserva el peso del
+    // template porque ahí ordena la evaluación (`first match wins`).
     this.setState({
       modalVisible: true,
       selectedTemplate: template,
@@ -223,7 +227,7 @@ export default class TemplatesPage extends React.Component<
       ipAddress: "",
       ruleName: template.name,
       ruleDescription: template.description,
-      ruleWeight: template.weight ?? 100,
+      ruleWeight: template.pipeline === "jail" ? 0 : (template.weight ?? 100),
     });
   };
 
@@ -253,7 +257,10 @@ export default class TemplatesPage extends React.Component<
         name: this.state.ruleName,
         description: this.state.ruleDescription,
         mode: template.pipeline === "jail" ? "log_only" : "enforce",
-        weight: this.state.ruleWeight,
+        // El peso de una regla de Jail es siempre 0: el pipeline evalúa todas
+        // las reglas que casan, sin `break`, así que el orden no decide nada.
+        // El WAF conserva el peso elegido, que sí ordena la evaluación.
+        weight: template.pipeline === "jail" ? 0 : this.state.ruleWeight,
         allow: template.allow,
         pipeline: template.pipeline,
         // All filter fields from template:
@@ -698,9 +705,11 @@ export default class TemplatesPage extends React.Component<
                     Action: {selected?.allow ? "Allow" : "Deny"}
                   </Tag>
                 )}
-                <Tag style={{ fontSize: 13, padding: "2px 8px" }}>
-                  Weight: {this.state.ruleWeight}
-                </Tag>
+                {selected?.pipeline !== "jail" && (
+                  <Tag style={{ fontSize: 13, padding: "2px 8px" }}>
+                    Weight: {this.state.ruleWeight}
+                  </Tag>
+                )}
                 <Tag
                   color={this.state.ruleActive ? "green" : "default"}
                   style={{ fontSize: 13, padding: "2px 8px" }}
@@ -872,18 +881,22 @@ export default class TemplatesPage extends React.Component<
                 addonBefore="Description"
                 allowClear
               />
-              <Flex align="center" gap="small">
-                <Text style={{ width: 100, flexShrink: 0 }}>Weight</Text>
-                <InputNumber
-                  style={{ width: "100%" }}
-                  value={this.state.ruleWeight}
-                  min={1}
-                  max={99999}
-                  onChange={(value) =>
-                    this.setState({ ruleWeight: value ?? 100 })
-                  }
-                />
-              </Flex>
+              {/* El campo Weight sólo se ofrece cuando el pipeline lo usa para
+                  ordenar (WAF). Para Jail el peso es siempre 0 y no se elige. */}
+              {selected?.pipeline !== "jail" && (
+                <Flex align="center" gap="small">
+                  <Text style={{ width: 100, flexShrink: 0 }}>Weight</Text>
+                  <InputNumber
+                    style={{ width: "100%" }}
+                    value={this.state.ruleWeight}
+                    min={1}
+                    max={99999}
+                    onChange={(value) =>
+                      this.setState({ ruleWeight: value ?? 100 })
+                    }
+                  />
+                </Flex>
+              )}
               <Flex align="center" gap="small">
                 <Text style={{ width: 100, flexShrink: 0 }}>Active</Text>
                 <Switch

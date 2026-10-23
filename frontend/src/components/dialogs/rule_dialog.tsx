@@ -101,7 +101,10 @@ function formatForApi(
   const body: Record<string, unknown> = {
     active: values.active,
     allow: values.allow,
-    weight: values.weight,
+    // El pipeline de Jail no ordena por peso (evalúa todas las reglas que casan,
+    // sin `break`), así que la interfaz envía siempre 0 y nunca el valor que
+    // pudiera quedar en el formulario. El WAF conserva su peso: ahí sí ordena.
+    weight: values.pipeline === "jail" ? 0 : values.weight,
     name: values.name || null,
     description: values.description || null,
     mode: values.mode || "enforce",
