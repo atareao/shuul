@@ -447,3 +447,96 @@ describe("TemplatesPage — listado único y filtrable", () => {
     ).toBeGreaterThan(0);
   });
 });
+
+describe("pagination", () => {
+  /**
+   * Abre el selector de tamaño de página de antd y devuelve sus opciones.
+   *
+   * El selector lo genera la `Pagination` de antd, no la página, así que no
+   * tiene `aria-label` propio en el código de la app: su nombre accesible
+   * `"Page Size"` lo inyecta el locale `en_US` de `@rc-component/pagination`
+   * (`page_size: "Page Size"`). Por eso se localiza por rol + nombre y no por
+   * clases CSS internas. Cada opción es un `role="option"` cuyo `title` es
+   * `"<n> / page"` (el locale compone `${n} ${items_per_page}` con
+   * `items_per_page: "/ page"`).
+   */
+  async function sizeChangerOptions(user: UserEvent): Promise<HTMLElement[]> {
+    const combo = await screen.findByRole("combobox", { name: "Page Size" });
+    await user.click(combo);
+    const listbox = await screen.findByRole("listbox");
+    const dropdown = listbox.closest<HTMLElement>(".ant-select-dropdown");
+    if (!dropdown) {
+      throw new Error("Ant Select dropdown container not found");
+    }
+    return within(dropdown).getAllByRole("option");
+  }
+
+  // ─── Escenario: «The templates listing is paginated at 10» ───────────────
+  it("arranca en 10 filas y la última página (la 5ª) muestra las 2 restantes", async () => {
+    const user = userEvent.setup();
+    renderPage();
+
+    // El catálogo tiene 42 plantillas. Sin paginación se renderizan las 42 de
+    // golpe, y `getDataRows()` cuenta exactamente las filas renderizadas: el 10
+    // fija el tamaño de página por defecto del requisito. Se mide con
+    // `getDataRows()` directamente —y no con `expectRows()`— porque ese helper
+    // se ensanchará en GREEN.
+    await waitFor(() => expect(getDataRows()).toHaveLength(10));
+    expect(getDataRows()).toHaveLength(10);
+
+    // 42 plantillas a 10 por página => 5 páginas; la última retiene 42 - 40 = 2.
+    // Los items de paginación de antd llevan `title="<n>"` (marcado estable: es
+    // el atributo que antd usa para sus propios tests; las clases
+    // `ant-pagination-item-*` son detalle de presentación), así que la 5ª
+    // página se localiza con `getByTitle("5")`.
+    await user.click(screen.getByTitle("5"));
+
+    await waitFor(() => expect(getDataRows()).toHaveLength(2));
+    expect(getDataRows()).toHaveLength(2);
+  });
+
+  // ─── Escenario: «The templates listing is paginated at 10» (rangos) ──────
+  it("ofrece exactamente 10, 50 y 100 en el selector de tamaño de página", async () => {
+    const user = userEvent.setup();
+    renderPage();
+
+    // El desplegable de tamaño solo existe si el listado está paginado: primero
+    // se confirma que hay filas, luego que la paginación está disponible.
+    await waitFor(() => expect(getDataRows().length).toBeGreaterThan(0));
+
+    const options = await sizeChangerOptions(user);
+    expect(options.map((o) => o.getAttribute("title"))).toEqual([
+      "10 / page",
+      "50 / page",
+      "100 / page",
+    ]);
+
+    // Fuerza la aserción: el rango 20 (el que hoy ofrece el Log Viewer) no debe
+    // aparecer. Sin esta comprobación un `toEqual` con 10/50/100/20 pasaría si
+    // el orden cambiara.
+    expect(screen.queryByTitle("20 / page")).toBeNull();
+  });
+
+  // ─── Escenario: «Filtering the templates listing returns to the first page» ─
+  it("al filtrar desde la última página vuelve a la primera, sin quedar vacío", async () => {
+    const user = userEvent.setup();
+    renderPage();
+
+    await waitFor(() => expect(getDataRows()).toHaveLength(10));
+    await user.click(screen.getByTitle("5"));
+    await waitFor(() => expect(getDataRows()).toHaveLength(2));
+
+    // El filtro `Jail` deja 18 plantillas: más de una página (18 > 10) pero
+    // menos que las 5 páginas del conjunto completo. Si el número de página no
+    // se reiniciase, la tabla seguiría en la 5ª página —ya fuera de rango— y
+    // aparecería vacía. Que se vean 10 filas y que la primera sea el primer
+    // JAIL del conjunto filtrado (`fixture.jail[0]`, el `must_have` de menor
+    // peso) demuestra que se volvió a la página 1 con los datos filtrados.
+    await selectOption(user, /pipeline/i, "Jail");
+
+    await waitFor(() => expect(getDataRows()).toHaveLength(10));
+    const rows = getDataRows();
+    expect(rows).toHaveLength(10);
+    expect(nameOfRow(rows[0])).toBe(fixture.jail[0].name);
+  });
+});
