@@ -61,15 +61,15 @@ const MIN_SECRET_LEN: usize = 32;
 /// Devuelve el aviso a registrar si el secreto es demasiado corto. No menciona
 /// el secreto de ninguna forma: ni su valor, ni truncado, ni su longitud.
 const fn weak_secret_warning(secret: &str) -> Option<&'static str> {
-    // PROVISIONAL (fase RED): el aviso real es la tarea 2.5. Aquí se evalúa la
-    // condición —para no dejar `MIN_SECRET_LEN` sin uso— pero siempre se
-    // devuelve `None`, de modo que el test del secreto corto falle por
-    // comportamiento y no por compilación. El aviso nunca interpola el secreto:
-    // el texto nombra el mínimo exigido, jamás lo que mide el que hay. Es `const
-    // fn` porque el cuerpo real (comparar longitudes y devolver un literal) lo
-    // seguirá siendo: `clippy::missing_const_for_fn` está activo en este crate.
+    // El aviso nombra el mínimo exigido —el literal, no una interpolación— y
+    // jamás lo que mide el secreto que hay: ni su valor, ni truncado, ni su
+    // longitud. Es `const fn` porque el cuerpo lo permite y
+    // `clippy::missing_const_for_fn` está activo en este crate.
     if secret.len() < MIN_SECRET_LEN {
-        return None;
+        return Some(
+            "SECRET is shorter than the 32 characters required to sign the JWTs; \
+             rotate it with `openssl rand -hex 32`",
+        );
     }
     None
 }
@@ -104,7 +104,6 @@ async fn main() -> Result<(), Error> {
         var("MAXMIND_DB_PATH").unwrap_or_else(|_| "geo/GeoLite2-City.mmdb".to_string());
     info!("Maxmin DB Path: {}", maxmind_db_path);
     let secret = var("SECRET").expect("SECRET environment variable is mandatory");
-    debug!("Secret: {}", secret);
 
     if let Some(warning) = weak_secret_warning(&secret) {
         warn!("{warning}");

@@ -1326,7 +1326,9 @@ Symptoms: `systemctl enable --now systemd-journal-gatewayd.socket` fails with `U
 ## 13. Security Considerations
 
 - **Shuul does not rate-limit itself.** Traefik's ForwardAuth is synchronous — slow responses from shuul affect all protected services.
-- The `SECRET` is used for JWT signing. Rotate it periodically.
+- The `SECRET` is used for JWT signing. Rotate it periodically:
+  - **Rotation closes every open session.** The JWTs already issued were signed with the old secret, so once you rotate it they stop validating: every open panel session is dropped and you have to sign in again through OIDC. Rotating without knowing this looks like a broken login — it is not, it is the rotation doing its job.
+  - **If a secret has ended up in a log, rotate it right away.** Lowering the level is not enough. A deployment that ran an earlier version with `RUST_LOG=backend=debug` did write the `SECRET` to the log in clear text, so treat that secret as leaked: rotate it immediately (`openssl rand -hex 32`), audit who has had access to those logs, and treat any session issued before the rotation as suspect — it was signed with the exposed key. Turning debug off only stops the leak from continuing; it does not undo it.
 - OIDC tokens expire after 60 minutes. Users are redirected to re-authenticate.
 - SQLite is not designed for multi-instance deployments. Run a single shuul container.
 - Traefik's `trustForwarders: true` is required for correct IP extraction behind reverse proxies.
