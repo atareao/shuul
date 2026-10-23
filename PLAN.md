@@ -554,3 +554,39 @@ mover el bind sin tocar código.
 2. **Documentación, no bloqueo.** Cuál de las dos entradas del transporte se documenta como preferida ya está **decidido** (§0.7.3): la API de Docker. Solo falta la línea del README.
 3. **`systemd-journal-gatewayd`** — **decidido** (§0.7.4): se mantiene como alternativa de menor prioridad; **no** se retira.
 4. **Ajeno a este plan:** no existe directorio `locales` ni JSON de traducción pese a ~88 llamadas a `t()`; i18next recibe 404 y devuelve la clave.
+
+## FASE 8 — `ban-row-identity`: la tabla de Active Bans acumula filas (2026-10-23)
+
+**Origen.** Reporte del usuario sobre el despliegue de la `v0.17.0` en producción: «La primera
+vez salen 10 en la primera página, cuando paso a la siguiente página hay 12, si paso a la
+siguiente y vuelvo hacia atrás hay 14… y así sucesivamente», y en el listado aparece la misma
+IP dos veces.
+
+**Diagnóstico (cerrado, con la paginación descartada).** `BanManager::active_bans()`
+(`backend/src/models/ban_manager.rs:222-232`) devuelve una fila por partición `(ip, rule_id)`, y
+`list_handler` (`backend/src/http/ban.rs:85-87`) las identifica a todas con `id: ip.to_string()`.
+Dos baneos de la misma IP comparten por tanto la clave de fila de `CustomTable`
+(`frontend/src/components/custom_table.tsx:575`), React no puede reconciliar el `<tbody>` y el DOM
+acumula filas. El endpoint `GET /api/v1/bans` pagina correctamente y no se toca. Medido en la
+base de producción (volumen `shuul_db`, solo lectura): **33 baneos activos sobre 29 IPs, con 4 IPs
+baneadas dos veces**.
+
+**Por qué el change anterior no lo arregló.** `admin-ui-fixes` (publicado como `v0.17.0`)
+reescribió el paginador de `CustomTable` por mecanismos propios verificados y registró el síntoma
+literal como **no reproducido**: su medición usó 34 registros **sin identidades repetidas**, así
+que la colisión no entró nunca en la medición.
+
+**Alcance del change.** La tabla de baneos identifica cada fila por su partición
+`(ip_address, rule_id)`; `CustomTable` gana una prop `rowKey` **opcional** cuyo valor por defecto
+sigue siendo `record.id`, de modo que ninguna otra tabla cambia de comportamiento. Sin cambios de
+backend, API, base de datos ni migraciones. Descartado (y registrado como non-goal): hacer
+compuesto `BanResponse.id`, porque la spec documenta el `id` como la IP y la identidad del baneo
+como la pareja `(id, rule_id)`.
+
+**Pendiente ajeno, detectado de paso y de mayor severidad:** el `SECRET` de producción es la frase
+en claro «este es un secreto que no se puede saber» —no una cadena aleatoria como pide
+`SELF-HOSTING.md`— y el backend lo imprime en el log (`backend/src/main.rs:88`,
+`debug!("Secret: {}", secret)`) con `RUST_LOG=backend=debug` activo. Va como change aparte: rotar
+`SECRET` y quitar ese `debug!`.
+
+**Pendiente de la FASE 7 (PORT) sigue abierto** y es ajeno a esta fase.

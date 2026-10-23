@@ -304,3 +304,198 @@ describe("CustomTable — paginación en servidor", () => {
     expect(params?.get("page")).toBe("1");
   });
 });
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Identidad de fila.
+//
+// Los baneos se sirven con una fila por partición `(ip_address, rule_id)`, así
+// que una misma IP puede aparecer en dos filas y el `id` —que es la IP— deja de
+// ser único dentro de la página. `CustomTable` usaba `record.id` como clave de
+// fila: con dos hijos con la misma `key` React no puede reconciliar el `<tbody>`,
+// avisa por consola y la tabla ACUMULA filas al navegar (medido: una página de 10
+// filas con una IP repetida pasa a 11 y a 12 al ir y volver). La tabla debe
+// poder recibir la partición completa como clave.
+// ─────────────────────────────────────────────────────────────────────────────
+
+/** Baneo: `id` es la IP y `rule_id` la partición que distingue dos filas. */
+interface BanRow {
+  id: string;
+  ip_address: string;
+  rule_id?: number;
+}
+
+/** Clave de fila = partición completa `(ip_address, rule_id)`. */
+const banRowKey = (ban: BanRow): string =>
+  `${ban.ip_address}#${ban.rule_id ?? "none"}`;
+
+const BAN_FIELDS: FieldDefinition<BanRow>[] = [
+  { key: "ip_address", label: "IP", type: "string", sortKey: "ip_address" },
+];
+
+/**
+ * Página de 10 filas donde la 5.ª repite la IP de la 3.ª: la misma IP baneada
+ * por dos reglas distintas (`rule_id` 8 y 6). En el listado de baneos el `id` de
+ * esas dos filas es la misma IP.
+ */
+const duplicateIpPage = (): BanRow[] =>
+  Array.from({ length: 10 }, (_, i) => {
+    const duplicate = i === 4;
+    const ip = `10.0.0.${duplicate ? i - 1 : i + 1}`;
+    return { id: ip, ip_address: ip, rule_id: duplicate ? 6 : 8 };
+  });
+
+/** Servidor paginado en el que CADA página contiene una IP repetida. */
+const bansServer =
+  (records: number) =>
+  (_endpoint: string, params?: QueryParams): Promise<Response<BanRow[]>> => {
+    const page = Number(params?.get("page") ?? 1);
+    const limit = Number(params?.get("limit") ?? 10);
+    const offset = (page - 1) * limit;
+    const data: BanRow[] = Array.from({ length: limit }, (_, i) => {
+      const duplicate = i === 4;
+      const ip = `10.0.0.${offset + (duplicate ? i - 1 : i + 1)}`;
+      return { id: ip, ip_address: ip, rule_id: duplicate ? 6 : 8 };
+    });
+    return Promise.resolve({
+      status: 200,
+      data,
+      pagination: { page, limit, pages: Math.ceil(records / limit), records },
+    } as Response<BanRow[]>);
+  };
+
+/** Claves de fila que antd publica en el DOM. */
+const dataRowKeys = (): (string | null)[] =>
+  Array.from(
+    document.querySelectorAll(".ant-table-tbody tr.ant-table-row"),
+  ).map((tr) => tr.getAttribute("data-row-key"));
+
+/** Texto del cuerpo de la tabla, para esperar a que se pinte una página. */
+const tbodyText = (): string =>
+  document.querySelector(".ant-table-tbody")?.textContent ?? "";
+
+/** Texto literal con el que React denuncia dos hijos con la misma `key`. */
+const DUPLICATE_KEY_WARNING = /Encountered two children with the same key/;
+
+describe("CustomTable — identidad de fila", () => {
+  let consoleErrors: string[];
+
+  beforeEach(() => {
+    consoleErrors = [];
+    vi.spyOn(console, "error").mockImplementation((...args: unknown[]) => {
+      consoleErrors.push(args.map((arg) => String(arg)).join(" "));
+    });
+    loadDataMock.mockReset();
+  });
+
+  afterEach(() => {
+    cleanup();
+    vi.restoreAllMocks();
+  });
+
+  const duplicateKeyWarnings = (): string[] =>
+    consoleErrors.filter((message) => DUPLICATE_KEY_WARNING.test(message));
+
+  // ── 4.1 ────────────────────────────────────────────────────────────────────
+  it("4.1 una página con dos baneos de la misma IP no duplica filas ni provoca el aviso de claves repetidas", async () => {
+    loadDataMock.mockResolvedValue({
+      status: 200,
+      data: duplicateIpPage(),
+      pagination: { page: 1, limit: 10, pages: 1, records: 10 },
+    } as Response<BanRow[]>);
+
+    render(
+      <CustomTable<BanRow>
+        title="Active Bans"
+        endpoint="bans"
+        fields={BAN_FIELDS}
+        t={(key) => key}
+        rowKey={banRowKey}
+      />,
+    );
+
+    await waitFor(() => expect(rowCount()).toBe(10));
+
+    // Exactamente las 10 filas de la página: ni duplicadas ni omitidas.
+    expect(rowCount()).toBe(10);
+    // Y React no ha registrado el aviso de claves duplicadas.
+    expect(duplicateKeyWarnings()).toEqual([]);
+  });
+
+  // ── 4.2 ────────────────────────────────────────────────────────────────────
+  it("4.2 no acumula filas al navegar: el tamaño de página se mantiene en ambas páginas", async () => {
+    loadDataMock.mockImplementation(bansServer(34));
+
+    render(
+      <CustomTable<BanRow>
+        title="Active Bans"
+        endpoint="bans"
+        fields={BAN_FIELDS}
+        t={(key) => key}
+        rowKey={banRowKey}
+      />,
+    );
+
+    await waitFor(() => expect(rowCount()).toBe(10));
+    const firstPageRows = rowCount();
+
+    await userEvent.click(nextButton());
+    // La página 2 ya está pintada cuando aparece una celda que sólo vive en ella.
+    await waitFor(() => expect(tbodyText()).toContain("10.0.0.20"));
+    const secondPageRows = rowCount();
+
+    const prev = document.querySelector(".ant-pagination-prev");
+    await userEvent.click(prev as Element);
+    await waitFor(() => expect(tbodyText()).toContain("10.0.0.10"));
+    const backToFirstPageRows = rowCount();
+
+    // Tamaño de página en ambas páginas…
+    expect(firstPageRows).toBe(10);
+    expect(secondPageRows).toBe(10);
+    // …y el número no crece con la navegación.
+    expect(backToFirstPageRows).toBe(10);
+    expect(duplicateKeyWarnings()).toEqual([]);
+  });
+
+  // ── 4.3 ────────────────────────────────────────────────────────────────────
+  it("4.3 distingue dos baneos de la misma IP cuando uno no tiene rule_id", async () => {
+    loadDataMock.mockResolvedValue({
+      status: 200,
+      data: [
+        { id: "10.0.0.9", ip_address: "10.0.0.9", rule_id: 6 },
+        { id: "10.0.0.9", ip_address: "10.0.0.9" },
+      ],
+      pagination: { page: 1, limit: 10, pages: 1, records: 2 },
+    } as Response<BanRow[]>);
+
+    render(
+      <CustomTable<BanRow>
+        title="Active Bans"
+        endpoint="bans"
+        fields={BAN_FIELDS}
+        t={(key) => key}
+        rowKey={banRowKey}
+      />,
+    );
+
+    await waitFor(() => expect(rowCount()).toBe(2));
+
+    const keys = dataRowKeys();
+    expect(keys).toHaveLength(2);
+    // Aunque el `id` (la IP) sea el mismo, las dos filas tienen clave distinta.
+    expect(keys[0]).not.toBe(keys[1]);
+    expect(duplicateKeyWarnings()).toEqual([]);
+  });
+
+  // ── 4.4 ────────────────────────────────────────────────────────────────────
+  it("4.4 una tabla que no declara clave de fila sigue usando record.id", async () => {
+    // Guarda de regresión: las tablas cuyas filas ya tienen un `id` único no
+    // cambian de comportamiento.
+    loadDataMock.mockImplementation(server(34));
+
+    renderTable();
+    await waitFor(() => expect(rowCount()).toBe(10));
+
+    expect(dataRowKeys()).toEqual(dataset(10).map((row) => String(row.id)));
+    expect(duplicateKeyWarnings()).toEqual([]);
+  });
+});
