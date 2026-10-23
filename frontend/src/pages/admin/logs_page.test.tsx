@@ -272,7 +272,10 @@ describe("LogsPage — state persistence", () => {
   // ─── Scenario 8 (H2.1): el Log Viewer pagina en cliente ──────────────────
 
   it("5.1 pagina en cliente: ocultar un tipo de evento re-pagina las entradas restantes", async () => {
-    // Buffer de 120 entradas (40 «banned» + 80 «admitted»), tamaño de página 50.
+    // Buffer de 120 entradas (40 «banned» + 80 «admitted»). El escenario fija
+    // explícitamente un tamaño de página de 50 (su premisa literal, no el valor
+    // por defecto del visor, que ahora es 10): por eso se elige 50 en el
+    // selector de tamaño antes de medir.
     const entries = [
       ...Array.from({ length: 40 }, (_, i) => makeEntry("banned", i)),
       ...Array.from({ length: 80 }, (_, i) => makeEntry("admitted", i + 40)),
@@ -284,6 +287,17 @@ describe("LogsPage — state persistence", () => {
     getItemSpy.mockReturnValue(null);
 
     render(<InnerPage {...mockProps} />);
+
+    await screen.findByRole("button", { name: "banned" });
+
+    // El selector de tamaño de página lo genera la `Pagination` de antd: su
+    // combobox es el único con nombre accesible "Page Size" y sus opciones son
+    // `role="option"` con `title="<n> / page"`.
+    const user = userEvent.setup();
+    const combo = await screen.findByRole("combobox", { name: "Page Size" });
+    await user.click(combo);
+    await user.click(await screen.findByTitle("50 / page"));
+    await waitFor(() => expect(logRowCount()).toBe(50));
 
     // Sin filtro: 120 entradas, la página muestra 50 y el total reportado es 120.
     await screen.findByRole("button", { name: "banned" });
@@ -371,5 +385,71 @@ describe("LogsPage — state persistence", () => {
     } finally {
       vi.useRealTimers();
     }
+  });
+});
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Escenario «The Log Viewer starts at 10 and keeps the same ranges».
+// ─────────────────────────────────────────────────────────────────────────────
+describe("tamaño de página", () => {
+  const mockProps = {
+    navigate: vi.fn(),
+    t: (key: string) => key,
+    isDarkMode: false,
+  };
+
+  beforeEach(() => {
+    vi.spyOn(Storage.prototype, "getItem").mockReturnValue(null);
+    loadDataMock.mockReset();
+    setLocation("");
+  });
+
+  afterEach(() => {
+    cleanup();
+    vi.restoreAllMocks();
+  });
+
+  it("6.1 arranca en 10 entradas y el selector ofrece 10, 50 y 100", async () => {
+    // Buffer de 120 entradas: con 10 por página hay 12 páginas y la primera
+    // retiene exactamente 10 filas. Hoy el visor arranca en 50 y renderiza 50
+    // filas, así que ambos números son la medida del cambio.
+    const entries = Array.from({ length: 120 }, (_, i) =>
+      makeEntry("admitted", i),
+    );
+    loadDataMock.mockResolvedValue({
+      status: 200,
+      data: { entries, total: 120, capacity: 1000 },
+    } as Response<unknown>);
+
+    render(<InnerPage {...mockProps} />);
+
+    await screen.findByRole("button", { name: "admitted" });
+
+    // `showTotal` es el contrato del texto de total: con 120 entradas y una
+    // página de 10 el rango es "1-10". Si arrancase en 50 el texto sería
+    // "1-50 of 120 entries".
+    await waitFor(() =>
+      expect(
+        document.querySelector(".ant-pagination-total-text")?.textContent,
+      ).toBe("1-10 of 120 entries"),
+    );
+    expect(logRowCount()).toBe(10);
+
+    // El selector de tamaño de página lo genera la `Pagination` de antd: su
+    // combobox es el único con nombre accesible "Page Size" (lo inyecta el
+    // locale `en_US` de `@rc-component/pagination`, `page_size: "Page Size"`).
+    // Las opciones son `role="option"` con `title="<n> / page"`.
+    const user = userEvent.setup();
+    const combo = await screen.findByRole("combobox", { name: "Page Size" });
+    await user.click(combo);
+    const options = await screen.findAllByRole("option");
+    expect(options.map((o) => o.getAttribute("title"))).toEqual([
+      "10 / page",
+      "50 / page",
+      "100 / page",
+    ]);
+    // Fuerza la aserción: el rango 20 —el que ofrece hoy el visor— no debe
+    // aparecer.
+    expect(screen.queryByTitle("20 / page")).toBeNull();
   });
 });

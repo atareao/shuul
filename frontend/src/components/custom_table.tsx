@@ -65,6 +65,15 @@ type Props<T extends { id: number | string }> = {
   autoRefresh?: boolean;
   autoRefreshInterval?: number;
   extraHeaderContent?: React.ReactNode;
+  /**
+   * Clave de fila. Necesaria cuando las filas de una página comparten `id`: los
+   * baneos se sirven con una fila por partición `(ip_address, rule_id)` y su
+   * `id` ES la IP, así que dos baneos de la misma IP repiten clave. React no
+   * reconcilia un `<tbody>` con claves repetidas y la tabla acumula filas al
+   * navegar. Por defecto se conserva `record.id`, que sigue valiendo para las
+   * tablas cuyas filas ya tienen un `id` único.
+   */
+  rowKey?: (record: T) => string | number;
 } & Partial<ActionProps<T>>;
 
 interface State<T> {
@@ -496,7 +505,7 @@ export default class CustomTable<
 
   render = () => {
     const titleText = this.props.t(this.props.title);
-    const { hasActions, renderHeaderAction } = this.props;
+    const { hasActions, renderHeaderAction, rowKey } = this.props;
 
     let dialogUI: React.ReactNode | null = null;
 
@@ -572,7 +581,7 @@ export default class CustomTable<
           <Table<T>
             style={{ width: "100%" }}
             columns={this.columns}
-            rowKey={(record) => record.id.toString()}
+            rowKey={rowKey ?? ((record) => record.id.toString())}
             dataSource={this.state.items || []}
             sortDirections={["ascend", "descend"]}
             // antd NO pagina: `CustomTable` es el único paginador y antd no

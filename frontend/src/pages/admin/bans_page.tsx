@@ -77,6 +77,16 @@ const BAN_DIALOG_MESSAGES: DialogMessages = {
     `Are you sure you want to unban IP "${id}"?`,
 };
 
+/**
+ * Clave de fila = partición `(ip_address, rule_id)`. El `id` de un baneo es la
+ * IP, así que una misma IP baneada por varias reglas repite `id` y React no
+ * puede reconciliar el `<tbody>`. El `?? 0` es deliberado: `rule_id` es
+ * opcional en el modelo y un baneo sin regla también debe distinguirse de uno
+ * que sí la tiene.
+ */
+const banRowKey = (ban: Ban): string =>
+  `${ban.ip_address}:${ban.rule_id ?? 0}`;
+
 interface Props {
   navigate: NavigateFunction;
   t: (key: string) => string;
@@ -112,6 +122,7 @@ export class InnerPage extends React.Component<Props, Record<string, never>> {
         hasActions={true}
         defaultSortField="ip_address"
         renderActionColumn={this.renderActionColumn}
+        rowKey={banRowKey}
       />
     );
   };
