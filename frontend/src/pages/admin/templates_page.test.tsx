@@ -187,6 +187,61 @@ async function typeSearch(user: UserEvent, text: string): Promise<void> {
   await user.type(box, text);
 }
 
+/**
+ * Fija el tamaño de página al máximo ofrecido (100) para poder afirmar el
+ * catálogo entero de una sola vez.
+ *
+ * El listado pagina a 10 por defecto, pero estos tests afirman el conjunto
+ * completo (las 42 plantillas, los 18 JAIL, las 16 `must_have`…) tal y como
+ * hacían antes de que existiera la paginación. Fijar el rango —que es uno de
+ * los ofrecidos por el propio selector— permite seguir afirmando exactamente lo
+ * mismo sin tocar ninguna aserción.
+ *
+ * Debe llamarse cuando el listado ya tenga filas: mientras `dataSource` está
+ * vacío antd no renderiza la paginación y el combobox de tamaño no existe.
+ */
+async function showWholeCatalog(): Promise<void> {
+  await waitFor(() => expect(getDataRows().length).toBeGreaterThan(0));
+
+  // El selector de tamaño lo genera la `Pagination` de antd; su nombre
+  // accesible `"Page Size"` lo inyecta el locale `en_US` de
+  // `@rc-component/pagination`, y cada opción es un `role="option"` con
+  // `title="<n> / page"`.
+  const user = userEvent.setup();
+  const combo = await screen.findByRole("combobox", { name: "Page Size" });
+  await user.click(combo);
+  const listbox = await screen.findByRole("listbox");
+  const dropdown = listbox.closest<HTMLElement>(".ant-select-dropdown");
+  if (!dropdown) {
+    throw new Error("Ant Select dropdown container not found");
+  }
+  await user.click(await within(dropdown).findByTitle("100 / page"));
+
+  // Al cerrarse, el desplegable entra en su animación de salida y queda colgado
+  // en el DOM (`display: flex` con las clases `ant-slide-up-leave`), porque
+  // jsdom **no dispara** el evento de fin de animación y rc-motion no llega a
+  // desmontarlo. Un desplegable huérfano rompería el siguiente `selectOption`:
+  // `findByRole` encontraría dos `listbox` (el del filtro recién abierto y
+  // éste). Se emiten a mano los eventos que sí emitiría un navegador de verdad
+  // y se espera a que el nodo salga del árbol, de modo que el DOM quede limpio
+  // para el test siguiente.
+  //
+  // El nombre bajo el que rc-motion espera el evento depende del entorno: en
+  // jsdom, que expone `TransitionEvent` pero **no** `AnimationEvent`, la
+  // resolución con prefijo de proveedor se queda en `webkitAnimationEnd` (un
+  // navegador registra `animationend`); `transitionend` lo registra en ambos
+  // casos. Se emiten los tres candidatos, y `waitFor` los reintenta porque los
+  // listeners se enganchan un par de frames después, al alcanzar el paso activo.
+  await waitFor(() => {
+    for (const type of ["animationend", "webkitAnimationEnd", "transitionend"]) {
+      dropdown.dispatchEvent(new Event(type, { bubbles: true }));
+    }
+    expect(screen.queryAllByRole("listbox")).toHaveLength(0);
+  });
+
+  await waitFor(() => expect(getDataRows().length).toBeGreaterThan(10));
+}
+
 beforeEach(() => {
   fixture = buildFixture();
   all = [...fixture.waf, ...fixture.jail];
@@ -198,6 +253,7 @@ describe("TemplatesPage — listado único y filtrable", () => {
   // ─── Escenario: All rule templates appear in one list ────────────────────
   it("renders the whole catalog as a single listing of 42 rows, with no tabs and no rate-limit-profiles section", async () => {
     renderPage();
+    await showWholeCatalog();
 
     const rows = await expectRows(42);
     expect(rows).toHaveLength(42);
@@ -217,6 +273,7 @@ describe("TemplatesPage — listado único y filtrable", () => {
   it("filters by pipeline to the 18 JAIL templates and restores the full catalog when cleared", async () => {
     const user = userEvent.setup();
     renderPage();
+    await showWholeCatalog();
 
     await selectOption(user, /pipeline/i, "Jail");
     await expectRows(JAIL_COUNT_TOTAL);
@@ -229,6 +286,7 @@ describe("TemplatesPage — listado único y filtrable", () => {
   it("filters by severity", async () => {
     const user = userEvent.setup();
     renderPage();
+    await showWholeCatalog();
 
     const expected = all.filter((t) => t.severity === "critico").length;
     await selectOption(user, /severity/i, "critico");
@@ -242,6 +300,7 @@ describe("TemplatesPage — listado único y filtrable", () => {
   it("filters by category", async () => {
     const user = userEvent.setup();
     renderPage();
+    await showWholeCatalog();
 
     const expected = all.filter((t) => t.category === "api").length;
     await selectOption(user, /category/i, "api");
@@ -255,6 +314,7 @@ describe("TemplatesPage — listado único y filtrable", () => {
   it("filters by action", async () => {
     const user = userEvent.setup();
     renderPage();
+    await showWholeCatalog();
 
     const expectedAllow = all.filter((t) => t.allow).length;
     await selectOption(user, /action/i, "Allow");
@@ -268,6 +328,7 @@ describe("TemplatesPage — listado único y filtrable", () => {
   it("treats must_have as a filter with 16 matches and keeps the full catalog reachable", async () => {
     const user = userEvent.setup();
     renderPage();
+    await showWholeCatalog();
 
     const toggle = await screen.findByRole("switch", { name: /must have/i });
     await user.click(toggle);
@@ -281,6 +342,7 @@ describe("TemplatesPage — listado único y filtrable", () => {
   it("combines the pipeline filter with free-text search", async () => {
     const user = userEvent.setup();
     renderPage();
+    await showWholeCatalog();
 
     await selectOption(user, /pipeline/i, "Jail");
     await expectRows(JAIL_COUNT_TOTAL);
@@ -293,6 +355,7 @@ describe("TemplatesPage — listado único y filtrable", () => {
   // ─── Escenario: Default order (must_have first, then by weight) ──────────
   it("orders must_have templates first and the rest by weight", async () => {
     renderPage();
+    await showWholeCatalog();
 
     const rows = await expectRows(42);
     const names = rows.map(nameOfRow);
@@ -325,6 +388,7 @@ describe("TemplatesPage — listado único y filtrable", () => {
     vi.stubGlobal("fetch", fetchMock);
 
     renderPage();
+    await showWholeCatalog();
     await expectRows(42);
 
     const applyButtons = await screen.findAllByRole("button", {
@@ -423,6 +487,7 @@ describe("TemplatesPage — listado único y filtrable", () => {
   // ─── Guarda de regresión: columna Profile ────────────────────────────────
   it("shows the rate limit profile on JAIL rows and a placeholder on WAF rows", async () => {
     renderPage();
+    await showWholeCatalog();
 
     const rows = await expectRows(42);
     const jailRow = rows.find(
@@ -445,5 +510,98 @@ describe("TemplatesPage — listado único y filtrable", () => {
     expect(
       within(wafRow as HTMLElement).getAllByText("—").length,
     ).toBeGreaterThan(0);
+  });
+});
+
+describe("pagination", () => {
+  /**
+   * Abre el selector de tamaño de página de antd y devuelve sus opciones.
+   *
+   * El selector lo genera la `Pagination` de antd, no la página, así que no
+   * tiene `aria-label` propio en el código de la app: su nombre accesible
+   * `"Page Size"` lo inyecta el locale `en_US` de `@rc-component/pagination`
+   * (`page_size: "Page Size"`). Por eso se localiza por rol + nombre y no por
+   * clases CSS internas. Cada opción es un `role="option"` cuyo `title` es
+   * `"<n> / page"` (el locale compone `${n} ${items_per_page}` con
+   * `items_per_page: "/ page"`).
+   */
+  async function sizeChangerOptions(user: UserEvent): Promise<HTMLElement[]> {
+    const combo = await screen.findByRole("combobox", { name: "Page Size" });
+    await user.click(combo);
+    const listbox = await screen.findByRole("listbox");
+    const dropdown = listbox.closest<HTMLElement>(".ant-select-dropdown");
+    if (!dropdown) {
+      throw new Error("Ant Select dropdown container not found");
+    }
+    return within(dropdown).getAllByRole("option");
+  }
+
+  // ─── Escenario: «The templates listing is paginated at 10» ───────────────
+  it("arranca en 10 filas y la última página (la 5ª) muestra las 2 restantes", async () => {
+    const user = userEvent.setup();
+    renderPage();
+
+    // El catálogo tiene 42 plantillas. Sin paginación se renderizan las 42 de
+    // golpe, y `getDataRows()` cuenta exactamente las filas renderizadas: el 10
+    // fija el tamaño de página por defecto del requisito. Se mide con
+    // `getDataRows()` directamente —y no con `expectRows()`— porque ese helper
+    // se ensanchará en GREEN.
+    await waitFor(() => expect(getDataRows()).toHaveLength(10));
+    expect(getDataRows()).toHaveLength(10);
+
+    // 42 plantillas a 10 por página => 5 páginas; la última retiene 42 - 40 = 2.
+    // Los items de paginación de antd llevan `title="<n>"` (marcado estable: es
+    // el atributo que antd usa para sus propios tests; las clases
+    // `ant-pagination-item-*` son detalle de presentación), así que la 5ª
+    // página se localiza con `getByTitle("5")`.
+    await user.click(screen.getByTitle("5"));
+
+    await waitFor(() => expect(getDataRows()).toHaveLength(2));
+    expect(getDataRows()).toHaveLength(2);
+  });
+
+  // ─── Escenario: «The templates listing is paginated at 10» (rangos) ──────
+  it("ofrece exactamente 10, 50 y 100 en el selector de tamaño de página", async () => {
+    const user = userEvent.setup();
+    renderPage();
+
+    // El desplegable de tamaño solo existe si el listado está paginado: primero
+    // se confirma que hay filas, luego que la paginación está disponible.
+    await waitFor(() => expect(getDataRows().length).toBeGreaterThan(0));
+
+    const options = await sizeChangerOptions(user);
+    expect(options.map((o) => o.getAttribute("title"))).toEqual([
+      "10 / page",
+      "50 / page",
+      "100 / page",
+    ]);
+
+    // Fuerza la aserción: el rango 20 (el que hoy ofrece el Log Viewer) no debe
+    // aparecer. Sin esta comprobación un `toEqual` con 10/50/100/20 pasaría si
+    // el orden cambiara.
+    expect(screen.queryByTitle("20 / page")).toBeNull();
+  });
+
+  // ─── Escenario: «Filtering the templates listing returns to the first page» ─
+  it("al filtrar desde la última página vuelve a la primera, sin quedar vacío", async () => {
+    const user = userEvent.setup();
+    renderPage();
+
+    await waitFor(() => expect(getDataRows()).toHaveLength(10));
+    await user.click(screen.getByTitle("5"));
+    await waitFor(() => expect(getDataRows()).toHaveLength(2));
+
+    // El filtro `Jail` deja 18 plantillas: más de una página (18 > 10) pero
+    // menos que las 5 páginas del conjunto completo. Si el número de página no
+    // se reiniciase, la tabla seguiría en la 5ª página —ya fuera de rango— y
+    // aparecería vacía. Que se vean 10 filas y que la primera sea el primer
+    // JAIL del conjunto filtrado (`fixture.jail[0]`, el `must_have` de menor
+    // peso) demuestra que se volvió a la página 1 con los datos filtrados.
+    await selectOption(user, /pipeline/i, "Jail");
+
+    await waitFor(() => expect(getDataRows()).toHaveLength(10));
+    const rows = getDataRows();
+    expect(rows).toHaveLength(10);
+    expect(nameOfRow(rows[0])).toBe(fixture.jail[0].name);
   });
 });

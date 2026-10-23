@@ -109,6 +109,14 @@ interface State {
   capacity: number;
   hiddenEvents: string[];
   autoRefresh: boolean;
+  /**
+   * Entradas por página del visor. Vive en el estado —y no como prop constante
+   * del `Table`— porque pasar `pageSize` convierte esa parte de la `Pagination`
+   * de antd en controlada: con un valor fijo el selector de tamaño no podría
+   * cambiarlo. No se persiste en `localStorage`: el estado persistido sigue
+   * siendo `{hiddenEvents, autoRefresh}`.
+   */
+  pageSize: number;
 }
 
 export class InnerPage extends React.Component<Props, State> {
@@ -125,6 +133,7 @@ export class InnerPage extends React.Component<Props, State> {
       capacity: 1000,
       hiddenEvents: persisted.hiddenEvents,
       autoRefresh: persisted.autoRefresh,
+      pageSize: 10,
     };
   }
 
@@ -454,9 +463,22 @@ export class InnerPage extends React.Component<Props, State> {
           scroll={{ x: 1200 }}
           loading={loading && entries.length > 0}
           pagination={{
-            pageSize: 50,
-            pageSizeOptions: ["20", "50", "100"],
+            pageSize: this.state.pageSize,
+            pageSizeOptions: ["10", "50", "100"],
             showSizeChanger: true,
+            // `pageSize` sale del estado para que el selector de tamaño pueda
+            // fijarlo (un valor constante en el `Table` lo dejaría controlado y
+            // el selector sería inerte). La `Pagination` de antd emite
+            // `onChange` también al cambiar el tamaño —llama a
+            // `onShowSizeChange` y a `onChange` con el nuevo tamaño—, así que
+            // basta con esta rama. `current` no se controla: el visor no
+            // necesita resetear a la página 1 y antd recorta la página si queda
+            // fuera de rango.
+            onChange: (_page, pageSize) => {
+              // Sólo se confirma el tamaño: `current` no se controla, y antd
+              // recorta la página si el conjunto encogido la deja fuera de rango.
+              if (pageSize !== this.state.pageSize) this.setState({ pageSize });
+            },
             showTotal: (total, range) =>
               `${range[0]}-${range[1]} of ${total} entries`,
           }}
