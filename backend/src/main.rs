@@ -55,6 +55,25 @@ use tracing_subscriber::{EnvFilter, layer::SubscriberExt, util::SubscriberInitEx
 
 const STATIC_DIR: &str = "static";
 
+/// Longitud mínima exigida al secreto de firma (README.md y SELF-HOSTING.md).
+const MIN_SECRET_LEN: usize = 32;
+
+/// Devuelve el aviso a registrar si el secreto es demasiado corto. No menciona
+/// el secreto de ninguna forma: ni su valor, ni truncado, ni su longitud.
+const fn weak_secret_warning(secret: &str) -> Option<&'static str> {
+    // El aviso nombra el mínimo exigido —el literal, no una interpolación— y
+    // jamás lo que mide el secreto que hay: ni su valor, ni truncado, ni su
+    // longitud. Es `const fn` porque el cuerpo lo permite y
+    // `clippy::missing_const_for_fn` está activo en este crate.
+    if secret.len() < MIN_SECRET_LEN {
+        return Some(
+            "SECRET is shorter than the 32 characters required to sign the JWTs; \
+             rotate it with `openssl rand -hex 32`",
+        );
+    }
+    None
+}
+
 #[allow(
     clippy::too_many_lines,
     clippy::duration_suboptimal_units,
@@ -85,7 +104,10 @@ async fn main() -> Result<(), Error> {
         var("MAXMIND_DB_PATH").unwrap_or_else(|_| "geo/GeoLite2-City.mmdb".to_string());
     info!("Maxmin DB Path: {}", maxmind_db_path);
     let secret = var("SECRET").expect("SECRET environment variable is mandatory");
-    debug!("Secret: {}", secret);
+
+    if let Some(warning) = weak_secret_warning(&secret) {
+        warn!("{warning}");
+    }
 
     if !sqlx::Sqlite::database_exists(&db_url).await.unwrap() {
         sqlx::Sqlite::create_database(&db_url).await.unwrap();
@@ -431,4 +453,71 @@ async fn main() -> Result<(), Error> {
     axum::serve(listener, app).await?;
 
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{MIN_SECRET_LEN, weak_secret_warning};
+
+    /// Ancla entre la constante y el texto del aviso. El mensaje dice «the 32
+    /// characters» como literal a propósito: nombrar `MIN_SECRET_LEN` dentro de
+    /// él dispararía la guarda `secret_hygiene` —la constante lleva la palabra
+    /// `secret`—, así que este `assert` es lo único que impide que el número del
+    /// texto y la constante se separen a escondidas.
+    #[test]
+    fn el_numero_del_aviso_es_la_constante() {
+        assert_eq!(
+            MIN_SECRET_LEN, 32,
+            "el aviso dice «the 32 characters»; si cambia la constante, cambia el texto"
+        );
+    }
+
+    /// Un secreto de 10 caracteres —por debajo del mínimo de 32 que exigen el
+    /// README y la guía de autohospedaje— dispara el aviso, que nombra el
+    /// requisito y nunca el secreto.
+    #[test]
+    fn un_secreto_corto_dispara_el_aviso() {
+        let warning =
+            weak_secret_warning("0123456789").expect("un secreto de 10 caracteres debe avisar");
+        assert!(
+            warning.contains("32"),
+            "el aviso debe nombrar el mínimo exigido, y dice: {warning}"
+        );
+    }
+
+    /// Un secreto de 64 caracteres no avisa: el control que impide que la
+    /// función avise de más.
+    #[test]
+    fn un_secreto_largo_no_dispara_el_aviso() {
+        let secret = "a".repeat(64);
+        assert!(
+            weak_secret_warning(&secret).is_none(),
+            "un secreto de 64 caracteres no debe avisar"
+        );
+    }
+
+    /// La frontera, por el lado de dentro: con un carácter menos que el mínimo
+    /// el aviso tiene que salir. Sin este caso un `<` convertido en `<=`
+    /// pasaría inadvertido, porque los otros dos escenarios (10 y 64) quedan
+    /// lejos del borde.
+    #[test]
+    fn un_secreto_de_31_caracteres_dispara_el_aviso() {
+        let secret = "a".repeat(MIN_SECRET_LEN - 1);
+        assert!(
+            weak_secret_warning(&secret).is_some(),
+            "un secreto de 31 caracteres debe avisar"
+        );
+    }
+
+    /// La frontera, por el lado de fuera: justo el mínimo no avisa. La
+    /// constante es la fuente del número, así que el caso sigue siendo el borde
+    /// aunque `MIN_SECRET_LEN` cambie.
+    #[test]
+    fn un_secreto_de_32_caracteres_no_dispara_el_aviso() {
+        let secret = "a".repeat(MIN_SECRET_LEN);
+        assert!(
+            weak_secret_warning(&secret).is_none(),
+            "un secreto de 32 caracteres no debe avisar"
+        );
+    }
 }

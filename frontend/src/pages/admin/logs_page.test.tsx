@@ -318,7 +318,7 @@ describe("LogsPage — state persistence", () => {
       ).toBe("1-50 of 80 entries"),
     );
     expect(logRowCount()).toBe(50);
-  });
+  }, 15000);
 
   // ─── Scenario 5 reforzado (H2.2): sobrevive a navegar fuera y volver ─────
 

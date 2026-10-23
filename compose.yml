@@ -6,7 +6,7 @@ services:
     init: true
     environment:
       # --- App ---
-      RUST_LOG: backend=debug,maxminddb=warn
+      RUST_LOG: backend=info,maxminddb=warn
       RUST_BACTRACE: full
       RUST_ENV: production
       PORT: 3000
