@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeAll, beforeEach, afterEach } from "vitest";
-import { render, screen, within, waitFor } from "@testing-library/react";
+import { render, screen, within, waitFor, cleanup } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import type { UserEvent } from "@testing-library/user-event";
 import TemplatesPage from "./templates_page";
@@ -611,4 +611,100 @@ describe("pagination", () => {
     expect(rows).toHaveLength(10);
     expect(nameOfRow(rows[0])).toBe(fixture.jail[0].name);
   });
+});
+
+// ─── El peso no se ofrece donde no decide ────────────────────────────────────
+// Escenario del delta: «El peso no se ofrece donde no aplica» — GIVEN una
+// plantilla cuyo pipeline es `jail` WHEN se abre su diálogo THEN el campo Weight
+// no se ofrece AND el valor que la interfaz envía para esa regla es 0. El WAF se
+// usa como contraste: allí el peso sí decide (`first match wins` por `weight
+// ASC`), así que el campo sigue ofreciéndose con el peso de la plantilla.
+
+/** Cuerpo de la regla que la interfaz envía a `POST /api/v1/rules`. */
+interface CreatedRuleBody {
+  name: string;
+  pipeline: string;
+  weight: number;
+}
+
+/** Forma mínima del `fetch` sustituido: solo importan las opciones de cada
+ *  llamada (el segundo argumento), que es donde viajan método y cuerpo. */
+interface FetchStub {
+  mock: { calls: RequestInit[][] };
+}
+
+/** Cuerpos JSON de las peticiones POST registradas por el `fetch` sustituido. */
+function createdRuleBodies(fetchStub: FetchStub): CreatedRuleBody[] {
+  return fetchStub.mock.calls
+    .filter(([, init]) => init.method === "POST")
+    .map(([, init]) => JSON.parse(init.body as string) as CreatedRuleBody);
+}
+
+describe("apply modal: el peso no se ofrece donde no decide", () => {
+  afterEach(() => {
+    vi.unstubAllGlobals();
+  });
+
+  it("does not offer Weight when applying a JAIL template — and sends 0 — while a WAF template keeps its weight", async () => {
+    const user = userEvent.setup();
+    const fetchMock = vi.fn().mockResolvedValue({
+      ok: true,
+      status: 200,
+      json: async () => ({}),
+    });
+    vi.stubGlobal("fetch", fetchMock);
+
+    renderPage();
+    await showWholeCatalog();
+    await expectRows(42);
+
+    // ── Plantilla de JAIL: el pipeline evalúa todas las reglas que casan, sin
+    //    `break`, así que un peso editable sería una decisión sin efecto ──
+    const jailTemplate = fixture.jail[0];
+    await user.click(
+      screen.getByRole("button", {
+        name: `Apply template ${jailTemplate.name}`,
+      }),
+    );
+    const jailDialog = await screen.findByRole("dialog");
+    // Ni la etiqueta del campo…
+    expect(within(jailDialog).queryByText("Weight")).toBeNull();
+    // …ni ningún control numérico que lo edite.
+    expect(within(jailDialog).queryByRole("spinbutton")).toBeNull();
+
+    await user.click(
+      within(jailDialog).getByRole("button", { name: /create rule/i }),
+    );
+    await waitFor(() => expect(createdRuleBodies(fetchMock)).toHaveLength(1));
+    const jailBody = createdRuleBodies(fetchMock)[0];
+    expect(jailBody.pipeline).toBe("jail");
+    expect(jailBody.weight).toBe(0);
+
+    // ── Plantilla de WAF: el peso ordena la evaluación, así que se sigue
+    //    ofreciendo y viaja con el valor de la plantilla ──
+    cleanup();
+    renderPage();
+    await showWholeCatalog();
+    await expectRows(42);
+
+    const wafTemplate = fixture.waf[0];
+    await user.click(
+      screen.getByRole("button", {
+        name: `Apply template ${wafTemplate.name}`,
+      }),
+    );
+    const wafDialog = await screen.findByRole("dialog");
+    expect(within(wafDialog).getByText("Weight")).toBeTruthy();
+    expect(
+      (within(wafDialog).getByRole("spinbutton") as HTMLInputElement).value,
+    ).toBe(String(wafTemplate.weight));
+
+    await user.click(
+      within(wafDialog).getByRole("button", { name: /create rule/i }),
+    );
+    await waitFor(() => expect(createdRuleBodies(fetchMock)).toHaveLength(2));
+    const wafBody = createdRuleBodies(fetchMock)[1];
+    expect(wafBody.pipeline).toBe("waf");
+    expect(wafBody.weight).toBe(wafTemplate.weight);
+  }, 15000);
 });
