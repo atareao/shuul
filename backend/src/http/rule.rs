@@ -8,7 +8,7 @@ use crate::constants::DEFAULT_PAGE;
 use crate::models::error::AppError;
 use crate::models::{
     ApiResponse, AppState, Data, NewRule, PagedResponse, Pagination, ReadRuleParams, Rule,
-    UpdateRule,
+    UpdateRule, normalized_weight,
 };
 use axum::{
     Json, Router,
@@ -274,6 +274,10 @@ pub async fn import_handler(
 
     for rule in &payload.rules {
         let now = chrono::Utc::now();
+        // El peso pasa por el único punto de coerción: una regla de Jail se importa
+        // siempre con peso 0, traiga lo que traiga el JSON.
+        let pipeline = rule.pipeline.as_deref().unwrap_or("waf");
+        let weight = normalized_weight(pipeline, rule.weight.unwrap_or(100));
         let sql = r"INSERT INTO rules (
             name, description, weight, mode, pipeline, allow,
             ip_address, protocol, fqdn, path, query,
@@ -310,9 +314,9 @@ pub async fn import_handler(
         sqlx::query(sql)
             .bind(&rule.name)
             .bind(rule.description.as_deref().unwrap_or(""))
-            .bind(rule.weight.unwrap_or(100))
+            .bind(weight)
             .bind(rule.mode.as_deref().unwrap_or("log_only"))
-            .bind(rule.pipeline.as_deref().unwrap_or("waf"))
+            .bind(pipeline)
             .bind(rule.allow.unwrap_or(true))
             .bind(&rule.ip_address)
             .bind(&rule.protocol)
