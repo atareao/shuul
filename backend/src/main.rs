@@ -457,7 +457,20 @@ async fn main() -> Result<(), Error> {
 
 #[cfg(test)]
 mod tests {
-    use super::weak_secret_warning;
+    use super::{MIN_SECRET_LEN, weak_secret_warning};
+
+    /// Ancla entre la constante y el texto del aviso. El mensaje dice «the 32
+    /// characters» como literal a propósito: nombrar `MIN_SECRET_LEN` dentro de
+    /// él dispararía la guarda `secret_hygiene` —la constante lleva la palabra
+    /// `secret`—, así que este `assert` es lo único que impide que el número del
+    /// texto y la constante se separen a escondidas.
+    #[test]
+    fn el_numero_del_aviso_es_la_constante() {
+        assert_eq!(
+            MIN_SECRET_LEN, 32,
+            "el aviso dice «the 32 characters»; si cambia la constante, cambia el texto"
+        );
+    }
 
     /// Un secreto de 10 caracteres —por debajo del mínimo de 32 que exigen el
     /// README y la guía de autohospedaje— dispara el aviso, que nombra el
@@ -480,6 +493,31 @@ mod tests {
         assert!(
             weak_secret_warning(&secret).is_none(),
             "un secreto de 64 caracteres no debe avisar"
+        );
+    }
+
+    /// La frontera, por el lado de dentro: con un carácter menos que el mínimo
+    /// el aviso tiene que salir. Sin este caso un `<` convertido en `<=`
+    /// pasaría inadvertido, porque los otros dos escenarios (10 y 64) quedan
+    /// lejos del borde.
+    #[test]
+    fn un_secreto_de_31_caracteres_dispara_el_aviso() {
+        let secret = "a".repeat(MIN_SECRET_LEN - 1);
+        assert!(
+            weak_secret_warning(&secret).is_some(),
+            "un secreto de 31 caracteres debe avisar"
+        );
+    }
+
+    /// La frontera, por el lado de fuera: justo el mínimo no avisa. La
+    /// constante es la fuente del número, así que el caso sigue siendo el borde
+    /// aunque `MIN_SECRET_LEN` cambie.
+    #[test]
+    fn un_secreto_de_32_caracteres_no_dispara_el_aviso() {
+        let secret = "a".repeat(MIN_SECRET_LEN);
+        assert!(
+            weak_secret_warning(&secret).is_none(),
+            "un secreto de 32 caracteres no debe avisar"
         );
     }
 }

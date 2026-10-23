@@ -5,7 +5,10 @@
       variable del secreto (recorriendo `src/main.rs`).
       **Hecho:** `backend/tests/secret_hygiene.rs` recorre `backend/src` y marca toda invocación
       de log que interpole un identificador con la palabra `secret` (valor, truncamiento y
-      longitud), con controles positivo y negativo.
+      longitud), con controles positivo y negativo. `LOG_MACROS` incluye también los volcados
+      directos `dbg!`, `print!` y `eprint!` —clippy no los vigila: `clippy::dbg_macro` es del
+      grupo `restriction`, que este crate no activa—, y hay controles de conteo único para
+      `println!` y `eprintln!`.
 - [x] 1.2 `backend/tests/`: guarda que falla si el `RUST_LOG` por defecto del `compose.yml`
       contiene `debug`.
       **Hecho:** segunda guarda en `secret_hygiene.rs`, sobre la línea `RUST_LOG:` de `compose.yml`.
@@ -16,7 +19,9 @@
 - [x] 1.4 `backend/src/main.rs`: test unitario de la función que decide el aviso
       (`#[cfg(test)] mod tests`), cubriendo los dos escenarios del requisito «Un secreto débil se
       denuncia al arrancar»: un secreto de 10 caracteres dispara el aviso, uno de 64 no.
-      **Hecho:** `#[cfg(test)] mod tests` en `main.rs` con los dos escenarios.
+      **Hecho:** `#[cfg(test)] mod tests` en `main.rs` con los dos escenarios, más la frontera
+      del mínimo (31 avisa, 32 no) y un `assert_eq!(MIN_SECRET_LEN, 32)` que ata el literal del
+      aviso a la constante para que no se separen a escondidas.
 
 ## 2. GREEN
 - [x] 2.1 `backend/src/main.rs`: fuera el `debug!("Secret: {}", secret)`.

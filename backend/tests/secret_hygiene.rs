@@ -20,8 +20,13 @@ use std::fs;
 use std::path::{Path, PathBuf};
 
 /// Macros whose argument ends up in the log or on a stream.
-const LOG_MACROS: [&str; 7] = [
-    "debug", "info", "warn", "error", "trace", "println", "eprintln",
+///
+/// `dbg!` dumps its argument to stderr *and* echoes it back into the source,
+/// and `clippy::dbg_macro` lives in the `restriction` group — which this crate
+/// does not enable —, so nothing else would stop it. `print!` and `eprint!`
+/// are the write-half of `println!`/`eprintln!`.
+const LOG_MACROS: [&str; 10] = [
+    "debug", "info", "warn", "error", "trace", "println", "eprintln", "print", "eprint", "dbg",
 ];
 
 /// Any identifier that carries the word `secret`, in any case.
@@ -236,6 +241,81 @@ fn un_argumento_que_interpola_el_secreto_se_detecta() {
     assert_eq!(found[0].0, "debug");
 }
 
+/// Positive control: the direct dumps that skip `tracing` altogether are covered
+/// too. `dbg!` writes the value to stderr and echoes it back into the source,
+/// and it is the macro most likely to reach a debugger's hand, so a guard that
+/// ignores it leaves the cheapest regression path open.
+#[test]
+fn un_volcado_con_dbg_se_detecta() {
+    let source = r"dbg!(secret);";
+    let found = secret_interpolations(source);
+    assert_eq!(
+        found.len(),
+        1,
+        "`dbg!` over `secret` must be detected, got {found:?}"
+    );
+    assert_eq!(found[0].0, "dbg");
+}
+
+/// Positive control: `print!` writes to stdout without going through the logger,
+/// so it must be scanned like `println!`.
+#[test]
+fn una_impresion_directa_se_detecta() {
+    let source = r#"print!("{}", secret);"#;
+    let found = secret_interpolations(source);
+    assert_eq!(
+        found.len(),
+        1,
+        "`print!` over `secret` must be detected, got {found:?}"
+    );
+    assert_eq!(found[0].0, "print");
+}
+
+/// Positive control: `eprint!` writes to stderr —where `dbg!` goes too— and is
+/// the write-half of `eprintln!`.
+#[test]
+fn una_impresion_directa_a_stderr_se_detecta() {
+    let source = r#"eprint!("{}", secret);"#;
+    let found = secret_interpolations(source);
+    assert_eq!(
+        found.len(),
+        1,
+        "`eprint!` over `secret` must be detected, got {found:?}"
+    );
+    assert_eq!(found[0].0, "eprint");
+}
+
+/// Adding `print` and `eprint` must not make `eprintln!` count twice: `print!`
+/// never matches inside `eprintln!` (the character after `print` is `l`, not
+/// `!`), `eprint!` never matches inside `eprintln!` either (same reason), and
+/// the `print!` that *does* sit inside `eprint!` is rejected as the tail of a
+/// longer identifier. One invocation, one hit.
+#[test]
+fn una_invocacion_de_eprintln_se_cuenta_una_sola_vez() {
+    let source = r#"eprintln!("{}", secret);"#;
+    let found = secret_interpolations(source);
+    assert_eq!(
+        found.len(),
+        1,
+        "`eprintln!` must be counted exactly once, got {found:?}"
+    );
+    assert_eq!(found[0].0, "eprintln");
+}
+
+/// Mirror of the control above: `println!` stays at one hit after `print` joins
+/// the list — `print!` is not a substring of `println!`.
+#[test]
+fn una_invocacion_de_println_se_cuenta_una_sola_vez() {
+    let source = r#"println!("{}", secret);"#;
+    let found = secret_interpolations(source);
+    assert_eq!(
+        found.len(),
+        1,
+        "`println!` must be counted exactly once, got {found:?}"
+    );
+    assert_eq!(found[0].0, "println");
+}
+
 /// Negative control: the warning required by the spec *names* the requirement,
 /// so its literal contains the word `SECRET`. A guard that flagged it would
 /// force the fix to drop the message; stripping string literals keeps the
@@ -266,5 +346,38 @@ fn la_depuracion_no_esta_activa_por_defecto_en_el_compose() {
     assert!(
         !line.to_ascii_lowercase().contains("debug"),
         "the default RUST_LOG enables debug: {line}"
+    );
+}
+
+/// The other half of the scenario: the `backend` target must run at `info`.
+/// The whole filter is not pinned — other targets are welcome — and spaces
+/// around the `=` and the commas are tolerated, so adding an objective does not
+/// break the guard. Today this passes because `compose.yml` already reads
+/// `backend=info,maxminddb=warn`; the assertion is there so it cannot silently
+/// drift to `warn`.
+#[test]
+fn el_objetivo_backend_corre_en_info_por_defecto_en_el_compose() {
+    let compose = Path::new(env!("CARGO_MANIFEST_DIR")).join("../compose.yml");
+    let source = fs::read_to_string(&compose)
+        .unwrap_or_else(|error| panic!("cannot read {}: {error}", compose.display()));
+    let line = source
+        .lines()
+        .find(|line| line.trim_start().starts_with("RUST_LOG:"))
+        .expect("compose.yml declares a default RUST_LOG");
+    let filter = line
+        .split_once(':')
+        .map(|(_, rest)| rest)
+        .expect("the RUST_LOG declaration has a `:` separator");
+
+    let level = filter
+        .split(',')
+        .filter_map(|directive| directive.split_once('='))
+        .find(|(target, _)| target.trim() == "backend")
+        .map(|(_, level)| level.trim())
+        .expect("the default RUST_LOG must set a level for the `backend` target");
+
+    assert_eq!(
+        level, "info",
+        "the default RUST_LOG must run the `backend` target at `info`: {line}"
     );
 }
