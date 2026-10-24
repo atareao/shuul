@@ -74,36 +74,68 @@ El contenido del panel SHALL empezar en la parte alta del área de contenido, si
 - **THEN** NO SHALL existir un elemento con la clase `ant-layout-header`
 - **AND** SHALL seguir existiendo la barra lateral y el pie de página
 
-### Requirement: La sesión y el tema se gobiernan desde el pie de la barra lateral
+### Requirement: El pie de la barra lateral gobierna la sesión, el tema y el colapso
 
-El control de cerrar sesión, el conmutador de tema y el control de colapsar/descolapsar la barra lateral SHALL vivir en un mismo contenedor, dentro de la barra lateral y anclado a su parte inferior.
+El cierre de sesión, el cambio de tema y el colapso de la barra lateral SHALL gobernarse desde un bloque de entradas al pie de la barra lateral, y esas entradas SHALL tener la misma forma que las de navegación: icono y etiqueta, una por línea.
 
-Los tres controles SHALL colocarse en una fila cuando la barra lateral está desplegada y en columna cuando está colapsada, de modo que quepan en el ancho del raíl.
+Las tres entradas SHALL rotularse en inglés, como el resto de la navegación: «Theme», «Log out» y «Collapse».
 
-Cada control SHALL declarar su propio nombre accesible con `aria-label`, porque los de cerrar sesión y colapsar son botones de solo icono y su nombre NO SHALL depender del que aporte el icono que lleven dentro.
+La entrada de tema SHALL cambiar el tema al pulsarla —NO SHALL ser un interruptor— y su icono SHALL reflejar el tema activo.
 
-El conmutador de tema NO SHALL declarar márgenes propios: el espaciado SHALL ser responsabilidad del contenedor en el que se monte.
+La entrada de colapso SHALL alternar el estado de la barra lateral y SHALL anunciarlo con `aria-expanded`.
 
-#### Scenario: Los tres controles viven en el pie de la barra lateral
+Con la barra lateral colapsada, las tres entradas SHALL mostrar solo su icono, igual que las entradas de navegación.
+
+El bloque SHALL quedar siempre a la vista: la barra lateral SHALL permanecer pegada a la ventana, de modo que el bloque NO SHALL quedar por debajo del pliegue ni siquiera en las páginas más altas que la ventana, y el menú de navegación SHALL desplazarse dentro de la barra.
+
+El bloque NO SHALL contener el menú de navegación.
+
+#### Scenario: Las tres entradas viven al pie, con forma de menú
 - **WHEN** se renderiza cualquier página del panel
-- **THEN** el botón de cerrar sesión, el conmutador de tema y el control de colapsar SHALL estar dentro de la barra lateral
-- **AND** los tres SHALL compartir el mismo contenedor, anclado a la parte inferior de la barra
+- **THEN** las tres entradas SHALL estar dentro de la barra lateral
+- **AND** SHALL compartir un bloque al pie de la barra
+- **AND** SHALL tener la forma de las entradas de navegación, con icono y etiqueta
+- **AND** ese bloque NO SHALL contener el menú de navegación
 
-#### Scenario: Una fila desplegada, una columna colapsada
-- **WHEN** la barra lateral está desplegada
-- **THEN** los tres controles SHALL colocarse en una fila
-- **AND** al colapsar la barra SHALL colocarse en columna
+#### Scenario: Las etiquetas están en inglés
+- **WHEN** se renderiza el bloque del pie
+- **THEN** las tres entradas SHALL rotularse «Theme», «Log out» y «Collapse»
 
-#### Scenario: Cada control declara su nombre accesible
-- **WHEN** se renderiza el pie de la barra lateral
-- **THEN** el botón de cerrar sesión SHALL declarar su propio `aria-label`, no el del icono
-- **AND** el control de colapsar SHALL declarar su propio `aria-label`, no el del icono
-- **AND** el conmutador de tema SHALL seguir declarando el suyo
+#### Scenario: El pie se ve también en las páginas largas
+- **WHEN** se abre una página del panel más alta que la ventana
+- **THEN** la barra lateral SHALL permanecer pegada a la ventana
+- **AND** el bloque del pie SHALL seguir a la vista, sin quedar por debajo del pliegue
+- **AND** el menú de navegación SHALL desplazarse dentro de la barra
 
 #### Scenario: El tema se cambia desde el pie
-- **WHEN** el usuario conmuta el tema desde el pie de la barra lateral
-- **THEN** el tema de la aplicación SHALL cambiar, como cambiaba desde la cabecera
+- **WHEN** el usuario pulsa la entrada de tema
+- **THEN** el tema de la aplicación SHALL cambiar
+- **AND** el icono de la entrada SHALL reflejar el tema activo
 
 #### Scenario: La barra lateral se colapsa desde el pie
-- **WHEN** el usuario pulsa el control de colapsar
+- **WHEN** el usuario pulsa la entrada de colapso
 - **THEN** la barra lateral SHALL colapsar o desplegarse, alternando en cada pulsación
+- **AND** la entrada SHALL anunciar el estado de la barra con `aria-expanded`
+
+#### Scenario: Las entradas se pliegan con la barra
+- **WHEN** la barra lateral está colapsada
+- **THEN** las tres entradas SHALL mostrar solo su icono
+- **AND** NO SHALL desbordar el ancho del raíl
+
+### Requirement: La barra lateral lleva la marca de la aplicación
+
+La barra lateral SHALL mostrar en su parte alta, por encima de la navegación, el icono de la aplicación y el nombre «Shuul».
+
+Con la barra lateral colapsada SHALL mostrarse solo el icono.
+
+La marca NO SHALL ser una entrada de navegación ni SHALL ocupar el lugar de ninguna.
+
+#### Scenario: La marca encabeza la barra
+- **WHEN** se renderiza cualquier página del panel
+- **THEN** SHALL verse el icono de la aplicación y el nombre «Shuul» en la parte alta de la barra lateral
+- **AND** SHALL estar por encima de la primera entrada de navegación
+
+#### Scenario: Con la barra colapsada solo queda el icono
+- **WHEN** la barra lateral está colapsada
+- **THEN** SHALL verse el icono de la aplicación
+- **AND** NO SHALL verse el nombre
