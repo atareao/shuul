@@ -29,11 +29,11 @@
 
 ## 3. REFACTOR
 
-- [ ] 3.1 `npm run lint` y `tsc -b --force` limpios, sin `eslint-disable` ni `any`.
-- [ ] 3.2 Comprobar que no queda ninguna referencia a `/login` en `frontend/src` (búsqueda sin resultados).
-- [ ] 3.3 Comprobar que la URL del SSO se compone en un único sitio.
-- [ ] 3.4 Comprobar que no queda ninguna referencia a `signin`, `register`, `UserCredentials` ni `SignInSubmitHandler` en `frontend/src`.
-- [ ] 3.5 Comprobar que el anclaje del pie no depende de CSS global: va por el `styles` del `Sider`, sin reglas nuevas en `App.css` ni en `index.css`.
+- [x] 3.1 `npm run lint` y `tsc -b --force` limpios, sin `eslint-disable` ni `any`.
+- [x] 3.2 Comprobar que no queda ninguna referencia **ejecutable** a `/login` en `frontend/src`: las únicas apariciones son el comentario que explica la redirección en `App.tsx` y las rutas de prueba que comprueban que no se navega a ella.
+- [x] 3.3 Comprobar que la URL del SSO se compone en un único sitio.
+- [x] 3.4 Comprobar que no queda ninguna referencia a `signin`, `register`, `UserCredentials` ni `SignInSubmitHandler` en `frontend/src`.
+- [x] 3.5 Comprobar que el anclaje del pie no depende de CSS global: va por el `styles` del `Sider`, sin reglas nuevas en `App.css` ni en `index.css`.
 
 ## 4. Verificación manual (operador, en el navegador)
 

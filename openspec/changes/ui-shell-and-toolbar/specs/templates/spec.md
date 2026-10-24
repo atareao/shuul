@@ -19,9 +19,13 @@ SHALL ocupar una línea propia a ancho completo. La línea NO SHALL envolver: an
 partirse, los controles SHALL encogerse. El buscador SHALL ser el elemento flexible:
 SHALL declarar su ancho preferido, crecer por encima de él para ocupar el espacio libre
 y ceder espacio encogiéndose cuando falte. Los filtros SHALL declarar su ancho preferido
-y SHALL poder encogerse también. Ningún control SHALL fijar un ancho propio en píxeles
-ni un mínimo rígido: el ancho efectivo SHALL ser el que reparta la fila, de modo que la
-línea nunca desborde su contenedor.
+y SHALL poder encogerse también, pero NO SHALL crecer por encima de él: **solo el
+buscador crece**. El interruptor `must_have` NO SHALL encogerse.
+
+Los controles SHALL poder encogerse por debajo del tamaño de su contenido, de modo que
+la fila nunca desborde su contenedor: cada uno NO SHALL fijar un ancho propio en píxeles
+ni un mínimo rígido —un `min-width` con valor positivo sería precisamente lo que
+devolvería a la fila un suelo duro y la haría desbordar en ventanas estrechas—.
 
 El detalle de los filtros de una plantilla SHALL mostrarse en la propia fila
 (expandible) y NO SHALL ocupar el espacio de la lista con etiquetas de resumen.
@@ -64,6 +68,10 @@ plantillas `must_have` y después el resto por peso.
 
 #### Scenario: The row shrinks before it wraps
 - **WHEN** la ventana se estrecha
-- **THEN** los controles SHALL encogerse por debajo de su ancho preferido, cediendo espacio
+- **THEN** los controles SHALL encogerse por debajo de su ancho preferido, cediendo espacio, y por debajo incluso del tamaño de su contenido
 - **AND** la fila NO SHALL partirse en dos líneas
-- **AND** el contenido NO SHALL salirse de su contenedor
+- **AND** el contenido NO SHALL desbordar su contenedor: ni barra de desplazamiento horizontal ni recorte
+
+#### Scenario: The switch keeps its size
+- **WHEN** la ventana se estrecha
+- **THEN** el interruptor `must_have` NO SHALL encogerse: conserva su tamaño mientras el resto cede espacio
