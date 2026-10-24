@@ -711,3 +711,202 @@ describe("apply modal: el peso no se ofrece donde no decide", () => {
     expect(wafBody.weight).toBe(wafTemplate.weight);
   }, 15000);
 });
+
+// ─── Previsualización de filtros: los valores largos no desbordan ────────────
+// Delta `template-filters-overflow`. Los tags que muestran el valor de un filtro
+// deben truncar su contenido con elipsis (CSS, no JavaScript) y ofrecer el valor
+// íntegro en un `Tooltip` de antd, tanto en la previsualización del diálogo de
+// aplicar plantilla —sección de filtros y sección de scope— como en el detalle
+// expandible de una fila del listado.
+
+describe("previsualización de filtros: los valores largos no desbordan", () => {
+  // Path real de la plantilla `Scanner directorios+configs+paneles` (314 chars).
+  const LONG_PATH =
+    "^/(admin|administrator|backup|backups|tmp|temp|test|tests|dev|development|private|restrito|old|new)(/|$)|\\.(env|bak|sql|dump|config|yml|yaml|json|log|ini)$|/(wp-config|configuration\\.php|settings|database\\.yml)|^/(panel|cpanel|plesk|webmin|vestacp|kloxo|directadmin|phpmyadmin|pma|myadmin|mysql|phpPgAdmin|pgadmin)";
+
+  const LONG_TEMPLATE_NAME = "Scanner directorios+configs+paneles";
+
+  const LONG_FQDN =
+    "scanner-probes-scope-with-a-very-long-name.internal.example-with-a-long-domain.test.example.com";
+
+  /**
+   * Catálogo mínimo servido sólo para estos tests: una única plantilla JAIL con
+   * el path de 314 caracteres. No se toca el fixture compartido —sus recuentos
+   * los afirman otros tests—: se sobrescribe la respuesta de `loadData` aquí,
+   * como ya hace el test de «surfaces a load error».
+   */
+  function serveLongTemplate(
+    overrides: Partial<RuleTemplate> = {},
+  ): RuleTemplate {
+    const template = makeRuleTemplate({
+      name: LONG_TEMPLATE_NAME,
+      pipeline: "jail",
+      path: LONG_PATH,
+      rate_limit_profile_id: 9,
+      rate_limit_profile_name: "Scanner Aggressive",
+      ...overrides,
+    });
+    vi.mocked(loadData).mockResolvedValue({
+      status: 200,
+      data: { waf: [], jail: [template] },
+    });
+    return template;
+  }
+
+  /** Devuelve el `span.ant-tag` cuyo texto empieza por `prefix`. */
+  function findTagByPrefix(prefix: string): HTMLElement {
+    const tags = screen.queryAllByText((_content, element) => {
+      return (
+        element instanceof HTMLElement &&
+        element.tagName === "SPAN" &&
+        element.classList.contains("ant-tag") &&
+        (element.textContent ?? "").startsWith(prefix)
+      );
+    });
+    if (tags.length === 0) {
+      throw new Error(`No ant-tag whose text starts with "${prefix}" was found`);
+    }
+    return tags[0];
+  }
+
+  /**
+   * El estilo inline que trunca el contenido en vez de desbordar: el tag puede
+   * encogerse hasta el ancho del contenedor y recorta con elipsis. Se lee el
+   * estilo inline (`element.style`), no la hoja de antd, porque es ahí donde el
+   * arreglo lo declara.
+   */
+  function expectTruncatingStyle(tag: HTMLElement): void {
+    expect(tag.style.maxWidth).toBe("100%");
+    expect(tag.style.overflow).toBe("hidden");
+    expect(tag.style.textOverflow).toBe("ellipsis");
+    expect(tag.style.whiteSpace).toBe("nowrap");
+  }
+
+  /**
+   * Pasa el ratón por `trigger` y espera a que aparezca un tooltip cuyo texto
+   * contenga `expected`. antd monta el tooltip en un portal y, con `role`, sobre
+   * el contenedor `.ant-tooltip-container` (`@rc-component/tooltip`), así que se
+   * localiza por rol y se comprueba su texto. Se busca entre **todos** los
+   * tooltips montados porque, tras un hover previo, el popup anterior puede
+   * seguir en el DOM.
+   */
+  async function hoverForTooltip(
+    user: UserEvent,
+    trigger: HTMLElement,
+    expected: string,
+  ): Promise<void> {
+    await user.hover(trigger);
+    await waitFor(
+      () => {
+        const tips = screen.queryAllByRole("tooltip");
+        expect(tips.some((t) => (t.textContent ?? "").includes(expected))).toBe(
+          true,
+        );
+      },
+      { timeout: 3000 },
+    );
+  }
+
+  /** Renderiza, espera la única fila y abre el diálogo de aplicar la plantilla. */
+  async function openApplyDialog(
+    user: UserEvent,
+    name: string,
+  ): Promise<HTMLElement> {
+    renderPage();
+    await expectRows(1);
+    await user.click(
+      screen.getByRole("button", { name: `Apply template ${name}` }),
+    );
+    return screen.findByRole("dialog");
+  }
+
+  // ─── Tarea 1.1 ───────────────────────────────────────────────────────────
+  it("trunca el tag del path de 314 caracteres en el diálogo de aplicar plantilla", async () => {
+    serveLongTemplate();
+    const user = userEvent.setup();
+    await openApplyDialog(user, LONG_TEMPLATE_NAME);
+
+    const pathTag = findTagByPrefix("Path:");
+    expectTruncatingStyle(pathTag);
+  });
+
+  // ─── Tarea 1.2 ───────────────────────────────────────────────────────────
+  it("ofrece el regex completo en un tooltip al pasar el ratón por el tag del path", async () => {
+    serveLongTemplate();
+    const user = userEvent.setup();
+    await openApplyDialog(user, LONG_TEMPLATE_NAME);
+
+    const pathTag = findTagByPrefix("Path:");
+    await hoverForTooltip(user, pathTag, LONG_PATH);
+  });
+
+  // ─── Tarea 1.3 ───────────────────────────────────────────────────────────
+  // Guarda de regresión: el truncado es visual (CSS), no recorta el DOM. Este
+  // test pasa ya antes del arreglo.
+  it("mantiene el regex completo en el texto del tag, no sólo en el tooltip", async () => {
+    serveLongTemplate();
+    const user = userEvent.setup();
+    await openApplyDialog(user, LONG_TEMPLATE_NAME);
+
+    const pathTag = findTagByPrefix("Path:");
+    expect(pathTag.textContent).toContain(LONG_PATH);
+  });
+
+  // ─── Tarea 1.4 ───────────────────────────────────────────────────────────
+  it("trunca los tags del detalle expandible y da a cada uno su tooltip con el valor completo", async () => {
+    serveLongTemplate({
+      method: "GET",
+      user_agent:
+        "SomeVeryLongUserAgentThatWouldOverflowTheRowIfItWereNotTruncated/1.0",
+    });
+    const user = userEvent.setup();
+    renderPage();
+
+    const rows = await expectRows(1);
+    await user.click(
+      within(rows[0]).getByRole("button", { name: /expand row/i }),
+    );
+
+    // El detalle expandible se ve con sus tags de filtro…
+    const pathTag = findTagByPrefix("Path:");
+    const methodTag = findTagByPrefix("Method:");
+    expectTruncatingStyle(pathTag);
+    expectTruncatingStyle(methodTag);
+
+    // …y cada uno ofrece su valor completo en un tooltip.
+    await hoverForTooltip(user, pathTag, LONG_PATH);
+    await hoverForTooltip(user, methodTag, "Method: GET");
+  });
+
+  // ─── Tarea 1.5 ───────────────────────────────────────────────────────────
+  it("trunca el tag del scope y le da su tooltip al escribir un FQDN largo", async () => {
+    serveLongTemplate();
+    const user = userEvent.setup();
+    await openApplyDialog(user, LONG_TEMPLATE_NAME);
+
+    // El input opcional es el que se ofrece cuando `requires_fqdn` es `false`.
+    await user.type(screen.getByPlaceholderText("FQDN (optional)"), LONG_FQDN);
+
+    await waitFor(() => {
+      expect(findTagByPrefix("FQDN:").textContent).toContain(LONG_FQDN);
+    });
+    const scopeTag = findTagByPrefix("FQDN:");
+
+    expectTruncatingStyle(scopeTag);
+    await hoverForTooltip(user, scopeTag, LONG_FQDN);
+  });
+
+  // ─── Tarea 1.6 ───────────────────────────────────────────────────────────
+  it("deja ver el valor íntegro de un filtro corto (Method: GET)", async () => {
+    serveLongTemplate({ method: "GET" });
+    const user = userEvent.setup();
+    await openApplyDialog(user, LONG_TEMPLATE_NAME);
+
+    // jsdom no maqueta —no calcula layout—, así que «sin elipsis visible» no es
+    // comprobable aquí: se comprueba que el estilo es el mismo y que el texto no
+    // se ha recortado.
+    const methodTag = findTagByPrefix("Method:");
+    expectTruncatingStyle(methodTag);
+    expect(methodTag.textContent).toContain("GET");
+  });
+});
