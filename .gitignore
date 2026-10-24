@@ -32,3 +32,7 @@ geo
 data
 db
 backed
+
+# El frontend construido que sirve el backend en local (`just dev`). Es un
+# artefacto generado, no código: se regenera con `just dev`.
+backend/static
