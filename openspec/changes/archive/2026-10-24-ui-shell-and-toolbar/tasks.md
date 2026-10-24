@@ -37,6 +37,6 @@
 
 ## 4. Verificación manual (operador, en el navegador)
 
-- [ ] 4.1 Sin sesión, abrir `/admin/`: se acaba en la portada, con el botón de iniciar sesión a la vista.
-- [ ] 4.2 En el panel: no hay franja superior; el pie de la barra lateral lleva cerrar sesión, tema y colapsar en una fila, y al colapsar pasan a columna sin salirse del raíl.
-- [ ] 4.3 En plantillas: el buscador y los filtros comparten una sola línea; al estrechar la ventana los controles se encogen y la fila no se parte.
+- [x] 4.1 Sin sesión, abrir `/admin/`: se acaba en la portada, con el botón de iniciar sesión a la vista.
+- [x] 4.2 En el panel: no hay franja superior; el pie de la barra lateral lleva cerrar sesión, tema y colapsar en una fila, y al colapsar pasan a columna sin salirse del raíl.
+- [x] 4.3 En plantillas: el buscador y los filtros comparten una sola línea; al estrechar la ventana los controles se encogen y la fila no se parte.
