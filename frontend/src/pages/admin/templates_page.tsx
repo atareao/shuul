@@ -15,6 +15,7 @@ import {
   Spin,
   Empty,
   Switch,
+  Tooltip,
 } from "antd";
 import type { TableColumnsType } from "antd";
 import {
@@ -104,6 +105,21 @@ const CATEGORY_LABELS: Record<string, string> = {
   infra: "Infraestructura",
   probes: "Probes de seguridad",
   webmail: "Webmail",
+};
+
+/**
+ * El valor de un filtro puede medir cientos de caracteres (el path de
+ * «Scanner directorios+configs+paneles» mide 314). Un `Tag` de antd es
+ * `white-space: nowrap` y, dentro de un contenedor flex, tiene `min-width: auto`:
+ * no se encoge, así que un valor largo se sale del diálogo. El límite es el del
+ * contenedor (`max-width: 100%`, nunca un ancho en píxeles) y lo que no cabe se
+ * convierte en elipsis; el valor íntegro viaja en el tooltip.
+ */
+const FILTER_VALUE_TAG_STYLE: React.CSSProperties = {
+  maxWidth: "100%",
+  overflow: "hidden",
+  textOverflow: "ellipsis",
+  whiteSpace: "nowrap",
 };
 
 /** Filtros de una plantilla, en el orden en que se muestran al expandir la fila. */
@@ -487,16 +503,59 @@ export default class TemplatesPage extends React.Component<
     },
   ];
 
+  /**
+   * Único punto de construcción de un «tag de valor de filtro»: el `Tag` con
+   * `FILTER_VALUE_TAG_STYLE` (y `fontSize: 12`) y, cuando hay valor íntegro que
+   * leer, su `Tooltip` con el texto completo. Existe porque ese mismo par
+   * «tag + tooltip» se repetía en los trece filtros del diálogo, en los dos del
+   * scope, en el perfil de rate limit y en el detalle de la fila expandible:
+   * sin esta fábrica, cualquier ajuste de estilo o de accesibilidad habría que
+   * replicarlo (y mantenerlo sincronizado) en cada copia.
+   *
+   * Un `title` ausente (`undefined`) devuelve el `Tag` sin `Tooltip`: es el caso
+   * de los marcadores de valor ausente («Path: —»), donde no hay valor que leer
+   * entero y un tooltip con el propio marcador sobraría. La `key`, cuando se
+   * pasa, viaja al elemento más externo —el `Tooltip` si lo hay, el `Tag` si
+   * no— para que el array de `renderFilterDetails` conserve su clave.
+   */
+  private filterValueTag = (
+    text: string,
+    options: {
+      color?: string;
+      icon?: React.ReactNode;
+      title?: string;
+      key?: string;
+    } = {},
+  ): React.ReactNode => {
+    const buildTag = (key?: string): React.ReactNode => (
+      <Tag
+        key={key}
+        color={options.color}
+        icon={options.icon}
+        style={{ ...FILTER_VALUE_TAG_STYLE, fontSize: 12 }}
+      >
+        {text}
+      </Tag>
+    );
+
+    if (options.title === undefined) {
+      return buildTag(options.key);
+    }
+
+    return (
+      <Tooltip key={options.key} title={options.title}>
+        {buildTag()}
+      </Tooltip>
+    );
+  };
+
   private renderFilterDetails = (t: RuleTemplate): React.ReactNode => {
     const details = FILTER_DETAIL_FIELDS.flatMap(({ key, label }) => {
       const value = t[key];
       if (value === null || value === undefined) return [];
       const display = typeof value === "boolean" ? (value ? "yes" : "no") : value;
-      return [
-        <Tag key={key} color="blue">
-          {label}: {display}
-        </Tag>,
-      ];
+      const text = `${label}: ${display}`;
+      return [this.filterValueTag(text, { color: "blue", title: text, key })];
     });
 
     if (details.length === 0) {
@@ -743,77 +802,73 @@ export default class TemplatesPage extends React.Component<
                 🔍 Filters
               </Text>
               <Flex wrap gap="small" style={{ marginBottom: 12 }}>
-                {selected?.path ? (
-                  <Tag color="blue" style={{ fontSize: 12 }}>
-                    Path: {selected.path}
-                  </Tag>
-                ) : (
-                  <Tag style={{ fontSize: 12 }}>Path: —</Tag>
-                )}
-                {selected?.query ? (
-                  <Tag color="purple" style={{ fontSize: 12 }}>
-                    Query: {selected.query}
-                  </Tag>
-                ) : (
-                  <Tag style={{ fontSize: 12 }}>Query: —</Tag>
-                )}
-                {selected?.country_code ? (
-                  <Tag color="cyan" style={{ fontSize: 12 }}>
-                    Country: {selected.country_code}
-                  </Tag>
-                ) : (
-                  <Tag style={{ fontSize: 12 }}>Country: —</Tag>
-                )}
-                {selected?.user_agent && (
-                  <Tag color="volcano" style={{ fontSize: 12 }}>
-                    UA: {selected.user_agent}
-                  </Tag>
-                )}
-                {selected?.method && (
-                  <Tag color="magenta" style={{ fontSize: 12 }}>
-                    Method: {selected.method}
-                  </Tag>
-                )}
-                {selected?.referer && (
-                  <Tag color="purple" style={{ fontSize: 12 }}>
-                    Referer: {selected.referer}
-                  </Tag>
-                )}
-                {selected?.content_type && (
-                  <Tag color="cyan" style={{ fontSize: 12 }}>
-                    Content-Type: {selected.content_type}
-                  </Tag>
-                )}
-                {selected?.city_name && (
-                  <Tag color="geekblue" style={{ fontSize: 12 }}>
-                    City: {selected.city_name}
-                  </Tag>
-                )}
-                {selected?.country_name && (
-                  <Tag color="green" style={{ fontSize: 12 }}>
-                    Country: {selected.country_name}
-                  </Tag>
-                )}
-                {selected?.ip_address && (
-                  <Tag color="lime" style={{ fontSize: 12 }}>
-                    IP: {selected.ip_address}
-                  </Tag>
-                )}
-                {selected?.protocol && (
-                  <Tag color="gold" style={{ fontSize: 12 }}>
-                    Protocol: {selected.protocol}
-                  </Tag>
-                )}
-                {selected?.accept_language && (
-                  <Tag color="orange" style={{ fontSize: 12 }}>
-                    Accept-Lang: {selected.accept_language}
-                  </Tag>
-                )}
-                {selected?.x_request_id && (
-                  <Tag style={{ fontSize: 12 }}>
-                    X-Request-ID: {selected.x_request_id}
-                  </Tag>
-                )}
+                {selected?.path
+                  ? this.filterValueTag(`Path: ${selected.path}`, {
+                      color: "blue",
+                      title: `Path: ${selected.path}`,
+                    })
+                  : this.filterValueTag("Path: —")}
+                {selected?.query
+                  ? this.filterValueTag(`Query: ${selected.query}`, {
+                      color: "purple",
+                      title: `Query: ${selected.query}`,
+                    })
+                  : this.filterValueTag("Query: —")}
+                {selected?.country_code
+                  ? this.filterValueTag(`Country: ${selected.country_code}`, {
+                      color: "cyan",
+                      title: `Country: ${selected.country_code}`,
+                    })
+                  : this.filterValueTag("Country: —")}
+                {selected?.user_agent &&
+                  this.filterValueTag(`UA: ${selected.user_agent}`, {
+                    color: "volcano",
+                    title: `UA: ${selected.user_agent}`,
+                  })}
+                {selected?.method &&
+                  this.filterValueTag(`Method: ${selected.method}`, {
+                    color: "magenta",
+                    title: `Method: ${selected.method}`,
+                  })}
+                {selected?.referer &&
+                  this.filterValueTag(`Referer: ${selected.referer}`, {
+                    color: "purple",
+                    title: `Referer: ${selected.referer}`,
+                  })}
+                {selected?.content_type &&
+                  this.filterValueTag(`Content-Type: ${selected.content_type}`, {
+                    color: "cyan",
+                    title: `Content-Type: ${selected.content_type}`,
+                  })}
+                {selected?.city_name &&
+                  this.filterValueTag(`City: ${selected.city_name}`, {
+                    color: "geekblue",
+                    title: `City: ${selected.city_name}`,
+                  })}
+                {selected?.country_name &&
+                  this.filterValueTag(`Country: ${selected.country_name}`, {
+                    color: "green",
+                    title: `Country: ${selected.country_name}`,
+                  })}
+                {selected?.ip_address &&
+                  this.filterValueTag(`IP: ${selected.ip_address}`, {
+                    color: "lime",
+                    title: `IP: ${selected.ip_address}`,
+                  })}
+                {selected?.protocol &&
+                  this.filterValueTag(`Protocol: ${selected.protocol}`, {
+                    color: "gold",
+                    title: `Protocol: ${selected.protocol}`,
+                  })}
+                {selected?.accept_language &&
+                  this.filterValueTag(`Accept-Lang: ${selected.accept_language}`, {
+                    color: "orange",
+                    title: `Accept-Lang: ${selected.accept_language}`,
+                  })}
+                {selected?.x_request_id &&
+                  this.filterValueTag(`X-Request-ID: ${selected.x_request_id}`, {
+                    title: `X-Request-ID: ${selected.x_request_id}`,
+                  })}
               </Flex>
 
               {/* Scope section */}
@@ -824,12 +879,14 @@ export default class TemplatesPage extends React.Component<
                 🎯 Scope
               </Text>
               <Flex wrap gap="small">
-                <Tag style={{ fontSize: 12 }}>
-                  FQDN: {this.state.fqdn.trim() || "(all)"}
-                </Tag>
-                <Tag style={{ fontSize: 12 }}>
-                  IP: {this.state.ipAddress.trim() || "(all)"}
-                </Tag>
+                {this.filterValueTag(
+                  `FQDN: ${this.state.fqdn.trim() || "(all)"}`,
+                  { title: `FQDN: ${this.state.fqdn.trim() || "(all)"}` },
+                )}
+                {this.filterValueTag(
+                  `IP: ${this.state.ipAddress.trim() || "(all)"}`,
+                  { title: `IP: ${this.state.ipAddress.trim() || "(all)"}` },
+                )}
               </Flex>
 
               {/* Rate limit profile for jail */}
@@ -852,13 +909,11 @@ export default class TemplatesPage extends React.Component<
                     >
                       ⏱ Rate Limit Profile
                     </Text>
-                    <Tag
-                      icon={<LockOutlined />}
-                      color="orange"
-                      style={{ fontSize: 12 }}
-                    >
-                      {selected.rate_limit_profile_name}
-                    </Tag>
+                    {this.filterValueTag(selected.rate_limit_profile_name, {
+                      color: "orange",
+                      icon: <LockOutlined />,
+                      title: selected.rate_limit_profile_name,
+                    })}
                   </>
                 )}
             </div>
