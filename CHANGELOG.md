@@ -1,4 +1,18 @@
 # Changelog
+## [0.24.0] - 2026-10-24
+
+### Documentation
+
+- *(openspec)* Marca la verificación 5.1 y 5.2 de client-address-consistency
+- Registra la medición 0.1 y el matiz del último elemento
+- *(openspec)* Archiva waf-input-integrity y client-address-consistency
+- *(openspec)* Propone waf-transformations
+- Documenta las transformaciones en las tres guías
+
+### Features
+
+- *(waf)* La pipeline de transformaciones se aplica al valor de la petición
+- *(admin)* Ofrece las transformaciones como chips en el diálogo de regla
 ## [0.23.1] - 2026-10-24
 
 ### Bug Fixes
@@ -9,6 +23,10 @@
 
 - *(openspec)* Propone client-address-consistency
 - Anota en el roadmap el defecto medido del GeoIP y Tor
+
+### Miscellaneous Tasks
+
+- Release v0.23.1
 ## [0.23.0] - 2026-10-24
 
 ### Bug Fixes
