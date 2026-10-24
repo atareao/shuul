@@ -530,11 +530,13 @@ pnpm build                # Outputs to dist/
 ### Full Stack (via just)
 
 ```bash
-just frontend     # Build frontend, copy to backend/static
+just frontend     # Dev server (Vite, port 5173)
 just backend      # Run backend
 just dev          # Build frontend + copy + run backend
 just build        # Build Docker image
 ```
+
+`backend/static` es un artefacto generado por `just dev`: no se versiona.
 
 ### Database
 

@@ -2,6 +2,10 @@
 target
 # Directorio de artefactos de Node
 node_modules
+# El frontend construido que sirve el backend en local: la imagen lo recibe del
+# stage del frontend (`COPY --from=frontend-builder /build/dist /app/static`),
+# nunca del contexto de build.
+backend/static
 # Ignorar carpetas de control de versiones
 .git
 
