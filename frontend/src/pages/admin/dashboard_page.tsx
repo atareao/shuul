@@ -5,12 +5,10 @@ import { useTranslation } from "react-i18next";
 import { Flex, Typography, Avatar, Card } from "antd";
 
 import { loadData } from "@/common/utils";
-import { VERSION } from "@/constants";
+import { TITLE } from "@/constants";
 import Logo from "@/assets/logo.svg";
 import type Rule from "@/models/rule";
 import type { RuleTemplate, TemplatesResponse } from "@/models/template";
-
-const TITLE = `Shuul (${VERSION})`;
 
 /** Firma exacta de la función de traducción devuelta por `useTranslation`. */
 type Translate = ReturnType<typeof useTranslation>["t"];
