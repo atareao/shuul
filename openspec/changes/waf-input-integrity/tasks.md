@@ -2,7 +2,8 @@
 
 ## 0. Medición previa (resuelve una decisión abierta)
 
-- [ ] 0.1 Medir si Traefik **añade** su elemento al final de `X-Forwarded-For` o lo **antepone**, con un Traefik de pruebas —**nunca en producción**— configurado con `trustForwardHeader: true` y una petición que ya lleve la cabecera. Anotar el valor observado. Si la medición contradice la elección del último elemento, corregir el test y la spec antes de seguir.
+- [ ] 0.1 Medir si Traefik **añade** su elemento al final de `X-Forwarded-For` o lo **antepone**, con un Traefik de pruebas —**nunca en producción**— configurado con `trustForwardHeader: true` y una petición que ya lleve la cabecera. Anotar el valor observado en esta tarea.
+- [ ] 0.2 La elección del **último** elemento la ha fijado el operador (2026-10-24) y NO SHALL cambiar por la medición por sí sola: si 0.1 la contradice, se anota y se vuelve al operador antes de tocar el test o la spec.
 
 ## 1. RED (tests que fallan primero)
 
