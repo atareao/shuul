@@ -2,9 +2,9 @@
 
 ## Purpose
 
-El armazón que envuelven todas las páginas: la envoltura pública con su cabecera, y el
-panel de administración con su barra lateral —navegación, sesión, tema y colapso— y sin
-cabecera superior. Cubre además las dos entradas al panel: sin sesión se acaba en la
+El armazón que envuelven todas las páginas: la envoltura pública —contenido y pie, sin
+cabecera— y el panel de administración con su barra lateral —navegación, sesión, tema y
+colapso— y sin cabecera superior. Cubre además la sesión: sin sesión se acaba en la
 portada pública, y es la portada la que arranca el flujo SSO.
 
 ## Requirements
@@ -39,29 +39,6 @@ Una visita directa a `/login` —un enlace o marcador anterior— SHALL redirigi
 - **WHEN** se inspecciona el frontend
 - **THEN** NO SHALL existir `components/signin.tsx` ni `components/register.tsx`
 - **AND** NO SHALL quedar ningún tipo de credenciales locales, con email y contraseña, en el código
-
-### Requirement: La portada pública es la entrada al panel
-
-La portada pública SHALL ofrecer un botón rotulado que arranque el flujo SSO, y ese botón SHALL usar el mismo mecanismo que la página de inicio de sesión eliminada: una navegación a `{BASE_URL}/api/v1/auth/sso`.
-
-El icono de la cabecera pública SHALL arrancar el mismo flujo, sin pasar por ninguna ruta intermedia.
-
-La URL del endpoint de SSO SHALL componerse en un único punto del frontend.
-
-#### Scenario: La portada ofrece entrar
-- **WHEN** un usuario sin sesión abre `/`
-- **THEN** SHALL ver un botón rotulado para iniciar sesión
-- **AND** al pulsarlo SHALL navegar al endpoint de SSO, `{BASE_URL}/api/v1/auth/sso`
-
-#### Scenario: El icono de la cabecera pública arranca el SSO
-- **WHEN** el usuario pulsa el icono de la cabecera de la parte pública
-- **THEN** SHALL navegar al endpoint de SSO
-- **AND** NO SHALL pasar por una ruta intermedia
-
-#### Scenario: La URL del SSO vive en un solo sitio
-- **WHEN** se inspecciona el frontend
-- **THEN** SHALL existir un único punto que componga `{BASE_URL}/api/v1/auth/sso`
-- **AND** NO SHALL existir `pages/public/login_page.tsx`
 
 ### Requirement: El panel de administración no tiene barra superior
 
@@ -139,3 +116,48 @@ La marca NO SHALL ser una entrada de navegación ni SHALL ocupar el lugar de nin
 - **WHEN** la barra lateral está colapsada
 - **THEN** SHALL verse el icono de la aplicación
 - **AND** NO SHALL verse el nombre
+
+### Requirement: La parte pública no pinta cabecera
+
+La envoltura pública NO SHALL pintar una cabecera superior: NO SHALL existir en su árbol un elemento con la clase `ant-layout-header`.
+
+La envoltura pública NO SHALL ofrecer un control de inicio de sesión propio.
+
+El contenido público SHALL empezar en la parte alta del área de contenido, sin la franja que ocupaba la cabecera.
+
+La portada SHALL ocupar el alto disponible del área de contenido, y NO SHALL imponer el alto de la ventana.
+
+El pie de la parte pública SHALL conservarse.
+
+#### Scenario: La parte pública no pinta cabecera
+- **WHEN** se renderiza cualquier página de la parte pública
+- **THEN** NO SHALL existir un elemento con la clase `ant-layout-header`
+- **AND** NO SHALL existir un control de inicio de sesión en la envoltura
+- **AND** SHALL seguir existiendo el pie de página
+
+#### Scenario: El contenido público empieza arriba
+- **WHEN** un usuario sin sesión abre `/`
+- **THEN** el contenido de la portada SHALL empezar en la parte alta del área de contenido, sin la franja que ocupaba la cabecera
+
+#### Scenario: La portada no fuerza el alto de la ventana
+- **WHEN** un usuario sin sesión abre `/`
+- **THEN** la portada SHALL ocupar el alto disponible del área de contenido
+- **AND** NO SHALL provocar desplazamiento vertical por sí sola
+
+### Requirement: La portada es la única entrada al SSO en la parte pública
+
+La portada pública SHALL ofrecer un botón rotulado que arranque el flujo SSO, y ese botón SHALL usar el mismo mecanismo que la página de inicio de sesión eliminada: una navegación a `{BASE_URL}/api/v1/auth/sso`.
+
+Ese botón SHALL ser la única entrada al flujo SSO en la parte pública.
+
+La URL del endpoint de SSO SHALL componerse en un único punto del frontend.
+
+#### Scenario: La portada ofrece entrar
+- **WHEN** un usuario sin sesión abre `/`
+- **THEN** SHALL ver un botón rotulado para iniciar sesión
+- **AND** al pulsarlo SHALL navegar al endpoint de SSO, `{BASE_URL}/api/v1/auth/sso`
+
+#### Scenario: La URL del SSO vive en un solo sitio
+- **WHEN** se inspecciona el frontend
+- **THEN** SHALL existir un único punto que componga `{BASE_URL}/api/v1/auth/sso`
+- **AND** NO SHALL existir `pages/public/login_page.tsx`
