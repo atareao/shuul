@@ -34,7 +34,7 @@
 - [x] 4.3 `SELF-HOSTING.md` §1: nuevos apartados con los ajustes de endurecimiento del entrypoint y sus valores —`aliasHeadersStrategy`, `encodedCharacters`, `maxHeaderBytes`— y **el orden**: primero la resolución de la dirección a un solo valor, después la confianza en la cabecera.
 - [x] 4.4 `SELF-HOSTING.md` §2.15 y `WAF-ROADMAP.md`: actualizar la referencia a `traefik:v3.7.5` por la versión que corre en producción.
 - [x] 4.5 Declarar en la guía que la dirección solo es fiable si el despliegue elimina las `X-Forwarded-*` que envía el cliente.
-- [ ] 4.6 Redactar el `Purpose` de `request-extraction` **después** de archivar: el archivado de una capability nueva lo deja como marcador y un delta no puede reemplazarlo.
+- [x] 4.6 Redactar el `Purpose` de `request-extraction` **después** de archivar: el archivado de una capability nueva lo deja como marcador y un delta no puede reemplazarlo. **Hecho el 2026-10-24**: `openspec/specs/request-extraction/spec.md` ya lleva el `Purpose` redactado en lugar del marcador.
 
 ## 5. Verificación manual (operador, en `co1`)
 
