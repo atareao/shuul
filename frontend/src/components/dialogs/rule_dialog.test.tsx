@@ -48,6 +48,7 @@ beforeAll(() => {
 interface RuleBody {
   pipeline: string;
   weight: number;
+  transformations: string;
 }
 
 /** Forma mínima del `fetch` sustituido: solo importan las opciones de cada
@@ -253,5 +254,245 @@ describe("RuleDialog: el peso no se ofrece donde no decide", () => {
     const wafBody = patchedRuleBodies(fetchMock)[1];
     expect(wafBody.pipeline).toBe("waf");
     expect(wafBody.weight).toBe(250);
+  });
+});
+
+// ─── La pipeline de transformaciones se edita en la pestaña «Request» ─────────
+// Escenario del delta: una regla puede declarar una pipeline de transformaciones
+// aplicada al valor de la petición antes de compararlo. La interfaz la construye
+// **en el orden en que se pulsan los nombres canónicos** —el orden importa:
+// `urlDecodeUni,lowercase` no es `lowercase,urlDecodeUni`—, la deja editar a
+// mano y la envía en `transformations` dentro del cuerpo de `POST`/`PATCH`.
+//
+// El `t` que recibe el diálogo es `(key) => key`, así que la etiqueta visible y
+// el `aria-label` del campo valen literalmente `Transformations` y el nombre
+// accesible de cada chip es el token canónico tal cual.
+
+/** Los 18 nombres canónicos, en el orden en que se ofrecen. */
+const CANONICAL_TRANSFORMATIONS = [
+  "urlDecode",
+  "urlDecodeUni",
+  "lowercase",
+  "uppercase",
+  "removeNulls",
+  "replaceNulls",
+  "compressWhitespace",
+  "removeWhitespace",
+  "normalizePath",
+  "normalizePathWin",
+  "htmlEntityDecode",
+  "jsDecode",
+  "cssDecode",
+  "escapeSeqDecode",
+  "base64Decode",
+  "cmdLine",
+  "trim",
+  "length",
+] as const;
+
+describe("RuleDialog: la pipeline de transformaciones", () => {
+  afterEach(() => {
+    vi.unstubAllGlobals();
+  });
+
+  /** Sustituye `fetch` por un doble que responde 200 con un cuerpo vacío. */
+  function stubFetch(): FetchStub {
+    const fetchMock = vi.fn().mockResolvedValue({
+      ok: true,
+      status: 200,
+      json: async () => ({}),
+    });
+    vi.stubGlobal("fetch", fetchMock);
+    return fetchMock;
+  }
+
+  /**
+   * Pulsa la pestaña «Request».
+   *
+   * antd sólo monta el panel de la pestaña activa, así que el campo y los chips
+   * no existen en el DOM hasta pulsarla. El icono de la etiqueta no aporta nada
+   * al nombre accesible, así que el `tab` se localiza por su texto.
+   */
+  async function openRequestTab(user: UserEvent): Promise<void> {
+    await user.click(await screen.findByRole("tab", { name: /request/i }));
+  }
+
+  /** El campo de texto de la especificación, por su `aria-label`. */
+  function transformationsInput(): HTMLInputElement {
+    return screen.getByRole("textbox", {
+      name: "Transformations",
+    }) as HTMLInputElement;
+  }
+
+  it("offers the eighteen canonical names as chips and builds the specification in the order they are pressed", async () => {
+    const user = userEvent.setup();
+    const fetchMock = stubFetch();
+
+    renderCreateDialog();
+    await openRequestTab(user);
+
+    // Los 18 nombres canónicos están presentes como elementos clicables.
+    for (const token of CANONICAL_TRANSFORMATIONS) {
+      expect(screen.getByRole("button", { name: token })).toBeTruthy();
+    }
+
+    await user.click(screen.getByRole("button", { name: "urlDecodeUni" }));
+    await user.click(screen.getByRole("button", { name: "lowercase" }));
+
+    expect(transformationsInput().value).toBe("urlDecodeUni,lowercase");
+
+    await submitDialog(user, fetchMock, 1);
+    expect(postedRuleBodies(fetchMock)[0].transformations).toBe(
+      "urlDecodeUni,lowercase",
+    );
+  });
+
+  it("respects the pressing order", async () => {
+    const user = userEvent.setup();
+    stubFetch();
+
+    renderCreateDialog();
+    await openRequestTab(user);
+
+    await user.click(screen.getByRole("button", { name: "lowercase" }));
+    await user.click(screen.getByRole("button", { name: "urlDecodeUni" }));
+
+    // El orden se conserva: no es un `Select` múltiple, donde el orden de
+    // selección se perdería y la pipeline se aplicaría al revés.
+    expect(transformationsInput().value).toBe("lowercase,urlDecodeUni");
+  });
+
+  it("lets the operator type the specification by hand, both in create and in edit mode", async () => {
+    const user = userEvent.setup();
+    const fetchMock = stubFetch();
+
+    // ── Creación: la especificación se escribe a mano en el campo ──
+    renderCreateDialog();
+    await openRequestTab(user);
+    const box = transformationsInput();
+    expect(box.value).toBe("");
+
+    await user.type(box, "trim");
+    expect(box.value).toBe("trim");
+
+    await submitDialog(user, fetchMock, 1);
+    expect(postedRuleBodies(fetchMock)[0].transformations).toBe("trim");
+
+    // ── Edición: el campo llega precargado con lo almacenado y viaja intacto ──
+    cleanup();
+    renderUpdateDialog({ ...WAF_ITEM, transformations: "urlDecodeUni" });
+    await openRequestTab(user);
+    expect(transformationsInput().value).toBe("urlDecodeUni");
+
+    await user.click(screen.getByRole("button", { name: "Ok" }));
+    await waitFor(() => expect(patchedRuleBodies(fetchMock)).toHaveLength(1));
+    expect(patchedRuleBodies(fetchMock)[0].transformations).toBe("urlDecodeUni");
+  });
+});
+
+// ─── Los chips: nombre accesible del grupo, saneo del borde y contrato vacío ──
+// El grupo de dieciocho chips necesita nombre accesible propio: sin él, quien
+// use un lector de pantalla oye botones sueltos sin saber a qué conjunto
+// pertenecen.
+//
+// El chip **añade** al final de lo escrito a mano, así que el borde derecho de
+// lo que ya había se sanea antes de concatenar: si el operador dejó una coma o
+// un espacio de sobra, el token no puede entrar tras un separador vacío. El
+// parser del backend es estricto y un token vacío (`unknown transformation
+// token ''`) devuelve un `400` que no orienta nada.
+//
+// La repetición deliberada sigue permitida: `urlDecodeUni,urlDecodeUni` es como
+// se cubre una doble codificación, así que ningún `Set` debe colarse aquí.
+describe("RuleDialog: el grupo de chips de transformaciones", () => {
+  afterEach(() => {
+    vi.unstubAllGlobals();
+  });
+
+  /** Sustituye `fetch` por un doble que responde 200 con un cuerpo vacío. */
+  function stubFetch(): FetchStub {
+    const fetchMock = vi.fn().mockResolvedValue({
+      ok: true,
+      status: 200,
+      json: async () => ({}),
+    });
+    vi.stubGlobal("fetch", fetchMock);
+    return fetchMock;
+  }
+
+  /** Pulsa la pestaña «Request», que es la única que monta el campo y los chips. */
+  async function openRequestTab(user: UserEvent): Promise<void> {
+    await user.click(await screen.findByRole("tab", { name: /request/i }));
+  }
+
+  /** El campo de texto de la especificación, por su `aria-label`. */
+  function transformationsInput(): HTMLInputElement {
+    return screen.getByRole("textbox", {
+      name: "Transformations",
+    }) as HTMLInputElement;
+  }
+
+  it("exposes the chip container as a named group", async () => {
+    const user = userEvent.setup();
+    stubFetch();
+
+    renderCreateDialog();
+    await openRequestTab(user);
+
+    // El conjunto de chips tiene rol `group` y nombre accesible propio, de modo
+    // que se distingue del campo de texto (mismo nombre, rol distinto).
+    expect(
+      screen.getByRole("group", { name: "Transformations" }),
+    ).toBeTruthy();
+  });
+
+  it("sanitizes the right edge of hand-written text before appending a chip", async () => {
+    const user = userEvent.setup();
+    stubFetch();
+
+    renderCreateDialog();
+    await openRequestTab(user);
+
+    // ── Coma final: `trim,` + chip → `trim,lowercase`, nunca `trim,,lowercase` ──
+    await user.type(transformationsInput(), "trim,");
+    await user.click(screen.getByRole("button", { name: "lowercase" }));
+    expect(transformationsInput().value).toBe("trim,lowercase");
+
+    // ── Espacio final: `trim ` + chip → `trim,lowercase`, nunca `trim ,lowercase` ──
+    await user.clear(transformationsInput());
+    await user.type(transformationsInput(), "trim ");
+    await user.click(screen.getByRole("button", { name: "lowercase" }));
+    expect(transformationsInput().value).toBe("trim,lowercase");
+  });
+
+  it("allows repeating a token on purpose: pressing urlDecodeUni twice writes it twice", async () => {
+    const user = userEvent.setup();
+    stubFetch();
+
+    renderCreateDialog();
+    await openRequestTab(user);
+
+    // Repetir un token es una elección legítima —la pipeline se aplica una sola
+    // vez y una doble codificación se cubre repitiendo el decodificador—, así
+    // que el chip no deduplica.
+    await user.click(screen.getByRole("button", { name: "urlDecodeUni" }));
+    await user.click(screen.getByRole("button", { name: "urlDecodeUni" }));
+    expect(transformationsInput().value).toBe("urlDecodeUni,urlDecodeUni");
+  });
+
+  it("sends an explicitly empty transformations field when editing a rule with none", async () => {
+    const user = userEvent.setup();
+    const fetchMock = stubFetch();
+
+    renderUpdateDialog({ ...WAF_ITEM, transformations: "" });
+    await openRequestTab(user);
+    expect(transformationsInput().value).toBe("");
+
+    await user.click(screen.getByRole("button", { name: "Ok" }));
+    await waitFor(() => expect(patchedRuleBodies(fetchMock)).toHaveLength(1));
+    const body = patchedRuleBodies(fetchMock)[0];
+    // La clave viaja **presente** y vacía, no ausente: la cadena vacía es la
+    // pipeline vacía y el `PATCH` declara el campo como obligatorio.
+    expect(Object.keys(body)).toContain("transformations");
+    expect(body.transformations).toBe("");
   });
 });

@@ -22,6 +22,7 @@ export interface RuleTemplate {
   // Existing fields:
   allow: boolean;
   pipeline: string;
+  transformations: string;
   rate_limit_profile_id: number | null;
   rate_limit_profile_name: string | null;
   requires_fqdn: boolean;

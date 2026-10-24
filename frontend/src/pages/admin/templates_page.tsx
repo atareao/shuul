@@ -69,6 +69,7 @@ type RuleCreatePayload = Pick<
   | "weight"
   | "allow"
   | "pipeline"
+  | "transformations"
   | "rate_limit_profile_id"
 > &
   TemplateFilterFields & {
@@ -280,6 +281,10 @@ export default class TemplatesPage extends React.Component<
         weight: isJailPipeline(template.pipeline) ? 0 : this.state.ruleWeight,
         allow: template.allow,
         pipeline: template.pipeline,
+        // La plantilla transfiere su pipeline de transformaciones tal cual: es
+        // el valor canónico que sirve el backend (la cadena vacía cuando no
+        // declara ninguna).
+        transformations: template.transformations,
         // All filter fields from template:
         path: template.path,
         query: template.query,
