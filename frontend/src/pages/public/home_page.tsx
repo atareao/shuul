@@ -24,7 +24,7 @@ export class HomeInnerPage extends react.Component<Props> {
         justify="center"
         align="center"
         gap="middle"
-        style={{ height: "100vh" }}
+        style={{ flex: 1 }}
       >
         <Typography.Title level={1} style={{ margin: 0 }}>
           Shuul

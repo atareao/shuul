@@ -1,13 +1,9 @@
 import react from "react";
 import { Outlet } from "react-router";
-import { Button, Layout, theme } from "antd";
+import { Layout, theme } from "antd";
 import type { GlobalToken } from "antd";
-import { LoginOutlined } from "@ant-design/icons";
 
-import ModeSwitcher from "@/components/mode_switcher";
-import { startSsoLogin } from "@/common/auth";
-
-const { Header, Footer, Content } = Layout;
+const { Footer, Content } = Layout;
 
 interface Props {
   /**
@@ -31,25 +27,17 @@ class InnerPublicLayout extends react.Component<Props> {
           color: this.props.token.colorText,
         }}
       >
-        <Header
+        {/* El contenido público es un contenedor flexible en columna: así la
+            portada ocupa el alto disponible en vez de imponerle el suyo, y
+            quitar la cabecera no deja un desplazamiento residual. */}
+        <Content
           style={{
+            padding: "24px",
+            flex: 1,
             display: "flex",
-            alignItems: "center",
-            justifyContent: "flex-end",
-            // La separación entre el botón de entrar y el conmutador de tema
-            // es cosa del contenedor: el conmutador ya no declara márgenes
-            // propios, porque dentro del pie del panel descuadrarían.
-            gap: 16,
-            height: 64,
-            paddingInline: 48,
+            flexDirection: "column",
           }}
         >
-          <Button variant="solid" onClick={() => startSsoLogin()}>
-            <LoginOutlined />
-          </Button>
-          <ModeSwitcher />
-        </Header>
-        <Content style={{ padding: "24px", flex: 1 }}>
           <Outlet />
         </Content>
 
