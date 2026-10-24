@@ -11,7 +11,8 @@ import {
   UploadOutlined,
 } from "@ant-design/icons";
 import type Item from "@/models/rule"; // Alias para Rule
-import { isJailPipeline } from "@/models/rule";
+import type { RuleImportResult } from "@/models/rule";
+import { describeRuleImport, isJailPipeline } from "@/models/rule";
 
 // Importamos CustomTable y los tipos necesarios
 import CustomTable from "@/components/custom_table";
@@ -229,8 +230,13 @@ export class InnerPage extends React.Component<
           throw new Error(`Import failed: ${response.status}`);
         }
 
-        const result = await response.json();
-        message.success(`Imported ${result.imported} rules`);
+        const result: RuleImportResult = await response.json();
+        const notice = describeRuleImport(result);
+        if (notice.kind === "warning") {
+          message.warning(notice.text);
+        } else {
+          message.success(notice.text);
+        }
         this.setState((prev) => ({
           refreshCounter: prev.refreshCounter + 1,
         }));
