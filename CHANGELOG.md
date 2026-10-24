@@ -1,4 +1,14 @@
 # Changelog
+## [0.22.0] - 2026-10-24
+
+### Documentation
+
+- *(openspec)* Archiva admin-sidebar-and-version y pliega sus deltas
+- *(openspec)* Propone public-landing-without-header
+
+### Features
+
+- *(ui)* La parte pública pierde su cabecera y la portada ocupa el alto disponible
 ## [0.21.0] - 2026-10-24
 
 ### Documentation
@@ -9,6 +19,10 @@
 ### Features
 
 - *(ui)* La barra lateral lleva la marca, el pie es un menú y la versión se declara en producción
+
+### Miscellaneous Tasks
+
+- Release v0.21.0
 ## [0.20.0] - 2026-10-24
 
 ### Documentation
