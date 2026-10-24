@@ -40,7 +40,10 @@ pub use rate_limiter::RateLimiter;
 pub use report::ReportPayload;
 pub use response::{ApiResponse, EmptyResponse, PagedResponse, Pagination};
 #[allow(unused_imports)]
-pub use rule::{CacheRule, NewRule, ReadRuleParams, Rule, UpdateRule, normalized_weight};
+pub use rule::{
+    CacheRule, JAIL_PIPELINE, NewRule, ReadRuleParams, Rule, UpdateRule, WAF_PIPELINE,
+    normalized_weight, validate_pipeline,
+};
 pub use settings::Settings;
 pub use stats::StatsCollector;
 pub use tor_service::TorService;

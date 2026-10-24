@@ -8,7 +8,7 @@ use crate::constants::DEFAULT_PAGE;
 use crate::models::error::AppError;
 use crate::models::{
     ApiResponse, AppState, Data, NewRule, PagedResponse, Pagination, ReadRuleParams, Rule,
-    UpdateRule, normalized_weight,
+    UpdateRule, WAF_PIPELINE, normalized_weight, validate_pipeline,
 };
 use axum::{
     Json, Router,
@@ -258,25 +258,41 @@ pub struct ImportPayload {
 /// ON CONFLICT (name) DO UPDATE SET ...
 /// ```
 ///
+/// La importación es **por entradas**: una entrada con un pipeline no admitido
+/// (lo que no sea exactamente `waf` o `jail`) no se almacena, pero tampoco aborta
+/// la importación entera ni se descarta en silencio —viaja de vuelta en `rejected`
+/// con su nombre y el motivo—. `imported` cuenta solo las que se almacenaron.
+///
 /// Después de importar, recarga la caché de reglas.
 ///
 /// * **Parameters**
 ///   - `app_state`: Shared state (DB pool, cache).
 ///   - `payload`: JSON con array de reglas (`{rules: [...]}`).
 /// * **Returns**
-///   - `Result<impl IntoResponse, AppError>` – `{imported: N}`.
+///   - `Result<impl IntoResponse, AppError>` – `{imported: N, rejected: [...]}`.
 pub async fn import_handler(
     State(app_state): State<Arc<AppState>>,
     Json(payload): Json<ImportPayload>,
 ) -> Result<impl IntoResponse, AppError> {
-    let count = payload.rules.len();
-    debug!("Importing {} rules", count);
+    debug!("Importing {} rules", payload.rules.len());
+
+    let mut imported = 0_usize;
+    let mut rejected: Vec<serde_json::Value> = Vec::new();
 
     for rule in &payload.rules {
         let now = chrono::Utc::now();
-        // El peso pasa por el único punto de coerción: una regla de Jail se importa
-        // siempre con peso 0, traiga lo que traiga el JSON.
-        let pipeline = rule.pipeline.as_deref().unwrap_or("waf");
+        // El pipeline se valida antes de tocar la base de datos y el peso pasa por
+        // el único punto de coerción: una regla de Jail se importa siempre con peso
+        // 0, traiga lo que traiga el JSON.
+        let pipeline = rule.pipeline.as_deref().unwrap_or(WAF_PIPELINE);
+        if let Err(error) = validate_pipeline(pipeline) {
+            debug!("Rule '{}' rejected on import: {error}", rule.name);
+            rejected.push(serde_json::json!({
+                "name": rule.name,
+                "reason": error.to_string(),
+            }));
+            continue;
+        }
         let weight = normalized_weight(pipeline, rule.weight.unwrap_or(100));
         let sql = r"INSERT INTO rules (
             name, description, weight, mode, pipeline, allow,
@@ -338,12 +354,19 @@ pub async fn import_handler(
             .bind(now)
             .execute(&app_state.pool)
             .await?;
+        imported += 1;
     }
 
     // Recargar la caché de reglas
     app_state.reload_rules().await?;
-    debug!("Rules cache reloaded after import");
+    debug!(
+        "Rules cache reloaded after import: {imported} imported, {} rejected",
+        rejected.len()
+    );
 
-    let response = serde_json::json!({"imported": count});
+    let response = serde_json::json!({
+        "imported": imported,
+        "rejected": rejected,
+    });
     Ok(Json(response))
 }

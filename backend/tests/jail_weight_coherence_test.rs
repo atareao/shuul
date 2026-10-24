@@ -159,29 +159,50 @@ async fn stored_weight(pool: &SqlitePool, name: &str) -> Option<i64> {
         .unwrap_or_else(|error| panic!("leer el peso de {name}: {error}"))
 }
 
+/// El pipeline tal y como está **almacenado** en la base de datos.
+async fn stored_pipeline(pool: &SqlitePool, name: &str) -> Option<String> {
+    sqlx::query_scalar("SELECT pipeline FROM rules WHERE name = ?")
+        .bind(name)
+        .fetch_optional(pool)
+        .await
+        .unwrap_or_else(|error| panic!("leer el pipeline de {name}: {error}"))
+}
+
+/// Filas modificadas por la última sentencia de escritura de la conexión
+/// (`sqlite3_changes()`), que es lo que mide «la migración no cambió nada».
+///
+/// Es observable porque el pool del harness tiene una **única** conexión
+/// (`max_connections(1)`): si tuviera más, `changes()` podría leerse en otra y
+/// devolver un valor ajeno a la sentencia que se quiere medir.
+async fn rows_changed(pool: &SqlitePool) -> i64 {
+    sqlx::query_scalar("SELECT changes()")
+        .fetch_one(pool)
+        .await
+        .unwrap_or_else(|error| panic!("leer changes(): {error}"))
+}
+
 // ---------------------------------------------------------------------------
 // 1.1 — La API no confía en el cliente
 // ---------------------------------------------------------------------------
 
-/// Escenario: «La API no confía en el cliente».
+/// Escenario: «La API no confía en el cliente» (vía de creación).
 ///
-/// GIVEN una petición de escritura con pipeline `jail` y un peso distinto de 0
-/// WHEN se crea (o se importa) la regla
+/// GIVEN una petición de creación con pipeline `jail` y un peso distinto de 0
+/// WHEN se crea la regla
 /// THEN queda almacenada con peso 0
 /// AND el peso que devuelve la API para esa regla es 0
 ///
-/// Se cubren las **tres** vías de escritura del cliente que el proposal nombra
-/// (creación, importación y, en el test siguiente, edición): la importación
-/// tiene su propio `INSERT ... ON CONFLICT` en `src/http/rule.rs` y sería un
-/// camino nuevo para reintroducir el peso si la coerción solo viviese en el
-/// handler de creación. Una regla del WAF se crea con el mismo peso para
+/// Se cubren las **tres** vías de escritura del cliente que el proposal nombra:
+/// creación (este test), importación (el siguiente) y edición (1.2). La
+/// importación tiene su propio `INSERT ... ON CONFLICT` en `src/http/rule.rs` y
+/// sería un camino nuevo para reintroducir el peso si la coerción solo viviese
+/// en el handler de creación. Una regla del WAF se crea con el mismo peso para
 /// comprobar que el WAF conserva el número: es el único pipeline donde decide.
 #[tokio::test]
-async fn la_api_no_confia_en_el_cliente_al_escribir_una_regla_de_jail() {
+async fn la_api_no_confia_en_el_cliente_al_crear_una_regla_de_jail() {
     let pool = create_migrated_pool().await;
     let state = build_app_state(pool.clone());
 
-    // --- vía de escritura 1: creación (POST /api/v1/rules) ---
     let (status, created) = call_rules_api(
         &state,
         Method::POST,
@@ -231,38 +252,6 @@ async fn la_api_no_confia_en_el_cliente_al_escribir_una_regla_de_jail() {
         "la regla de Jail creada con peso 300 debe quedar almacenada con peso 0"
     );
 
-    // --- vía de escritura 2: importación (POST /api/v1/rules/import) ---
-    let (status, imported) = call_rules_api(
-        &state,
-        Method::POST,
-        "/import",
-        Some(json!({
-            "rules": [{
-                "name": "jail-import-weight-300",
-                "description": "",
-                "weight": 300,
-                "mode": "enforce",
-                "pipeline": "jail",
-                "allow": true,
-                "path": "^/admin",
-                "active": true
-            }]
-        })),
-    )
-    .await;
-    assert_eq!(
-        status,
-        StatusCode::OK,
-        "la importación de una regla de Jail debe aceptarse; respuesta: {imported}"
-    );
-    assert_eq!(
-        stored_weight(&pool, "jail-import-weight-300").await,
-        Some(0),
-        "la importación es otra vía de escritura del cliente (tiene su propio \
-         `INSERT ... ON CONFLICT (name) DO UPDATE`): una regla de Jail importada con peso 300 \
-         debe quedar almacenada con peso 0"
-    );
-
     // --- control: una regla del WAF conserva el peso que trae la petición ---
     let (status, waf) = call_rules_api(
         &state,
@@ -295,6 +284,53 @@ async fn la_api_no_confia_en_el_cliente_al_escribir_una_regla_de_jail() {
         stored_weight(&pool, "waf-keeps-weight-300").await,
         Some(300),
         "la regla del WAF debe quedar almacenada con el peso que traía la petición"
+    );
+}
+
+/// Escenario: «La API no confía en el cliente» (vía de importación).
+///
+/// GIVEN una importación con pipeline `jail` y un peso distinto de 0
+/// WHEN se importa la regla
+/// THEN queda almacenada con peso 0
+///
+/// La importación es una vía de escritura con **código propio**
+/// (`INSERT ... ON CONFLICT (name) DO UPDATE` en `src/http/rule.rs`): si la
+/// coerción del peso solo viviese en el handler de creación, este sería el
+/// camino por el que el peso volvería a la base de datos.
+#[tokio::test]
+async fn la_api_no_confia_en_el_cliente_al_importar_una_regla_de_jail() {
+    let pool = create_migrated_pool().await;
+    let state = build_app_state(pool.clone());
+
+    let (status, imported) = call_rules_api(
+        &state,
+        Method::POST,
+        "/import",
+        Some(json!({
+            "rules": [{
+                "name": "jail-import-weight-300",
+                "description": "",
+                "weight": 300,
+                "mode": "enforce",
+                "pipeline": "jail",
+                "allow": true,
+                "path": "^/admin",
+                "active": true
+            }]
+        })),
+    )
+    .await;
+    assert_eq!(
+        status,
+        StatusCode::OK,
+        "la importación de una regla de Jail debe aceptarse; respuesta: {imported}"
+    );
+    assert_eq!(
+        stored_weight(&pool, "jail-import-weight-300").await,
+        Some(0),
+        "la importación es otra vía de escritura del cliente (tiene su propio \
+         `INSERT ... ON CONFLICT (name) DO UPDATE`): una regla de Jail importada con peso 300 \
+         debe quedar almacenada con peso 0"
     );
 }
 
@@ -451,6 +487,28 @@ async fn la_normalizacion_alcanza_a_lo_ya_desplegado() {
         .execute(&pool)
         .await
         .expect("ejecutar el SQL de la migración de normalización");
+
+    assert_eq!(
+        rows_changed(&pool).await,
+        i64::try_from(jail_legacy.len()).expect("el recuento cabe en i64"),
+        "la primera aplicación debe normalizar exactamente las {} reglas de Jail del escenario \
+         (ni una del WAF de más): el filtro tiene que ceñirse al pipeline de Jail",
+        jail_legacy.len()
+    );
+
+    // Idempotencia: el comentario de la migración promete que reaplicarla no
+    // escribe nada. Aquí se aserta, en vez de dejarlo en una promesa.
+    sqlx::raw_sql(&sql)
+        .execute(&pool)
+        .await
+        .expect("reaplicar el SQL de la migración de normalización");
+
+    assert_eq!(
+        rows_changed(&pool).await,
+        0,
+        "la segunda aplicación de la migración SHALL NOT cambiar ninguna fila: el filtro \
+         `weight <> 0` deja fuera las que ya están bien, así que reaplicarla es un no-op"
+    );
 
     for (name, weight) in jail_legacy {
         assert_eq!(
@@ -706,4 +764,387 @@ fn el_catalogo_no_disfraza_el_peso_de_jail() {
             template.name
         );
     }
+}
+
+// ---------------------------------------------------------------------------
+// 6.1 — Solo un pipeline admitido llega a la base de datos
+// ---------------------------------------------------------------------------
+
+/// Valores que **no** son un pipeline admitido: la misma palabra con otra
+/// capitalización, con un espacio de más, una etiqueta que no existe y la
+/// cadena vacía.
+///
+/// El resto del sistema compara el pipeline de forma **literal y sensible a
+/// mayúsculas** —`shuul.rs` salta las reglas `jail`, `report.rs` salta las
+/// `waf`—, así que ninguno de estos valores participa de la invariante de su
+/// pipeline: una regla `JAIL` no es una regla de Jail (no se le aplicaría el
+/// peso 0) y una `waf ` tampoco es del WAF.
+const PIPELINES_NO_ADMITIDOS: [&str; 6] = ["JAIL", "Jail", "WAF", "jail ", "both", ""];
+
+/// Cuenta las filas almacenadas con ese nombre.
+async fn stored_rows(pool: &SqlitePool, name: &str) -> i64 {
+    sqlx::query_scalar("SELECT count(*) FROM rules WHERE name = ?")
+        .bind(name)
+        .fetch_one(pool)
+        .await
+        .unwrap_or_else(|error| panic!("contar las filas de {name}: {error}"))
+}
+
+/// Escenario: «La creación lo rechaza».
+///
+/// GIVEN una petición de creación con un pipeline que no es exactamente `waf`
+/// ni `jail`
+/// WHEN se crea la regla
+/// THEN la API la rechaza
+/// AND no queda ninguna fila con ese nombre
+#[tokio::test]
+async fn la_creacion_rechaza_un_pipeline_no_admitido() {
+    let pool = create_migrated_pool().await;
+    let state = build_app_state(pool.clone());
+
+    for (index, pipeline) in PIPELINES_NO_ADMITIDOS.iter().enumerate() {
+        let name = format!("pipeline-no-admitido-{index}");
+        let (status, response) = call_rules_api(
+            &state,
+            Method::POST,
+            "/",
+            Some(json!({
+                "name": name,
+                "description": "",
+                "weight": 100,
+                "mode": "enforce",
+                "pipeline": pipeline,
+                "allow": true,
+                "path": "^/admin",
+                "active": true
+            })),
+        )
+        .await;
+
+        assert_eq!(
+            status,
+            StatusCode::BAD_REQUEST,
+            "un pipeline no admitido ({pipeline:?}) debe rechazarse con 400; respuesta: {response}"
+        );
+        assert_eq!(
+            stored_rows(&pool, &name).await,
+            0,
+            "el rechazo SHALL ocurrir antes de escribir: no puede quedar ninguna fila con el \
+             pipeline {pipeline:?}"
+        );
+    }
+}
+
+/// Escenario: «La edición lo rechaza».
+///
+/// GIVEN una regla de Jail existente
+/// WHEN se actualiza con un pipeline que no es exactamente `waf` ni `jail`
+/// THEN la API la rechaza
+/// AND la regla conserva sus valores
+#[tokio::test]
+async fn la_edicion_rechaza_un_pipeline_no_admitido() {
+    let pool = create_migrated_pool().await;
+    let rule_id = insert_rule(&pool, "jail-edit-sin-cambios", "jail", 0).await;
+    let state = build_app_state(pool.clone());
+
+    let (status, response) = call_rules_api(
+        &state,
+        Method::PATCH,
+        "/",
+        Some(json!({
+            "id": rule_id,
+            "name": "jail-edit-renombrada",
+            "description": "esta descripción no debe guardarse",
+            "weight": 300,
+            "mode": "enforce",
+            "pipeline": "JAIL",
+            "allow": true,
+            "is_tor": false,
+            "ip_address": null,
+            "protocol": null,
+            "fqdn": null,
+            "path": "^/admin",
+            "query": null,
+            "city_name": null,
+            "country_name": null,
+            "country_code": null,
+            "user_agent": null,
+            "method": null,
+            "referer": null,
+            "content_type": null,
+            "accept_language": null,
+            "x_request_id": null,
+            "rate_limit_profile_id": null,
+            "active": true
+        })),
+    )
+    .await;
+
+    assert_eq!(
+        status,
+        StatusCode::BAD_REQUEST,
+        "un pipeline no admitido debe rechazarse en la edición con 400; respuesta: {response}"
+    );
+
+    let stored = sqlx::query_as::<_, (String, String, String, i32)>(
+        "SELECT name, description, pipeline, weight FROM rules WHERE id = ?",
+    )
+    .bind(rule_id)
+    .fetch_one(&pool)
+    .await
+    .unwrap_or_else(|error| panic!("leer la regla {rule_id} tras el rechazo: {error}"));
+
+    assert_eq!(
+        stored,
+        (
+            "jail-edit-sin-cambios".to_string(),
+            String::new(),
+            "jail".to_string(),
+            0
+        ),
+        "el rechazo SHALL dejar la regla tal y como estaba: nombre, descripción, pipeline y peso \
+         no pueden cambiar"
+    );
+}
+
+/// Escenario: «La importación no lo cuela».
+///
+/// GIVEN una importación con una regla de pipeline admitido y otra con un
+/// pipeline no admitido
+/// WHEN se importan
+/// THEN la entrada rechazada no se almacena
+/// AND la respuesta la identifica
+///
+/// La importación es **por entradas**: una entrada inválida no puede abortar en
+/// silencio la importación entera ni colarse como si nada, así que la respuesta
+/// dice cuántas se importaron y cuáles se rechazaron.
+#[tokio::test]
+async fn la_importacion_no_cuela_un_pipeline_no_admitido() {
+    let pool = create_migrated_pool().await;
+    let state = build_app_state(pool.clone());
+
+    let (status, response) = call_rules_api(
+        &state,
+        Method::POST,
+        "/import",
+        Some(json!({
+            "rules": [
+                {
+                    "name": "import-admitida-waf",
+                    "description": "",
+                    "weight": 100,
+                    "mode": "enforce",
+                    "pipeline": "waf",
+                    "allow": true,
+                    "country_code": "RU",
+                    "active": true
+                },
+                {
+                    "name": "import-rechazada-JAIL",
+                    "description": "",
+                    "weight": 100,
+                    "mode": "enforce",
+                    "pipeline": "JAIL",
+                    "allow": true,
+                    "path": "^/admin",
+                    "active": true
+                }
+            ]
+        })),
+    )
+    .await;
+
+    assert_eq!(
+        status,
+        StatusCode::OK,
+        "la importación no debe abortar por una entrada inválida; respuesta: {response}"
+    );
+    assert_eq!(
+        response["imported"].as_u64(),
+        Some(1),
+        "solo la entrada admitida cuenta como importada; respuesta: {response}"
+    );
+    let rejected = response["rejected"].as_array().unwrap_or_else(|| {
+        panic!("la respuesta debe identificar las entradas rechazadas: {response}")
+    });
+    assert_eq!(
+        rejected.len(),
+        1,
+        "la respuesta debe identificar exactamente la entrada rechazada; respuesta: {response}"
+    );
+    assert_eq!(
+        rejected[0]["name"].as_str(),
+        Some("import-rechazada-JAIL"),
+        "la entrada rechazada SHALL identificarse por su nombre; respuesta: {response}"
+    );
+    assert_eq!(
+        stored_rows(&pool, "import-rechazada-JAIL").await,
+        0,
+        "la entrada con un pipeline no admitido no puede quedar almacenada"
+    );
+    assert_eq!(
+        stored_rows(&pool, "import-admitida-waf").await,
+        1,
+        "la entrada admitida de la misma importación sí debe almacenarse"
+    );
+}
+
+// ---------------------------------------------------------------------------
+// 6.1 bis — La migración alcanza al legado con otra capitalización
+// ---------------------------------------------------------------------------
+
+/// Escenario: «La migración alcanza al legado con otra capitalización».
+///
+/// GIVEN una base con reglas de Jail almacenadas con otra capitalización
+/// WHEN se aplica la migración de normalización
+/// THEN todas quedan con peso 0
+/// AND el pipeline **almacenado** de esas filas queda canónico (`jail`)
+/// AND las del WAF conservan su peso
+///
+/// El legado no tiene por qué traer `jail` en minúsculas: antes de que la API
+/// validase el pipeline, cualquier cadena cabía en la columna. La comparación de
+/// la migración tiene que ser insensible a mayúsculas **solo** para `jail`; las
+/// filas del WAF no se tocan.
+///
+/// No basta con normalizar el peso: `shuul.rs` salta las reglas de Jail
+/// comparando el literal exacto `jail`, así que una fila con `JAIL` o `Jail`
+/// seguiría **decidiendo en el WAF** aunque su peso ya fuese 0. La migración tiene
+/// que dejar canónica también la etiqueta.
+#[tokio::test]
+async fn la_migracion_alcanza_al_legado_con_otra_capitalizacion() {
+    let pool = create_migrated_pool().await;
+
+    let legacy_jail = [
+        ("legacy-upper-jail", "JAIL", 200),
+        ("legacy-mixed-jail", "Jail", 50),
+    ];
+    let legacy_waf = [
+        ("legacy-upper-waf", "WAF", 200),
+        ("legacy-lower-waf", "waf", 300),
+    ];
+
+    for (name, pipeline, weight) in legacy_jail {
+        insert_rule(&pool, name, pipeline, weight).await;
+    }
+    for (name, pipeline, weight) in legacy_waf {
+        insert_rule(&pool, name, pipeline, weight).await;
+    }
+
+    let sql = read_normalization_migration_sql();
+    sqlx::raw_sql(&sql)
+        .execute(&pool)
+        .await
+        .expect("ejecutar el SQL de la migración de normalización");
+
+    for (name, pipeline, weight) in legacy_jail {
+        assert_eq!(
+            stored_weight(&pool, name).await,
+            Some(0),
+            "la migración debe alcanzar la regla {name}, almacenada con el pipeline {pipeline:?} \
+             (peso {weight}): la comparación SHALL ser insensible a mayúsculas"
+        );
+        assert_eq!(
+            stored_pipeline(&pool, name).await.as_deref(),
+            Some("jail"),
+            "la migración SHALL dejar canónica la etiqueta de {name} (era {pipeline:?}): \
+             `shuul.rs` salta las reglas de Jail comparando el literal `jail`, así que una fila \
+             con otra capitalización seguiría decidiendo en el WAF aunque su peso ya sea 0"
+        );
+    }
+    for (name, pipeline, weight) in legacy_waf {
+        assert_eq!(
+            stored_weight(&pool, name).await,
+            Some(i64::from(weight)),
+            "la migración SHALL NOT tocar la regla {name}, almacenada con el pipeline \
+             {pipeline:?}: su peso decide el orden de evaluación del WAF"
+        );
+    }
+}
+
+// ---------------------------------------------------------------------------
+// 6.2 — La reimportación de un nombre existente tampoco reintroduce el peso
+// ---------------------------------------------------------------------------
+
+/// Escenario: «La reimportación pasa por `ON CONFLICT DO UPDATE`».
+///
+/// GIVEN una regla de Jail importada
+/// WHEN se vuelve a importar el **mismo nombre** con un peso distinto de 0
+/// THEN la rama `ON CONFLICT (name) DO UPDATE` corre
+/// AND el peso sigue siendo 0
+///
+/// El test 1.1 solo ejercita el `INSERT` de la importación. La rama de
+/// actualización es otra sentencia —`ON CONFLICT (name) DO UPDATE SET weight =
+/// EXCLUDED.weight`— y por tanto otra oportunidad de reintroducir el peso: si la
+/// coerción viviese solo en el valor del `INSERT`, el `EXCLUDED.weight` la
+/// saltaría. Se comprueba además que la descripción sí se actualiza, para no dar
+/// por hecho que la rama de actualización corrió.
+#[tokio::test]
+async fn la_importacion_normaliza_el_peso_al_reimportar_un_nombre_existente() {
+    let pool = create_migrated_pool().await;
+    let state = build_app_state(pool.clone());
+
+    let payload = |weight: i32, description: &str| {
+        json!({
+            "rules": [{
+                "name": "import-upsert-jail",
+                "description": description,
+                "weight": weight,
+                "mode": "enforce",
+                "pipeline": "jail",
+                "allow": true,
+                "path": "^/admin",
+                "active": true
+            }]
+        })
+    };
+
+    let (status, first) = call_rules_api(
+        &state,
+        Method::POST,
+        "/import",
+        Some(payload(777, "primera importación")),
+    )
+    .await;
+    assert_eq!(
+        status,
+        StatusCode::OK,
+        "la primera importación (rama `INSERT`) debe aceptarse; respuesta: {first}"
+    );
+    assert_eq!(
+        stored_weight(&pool, "import-upsert-jail").await,
+        Some(0),
+        "el `INSERT` de la importación debe almacenar la regla de Jail con peso 0"
+    );
+
+    let (status, second) = call_rules_api(
+        &state,
+        Method::POST,
+        "/import",
+        Some(payload(999, "reimportada")),
+    )
+    .await;
+    assert_eq!(
+        status,
+        StatusCode::OK,
+        "la reimportación (rama `ON CONFLICT DO UPDATE`) debe aceptarse; respuesta: {second}"
+    );
+
+    let stored =
+        sqlx::query_as::<_, (String, i32)>("SELECT description, weight FROM rules WHERE name = ?")
+            .bind("import-upsert-jail")
+            .fetch_one(&pool)
+            .await
+            .unwrap_or_else(|error| panic!("leer la regla reimportada: {error}"));
+
+    assert_eq!(
+        stored.0, "reimportada",
+        "la rama `ON CONFLICT (name) DO UPDATE` SHALL haber corrido: la descripción es la de la \
+         segunda importación"
+    );
+    assert_eq!(
+        stored.1, 0,
+        "el peso SHALL seguir siendo 0 tras reimportar el mismo nombre con peso 999: la coerción \
+         no puede quedarse solo en el valor del `INSERT`, porque el `DO UPDATE` escribe \
+         `EXCLUDED.weight`"
+    );
 }
