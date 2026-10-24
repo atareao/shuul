@@ -113,7 +113,7 @@ La respuesta del backend **nunca pasa por Shuul**. Las reglas de fuga de datos d
 
 ### La puerta que sí existe: `forwardBody`
 
-Traefik ≥ 3.3 tiene `forwardAuth.forwardBody` (por defecto `false`). En producción se corre **`traefik:v3.7.5`**, así que está disponible.
+Traefik ≥ 3.3 tiene `forwardAuth.forwardBody` (por defecto `false`). En producción se corre **`traefik:v3.7.16`**, así que está disponible.
 
 - A favor: desbloquea `ARGS_POST`, `REQUEST_BODY`, `FILES_NAMES`, `FILES_SIZES` — es decir, la fase 2 y buena parte del CRS de entrada.
 - En contra, y hay que decirlo claro: *«As body is read inside Traefik before forwarding, this breaks streaming»*. Traefik bufferiza el cuerpo entero en memoria. Eso rompe SSE, upgrades a WebSocket y subidas en streaming **para todos los routers que lo activen**.

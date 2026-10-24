@@ -40,7 +40,8 @@ http:
     shuul-auth:
       forwardAuth:
         address: "http://shuul:3000/api/v1/shuul"
-        trustForwarders: true
+        trustForwardHeader: true
+        maxResponseBodySize: 1024
 
     shuul-reporter:
       plugin:
@@ -49,6 +50,67 @@ http:
           timeoutMs: 500
           reportClientIP: true
 ```
+
+`trustForwardHeader` and `maxResponseBodySize` are not optional details: without them Traefik warns at startup and leaves the trust model undecided. See **§1.4** for what they mean and for the order in which they must be applied — **first** shuul has to resolve the client address to a single value, **then** the deployment may declare which forwarding headers it trusts. Enabling the trust first lets a client pick the address shuul bans on.
+
+### 1.4 Harden the deployment before trusting the forwarding headers
+
+Three things have to be right for shuul to see the **real** client address. Do them in this order.
+
+**1. shuul must resolve the address to a single value.** `X-Forwarded-For` is a **chain**, not a value: a client can prepend entries of its own. shuul resolves it to exactly one address — the **last** element, the one the nearest hop observed, which is the same address the Jail pipeline derives from Traefik's access log. If those two disagreed, bans would be recorded against one address and checked against another, and they would never apply. An element that cannot be resolved leaves the address empty, and shuul logs the discarded value at `DEBUG` level (`RUST_LOG=backend=debug`). **Upgrade before doing step 2** — and keep an eye on the logs afterwards: if the client address suddenly stops resolving, step 2 is the first place to look.
+
+**2. Then declare who you trust.** Traefik is your edge, so nobody upstream is trusted. On the entry point:
+
+```yaml
+entryPoints:
+  websecure:
+    address: ":443"
+    forwardedHeaders:
+      trustedIPs: []
+```
+
+and on the forwarding-auth middleware, as shown in §1.2:
+
+| Option | What it does | Left unset |
+|---|---|---|
+| `forwardedHeaders.trustedIPs` | The entry point strips `X-Forwarded-*` from clients that are **not** on the list. With Traefik as the edge the list stays empty, so every client-supplied forwarding header is dropped. | Nothing is stripped upstream |
+| `trustForwardHeader` | Whether the forwarding-auth middleware keeps the `X-Forwarded-*` headers it receives. It takes effect **only** once the entry point has sanitised them. | Traefik warns and behaves inconsistently: it strips some headers and forwards others untouched |
+| `maxResponseBodySize` | Bounds the response Traefik reads back from shuul. | Unlimited, and Traefik warns |
+
+> The option is spelled **`trustForwardHeader`**. A `trustForwarders` option does not exist: Traefik ignores it silently, the startup warning stays, and the trust model is left undecided.
+
+**3. Reject the headers whose names alias another header.** Go canonicalises header names on **dashes only**, so `X-Auth-User`, `X_Auth_User` and `X.Auth.User` are three different headers for Traefik — and the same `HTTP_X_AUTH_USER` variable for a backend that derives its variable names from header names (CGI, WSGI, PHP, NGINX). A client can therefore send an alias of a header Traefik manages and have your backend read the alias instead. Set this on every entry point fronting such a backend:
+
+```yaml
+entryPoints:
+  websecure:
+    address: ":443"
+    http:
+      aliasHeadersStrategy: delete
+```
+
+`delete` removes any request header whose name contains a character that is neither a letter, a digit nor a dash; `reject` answers `400 Bad Request` instead. The default is `keep`, which preserves the current behaviour, and Traefik warns at startup for every entry point left without the option.
+
+**4. Decide about encoded characters — carefully.** Since v3.6.7 Traefik **allows** `%2F`, `%5C`, `%00`, `%3B`, `%25`, `%3F` and `%23` in the request path by default. Allowing them invites a *split view*: the proxy and the backend can read the same URL differently, and that difference is a bypass. If your backends are RFC 3986 compliant:
+
+```yaml
+entryPoints:
+  websecure:
+    address: ":443"
+    http:
+      encodedCharacters:
+        allowEncodedSlash: false
+        allowEncodedBackSlash: false
+        allowEncodedNullCharacter: false
+        allowEncodedSemicolon: false
+        allowEncodedPercent: false
+        allowEncodedQuestionMark: false
+        allowEncodedHash: false
+```
+
+> This covers the **request path only, never the query string**. It is also the one setting here that can break a working service: a backend that legitimately expects an encoded slash starts answering `400`. Enable it and then test.
+
+**5. Bound the request headers.** shuul inspects the headers of every request, so an unbounded header set is an unbounded input. `maxHeaderBytes` caps it. Note that from v3.7.17 on Traefik is built with Go 1.27, which also caps the number of header **values** at 500 and answers `431 Request Header Fields Too Large` — and because those requests are rejected **before** routing, they never reach the access log and the Jail pipeline never sees them.
 
 ### 1.3 Attach middleware to your routers
 
@@ -900,7 +962,7 @@ DEBUG backend::models::rule: regla descartada: la petición no trae el campo res
 
 The same holds for `country_code` when GeoIP cannot resolve the IP: a geographic rule stops matching instead of matching by absence. That sibling case has **real effect today** — with the previous semantics the `4 Geo blocking` rule denied IPs the GeoIP could not classify, which is exactly what this change corrects.
 
-> The exact key format was verified against `traefik:v3.7.5` (the version in production); see `openspec/changes/missing-header-fields/design.md` §Open Questions.
+> The exact key format was verified against `traefik:v3.7.5`; see `openspec/changes/archive/2026-10-22-missing-header-fields/design.md` §Open Questions. Re-verified on `traefik:v3.7.16` — the version in production on 2026-10-24: the access log JSON schema is unchanged between 3.7.5 and 3.7.16, so the parser needs no change.
 
 ---
 
@@ -1103,6 +1165,8 @@ http:
     shuul-auth:
       forwardAuth:
         address: "http://shuul:3000/api/v1/shuul"
+        trustForwardHeader: true
+        maxResponseBodySize: 1024
 
     shuul-reporter:
       plugin:
@@ -1331,7 +1395,7 @@ Symptoms: `systemctl enable --now systemd-journal-gatewayd.socket` fails with `U
   - **If a secret has ended up in a log, rotate it right away.** Lowering the level is not enough. A deployment that ran an earlier version with `RUST_LOG=backend=debug` did write the `SECRET` to the log in clear text, so treat that secret as leaked: rotate it immediately (`openssl rand -hex 32`), audit who has had access to those logs, and treat any session issued before the rotation as suspect — it was signed with the exposed key. Turning debug off only stops the leak from continuing; it does not undo it.
 - OIDC tokens expire after 60 minutes. Users are redirected to re-authenticate.
 - SQLite is not designed for multi-instance deployments. Run a single shuul container.
-- Traefik's `trustForwarders: true` is required for correct IP extraction behind reverse proxies.
+- **The forwarding headers need a declared trust model.** `X-Forwarded-For` is a chain, and a client can prepend entries of its own, so shuul resolves it to a single address — the **last** element, the same one the Jail pipeline derives from Traefik's access log. What makes that address trustworthy is Traefik dropping the client-supplied `X-Forwarded-*` headers first: set `forwardedHeaders.trustedIPs` on the entry point and `trustForwardHeader` on the middleware. The option is spelled **`trustForwardHeader`** — a `trustForwarders` option does not exist and is ignored silently. See §1.4.
 - The shuul-reporter plugin sends async requests — network issues do not affect backend latency.
 - **`systemd-journal-gatewayd` has no authentication.** Prefer the Unix socket (no network surface); in TCP mode never expose port `19531` publicly — keep it off Traefik and restrict it to the Docker bridge subnets with the firewall (see 2.10).
 - **The journal holds sensitive data** — request paths, query strings, headers, user agents and client IPs. Anyone who can reach gatewayd can read it, so restrict access accordingly.
