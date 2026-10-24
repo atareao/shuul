@@ -72,25 +72,73 @@ export interface RuleImportNotice {
   text: string;
 }
 
+/** Cuántas entradas rechazadas se nombran antes de resumir el resto. */
+const MAX_ENUMERATED_REJECTIONS = 3;
+
+/** Marcador para una entrada rechazada cuyo nombre no es utilizable. */
+const UNNAMED_REJECTION = "unnamed rule";
+
+/**
+ * Recuento de importadas, tolerante con un backend que no mande un número.
+ *
+ * `Number.isFinite` descarta `undefined`, `NaN` e `Infinity` de una vez: sin él
+ * el aviso diría `Imported undefined rules` o `Imported NaN rules`.
+ */
+function importedCount(imported: unknown): number {
+  return typeof imported === "number" && Number.isFinite(imported)
+    ? imported
+    : 0;
+}
+
+/**
+ * Nombra una entrada rechazada, con su motivo cuando lo trae.
+ *
+ * Ni el nombre ni el motivo son de fiar —llegan de un JSON ajeno—, así que un
+ * valor ausente, vacío o que no sea cadena cae en un marcador legible en vez de
+ * imprimir `undefined`.
+ */
+function describeRejectedRule(entry: RejectedRule | null | undefined): string {
+  const rawName = entry?.name;
+  const name =
+    typeof rawName === "string" && rawName.trim() !== ""
+      ? rawName
+      : UNNAMED_REJECTION;
+  const reason = entry?.reason;
+
+  return typeof reason === "string" && reason.trim() !== ""
+    ? `${name} (${reason})`
+    : name;
+}
+
 /**
  * Traduce el resultado de una importación al aviso que hay que mostrar.
  *
  * Sin rechazos (lista ausente o vacía) el camino es el de éxito y el texto es el
  * de siempre: `Imported N rules`. Con rechazos, el texto cuenta cuántas se
  * importaron y nombra cada una de las descartadas, con su motivo cuando viene.
+ *
+ * La enumeración está acotada: un fichero con muchas entradas inválidas pintaría
+ * un toast interminable, así que sólo se nombran las
+ * `MAX_ENUMERATED_REJECTIONS` primeras y el resto se resume como `… and N more`.
+ * Con ese número de rechazadas o menos, el texto es el de siempre.
  */
 export function describeRuleImport(result: RuleImportResult): RuleImportNotice {
+  const imported = importedCount(result.imported);
   const rejected = Array.isArray(result.rejected) ? result.rejected : [];
   if (rejected.length === 0) {
-    return { kind: "success", text: `Imported ${result.imported} rules` };
+    return { kind: "success", text: `Imported ${imported} rules` };
   }
 
-  const names = rejected
-    .map((rule) => (rule.reason ? `${rule.name} (${rule.reason})` : rule.name))
+  const enumerated = rejected
+    .slice(0, MAX_ENUMERATED_REJECTIONS)
+    .map(describeRejectedRule)
     .join(", ");
+  const remaining = rejected.length - MAX_ENUMERATED_REJECTIONS;
+  const names =
+    remaining > 0 ? `${enumerated}, … and ${remaining} more` : enumerated;
 
   return {
     kind: "warning",
-    text: `Imported ${result.imported} rules, ${rejected.length} rejected: ${names}`,
+    text: `Imported ${imported} rules, ${rejected.length} rejected: ${names}`,
   };
 }

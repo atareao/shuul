@@ -11,7 +11,7 @@ import {
   UploadOutlined,
 } from "@ant-design/icons";
 import type Item from "@/models/rule"; // Alias para Rule
-import type { RuleImportResult } from "@/models/rule";
+import type { RuleImportNotice, RuleImportResult } from "@/models/rule";
 import { describeRuleImport, isJailPipeline } from "@/models/rule";
 
 // Importamos CustomTable y los tipos necesarios
@@ -24,6 +24,20 @@ import { BASE_URL } from "@/constants";
 // 1. Constantes de configuración (fuera de la clase)
 const TITLE = "Rules";
 const ENDPOINT = "rules";
+
+/**
+ * Despacho del aviso de importación por `kind`.
+ *
+ * Es un mapa sobre la unión —y no un `if/else` binario— para que un `kind`
+ * futuro rompa la compilación aquí en vez de pintarse como éxito en silencio.
+ */
+const IMPORT_NOTICE_HANDLERS: Record<
+  RuleImportNotice["kind"],
+  (text: string) => void
+> = {
+  success: (text) => message.success(text),
+  warning: (text) => message.warning(text),
+};
 
 // Definición de los campos (tipados para Item, que es Rule)
 const FIELDS: FieldDefinition<Item>[] = [
@@ -232,11 +246,7 @@ export class InnerPage extends React.Component<
 
         const result: RuleImportResult = await response.json();
         const notice = describeRuleImport(result);
-        if (notice.kind === "warning") {
-          message.warning(notice.text);
-        } else {
-          message.success(notice.text);
-        }
+        IMPORT_NOTICE_HANDLERS[notice.kind](notice.text);
         this.setState((prev) => ({
           refreshCounter: prev.refreshCounter + 1,
         }));

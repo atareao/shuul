@@ -389,6 +389,11 @@ export default function RuleDialog({
           { value: "log_only", label: "Log Only" },
           { value: "off", label: "Off" },
         ])}
+      {/*
+        No es el espejo de `isJailPipeline` y no debe convertirse en él: con el
+        pipeline todavía sin elegir (`""`/`undefined`) `!== "waf"` es `true` y el
+        selector se muestra, mientras que `isJailPipeline` daría `false`.
+      */}
       {formValues.pipeline !== "waf" && (
         <>
           {renderSelectRow("Rate Limit Profile", "rate_limit_profile_id", [
