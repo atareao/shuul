@@ -977,6 +977,16 @@ describe("barra de herramientas: buscador y filtros comparten una sola línea", 
     if (!row) {
       throw new Error("No hay Row");
     }
+
+    // La `Row` hallada tiene que ser *la* barra de herramientas, no una fila
+    // envolvente: `closest` devolvería la externa si mañana hubiera una, y los
+    // tests pasarían con el buscador en su propia línea. La firma de la barra
+    // es exactamente seis `Col` directas con un control cada una.
+    expect(row.querySelectorAll(":scope > .ant-col")).toHaveLength(6);
+    expect(within(row).getAllByRole("textbox")).toHaveLength(1);
+    expect(within(row).getAllByRole("combobox")).toHaveLength(4);
+    expect(within(row).getAllByRole("switch")).toHaveLength(1);
+
     return { input, row };
   }
 
@@ -1002,17 +1012,25 @@ describe("barra de herramientas: buscador y filtros comparten una sola línea", 
     const { row } = await toolbar();
 
     expect(row.classList.contains("ant-row-no-wrap")).toBe(true);
+    // La clase se puede desmentir con un `flex-wrap` en línea: la fila no debe
+    // declararlo, o declararlo `nowrap`.
+    expect(["", "nowrap"]).toContain(row.style.flexWrap);
   });
 
   // ─── Tarea 1.9 ───────────────────────────────────────────────────────────
   it("hace del buscador el elemento flexible: crece, se encoge y declara su ancho preferido", async () => {
     const { input } = await toolbar();
 
-    const tokens = flexTokens(colOf(input));
+    const searchCol = colOf(input);
+    const tokens = flexTokens(searchCol);
     expect(tokens).toHaveLength(3);
     expect(flexNumber(tokens[0])).toBeGreaterThan(0);
     expect(flexNumber(tokens[1])).toBeGreaterThan(0);
     expect(isLength(tokens[2])).toBe(true);
+    // Un `Col` flexible arranca con `min-width: auto` —su tamaño de contenido—
+    // y eso le pone un suelo duro a la fila: `min-width: 0` es lo que lo
+    // levanta para que pueda encogerse por debajo de su contenido.
+    expect(Number.parseFloat(searchCol.style.minWidth)).toBe(0);
   });
 
   // ─── Tarea 1.9 ───────────────────────────────────────────────────────────
@@ -1020,11 +1038,30 @@ describe("barra de herramientas: buscador y filtros comparten una sola línea", 
     const { row } = await toolbar();
 
     for (const name of FILTER_NAMES) {
-      const tokens = flexTokens(colOf(within(row).getByRole("combobox", { name })));
+      const filterCol = colOf(within(row).getByRole("combobox", { name }));
+      const tokens = flexTokens(filterCol);
       expect(tokens).toHaveLength(3);
       expect(flexNumber(tokens[0])).toBe(0);
       expect(flexNumber(tokens[1])).toBe(1);
       expect(isLength(tokens[2])).toBe(true);
+      // El suelo de contenido también aquí: cada filtro declara `min-width: 0`.
+      expect(Number.parseFloat(filterCol.style.minWidth)).toBe(0);
+    }
+
+    // El interruptor `must_have` no se encoge: conserva su ancho natural.
+    const switchCol = colOf(
+      within(row).getByRole("switch", { name: /must have/i }),
+    );
+    expect(flexNumber(flexTokens(switchCol)[1])).toBe(0);
+
+    // Ningún `Col` de la barra declara un mínimo rígido (valor positivo): un
+    // suelo así es justo lo que haría desbordar la línea al estrecharse.
+    for (const col of row.querySelectorAll<HTMLElement>(":scope > .ant-col")) {
+      const minWidth = Number.parseFloat(col.style.minWidth || "0");
+      expect(
+        minWidth <= 0,
+        `la barra no debe declarar un min-width rígido, pero declara "${col.style.minWidth}"`,
+      ).toBe(true);
     }
   });
 
@@ -1033,6 +1070,8 @@ describe("barra de herramientas: buscador y filtros comparten una sola línea", 
     const { input } = await toolbar();
 
     const wrapper = input.closest<HTMLElement>(".ant-input-affix-wrapper");
+    // Sin esto, la comprobación del envoltorio pasaría aunque no existiera.
+    expect(wrapper).not.toBeNull();
     expect(input.style.width).not.toBe("100%");
     expect(wrapper?.style.width).not.toBe("100%");
   });

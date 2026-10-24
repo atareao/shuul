@@ -69,6 +69,8 @@ function renderAdmin(auth: AuthContextInterface): void {
           <Route path="/" element={<div>portada pública</div>} />
           <Route path="/login" element={<div>pantalla de login</div>} />
           <Route path="/admin" element={<AdminLayout />} />
+          {/* Destino real del botón de cerrar sesión del pie. */}
+          <Route path="/admin/logout" element={<div>sesión cerrada</div>} />
         </Routes>
       </MemoryRouter>
     </AuthContext.Provider>,
@@ -134,6 +136,9 @@ describe("AdminLayout — el panel no tiene barra superior", () => {
     renderAdmin(SESSION);
 
     expect(document.querySelectorAll(".ant-layout-header")).toHaveLength(0);
+    // La ausencia de la *clase* no basta: el contrato prohíbe el elemento
+    // semántico, y una cabecera sin la clase de antd seguiría siendo cabecera.
+    expect(document.querySelectorAll("header")).toHaveLength(0);
     expect(document.querySelectorAll(".ant-layout-sider")).toHaveLength(1);
     expect(document.querySelectorAll(".ant-layout-footer")).toHaveLength(1);
   });
@@ -141,7 +146,8 @@ describe("AdminLayout — el panel no tiene barra superior", () => {
 
 describe("AdminLayout — la sesión y el tema se gobiernan desde el pie de la barra lateral", () => {
   // ─── Tarea 1.2 ───────────────────────────────────────────────────────────
-  it("sitúa cerrar sesión, el tema y el colapsar en un mismo contenedor anclado abajo, fuera del menú", () => {
+  it("sitúa cerrar sesión, el tema y el colapsar en un mismo contenedor anclado abajo, fuera del menú", async () => {
+    const user = userEvent.setup();
     renderAdmin(SESSION);
 
     const sider = getSider();
@@ -173,6 +179,15 @@ describe("AdminLayout — la sesión y el tema se gobiernan desde el pie de la b
     expect(
       within(footer).getByRole("button", { name: COLLAPSE_NAME }),
     ).toBeTruthy();
+
+    // El pie cierra su contenedor: no queda nada por debajo de él. No basta
+    // con que declare `marginTop: "auto"` para *pedir* el fondo.
+    expect(footer.nextElementSibling).toBeNull();
+
+    // El control de cerrar sesión no es decorativo: al pulsarlo se navega al
+    // cierre de sesión. Es cobertura que faltaba, no comportamiento nuevo.
+    await user.click(logout);
+    expect(await screen.findByText("sesión cerrada")).toBeTruthy();
   });
 
   // ─── Tarea 1.3 ───────────────────────────────────────────────────────────
@@ -217,6 +232,20 @@ describe("AdminLayout — la sesión y el tema se gobiernan desde el pie de la b
     expect(
       within(sider).getByRole("switch", { name: THEME_NAME }),
     ).toBeTruthy();
+
+    // El control de cerrar sesión es único en todo el documento: un duplicado
+    // (uno en la barra y otro fuera) rompería el contrato de localización.
+    expect(screen.getAllByRole("button", { name: LOGOUT_NAME })).toHaveLength(1);
+
+    // Y ningún botón del panel vive fuera de la barra lateral.
+    const layoutButtons = screen.getAllByRole("button");
+    expect(layoutButtons.length).toBeGreaterThan(0);
+    for (const button of layoutButtons) {
+      expect(
+        sider.contains(button),
+        "todo botón del panel debe vivir dentro de la barra lateral",
+      ).toBe(true);
+    }
   });
 
   // ─── Tarea 1.5 ───────────────────────────────────────────────────────────
@@ -224,27 +253,22 @@ describe("AdminLayout — la sesión y el tema se gobiernan desde el pie de la b
     const user = userEvent.setup();
     renderAdmin(SESSION);
 
-    expect(
-      getSider().classList.contains("ant-layout-sider-collapsed"),
-    ).toBe(false);
+    const collapseButton = (): HTMLElement =>
+      within(getSider()).getByRole("button", { name: COLLAPSE_NAME });
+    const collapsed = (): boolean =>
+      getSider().classList.contains("ant-layout-sider-collapsed");
 
-    await user.click(
-      within(getSider()).getByRole("button", { name: COLLAPSE_NAME }),
-    );
-    await waitFor(() =>
-      expect(
-        getSider().classList.contains("ant-layout-sider-collapsed"),
-      ).toBe(true),
-    );
+    expect(collapsed()).toBe(false);
+    // El control anuncia su estado, no sólo el icono que lleva dentro.
+    expect(collapseButton().getAttribute("aria-expanded")).toBe("true");
 
-    await user.click(
-      within(getSider()).getByRole("button", { name: COLLAPSE_NAME }),
-    );
-    await waitFor(() =>
-      expect(
-        getSider().classList.contains("ant-layout-sider-collapsed"),
-      ).toBe(false),
-    );
+    await user.click(collapseButton());
+    await waitFor(() => expect(collapsed()).toBe(true));
+    expect(collapseButton().getAttribute("aria-expanded")).toBe("false");
+
+    await user.click(collapseButton());
+    await waitFor(() => expect(collapsed()).toBe(false));
+    expect(collapseButton().getAttribute("aria-expanded")).toBe("true");
   });
 
   // ─── Tarea 1.6 ───────────────────────────────────────────────────────────

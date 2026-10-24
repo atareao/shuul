@@ -1,12 +1,31 @@
-import { describe, it, expect, vi, beforeAll } from "vitest";
-import { render, screen } from "@testing-library/react";
+import { describe, it, expect, vi, beforeAll, afterEach } from "vitest";
+import { render, screen, waitFor } from "@testing-library/react";
 
 import App from "./App";
 
 // ─────────────────────────────────────────────────────────────────────────────
+// El backend HTTP de i18n no resuelve en jsdom: dejaba XHR fallidos en consola.
+// Se sustituye por un backend en memoria que resuelve vacío al instante. El
+// texto que afirma este test es literal en la portada, así que no depende de
+// ninguna traducción.
+// ─────────────────────────────────────────────────────────────────────────────
+vi.mock("i18next-http-backend", () => ({
+  default: class MockBackend {
+    // i18next identifica el módulo por este `type` estático.
+    static type = "backend";
+
+    read(
+      _lng: string,
+      _ns: string,
+      callback: (err: unknown, data: Record<string, unknown>) => void,
+    ): void {
+      callback(null, {});
+    }
+  },
+}));
+
+// ─────────────────────────────────────────────────────────────────────────────
 // Setup de entorno de navegador mínimo para antd (jsdom carece de estas APIs).
-// El montaje completo arrastra además i18n con su backend HTTP, que en jsdom no
-// resuelve: el ruido en consola es esperado y no afecta a lo que se afirma.
 // ─────────────────────────────────────────────────────────────────────────────
 beforeAll(() => {
   class ResizeObserverStub {
@@ -41,6 +60,12 @@ beforeAll(() => {
 // sirve para distinguirlas.
 // ─────────────────────────────────────────────────────────────────────────────
 describe("App — /login ya no es una ruta propia", () => {
+  // El test muta la URL con `pushState`; se devuelve a su sitio para no dejar
+  // la mutación al resto del fichero.
+  afterEach(() => {
+    window.history.pushState({}, "", "/");
+  });
+
   it("una visita directa a /login acaba en la portada pública", async () => {
     window.history.pushState({}, "", "/login");
 
@@ -53,7 +78,13 @@ describe("App — /login ya no es una ruta propia", () => {
         { timeout: 15000 },
       ),
     ).toBeTruthy();
-    // No se queda en blanco.
-    expect((document.body.textContent ?? "").trim().length).toBeGreaterThan(0);
+
+    // No basta con que se pinte la portada: la visita tiene que *acabar* en
+    // `/`. Una ruta `/login` que renderizara la portada sin redirigir pasaría
+    // el resto del test y violaría el escenario.
+    await waitFor(() => expect(window.location.pathname).toBe("/"));
+
+    // Ni pantalla en blanco ni el respaldo del `Suspense`.
+    expect(screen.queryByText("Loading...")).toBeNull();
   }, 30000);
 });

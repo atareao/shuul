@@ -1,8 +1,8 @@
 import react from "react";
 import { useNavigate, Navigate, Outlet } from "react-router";
 import type { NavigateFunction } from "react-router";
-import { Button, Layout, Menu, theme } from "antd";
-import type { GlobalToken, MenuProps } from "antd";
+import { Button, Layout, Menu } from "antd";
+import type { MenuProps } from "antd";
 import {
   HomeOutlined,
   OrderedListOutlined,
@@ -23,6 +23,9 @@ import { VERSION } from "@/constants";
 
 const TITLE = `Shuul (${VERSION})`;
 const { Content, Footer, Sider } = Layout;
+
+/** Identificador de la barra lateral, para que el control de colapsar la anuncie. */
+const SIDER_ID = "admin-sider";
 
 type MenuItem = Required<MenuProps>["items"][number];
 /** Información que Ant Design entrega al hacer clic en una entrada del menú. */
@@ -79,7 +82,6 @@ const AuthGuard = ({ children }: { children: React.ReactNode }) => (
 );
 
 interface Props {
-  token: GlobalToken;
   navigate: NavigateFunction;
 }
 interface State {
@@ -112,11 +114,14 @@ class InnerAdminLayout extends react.Component<Props, State> {
     return (
       <AuthGuard>
         <Layout style={{ minHeight: "100vh" }}>
+          {/* `trigger={null}` es imprescindible: sin él antd pintaría su
+              disparador por defecto dentro de la barra. El disparador real es
+              el botón propio del pie, así que ni `collapsible` ni `onCollapse`
+              tienen ya sentido (no habría nada que los disparase). */}
           <Sider
-            collapsible
+            id={SIDER_ID}
             trigger={null}
             collapsed={this.state.collapsed}
-            onCollapse={(value) => this.setCollapsed(value)}
             styles={{ body: { display: "flex", flexDirection: "column" } }}
           >
             <div className="demo-logo-vertical" />
@@ -159,6 +164,8 @@ class InnerAdminLayout extends react.Component<Props, State> {
                 aria-label={
                   this.state.collapsed ? "Expand sidebar" : "Collapse sidebar"
                 }
+                aria-expanded={!this.state.collapsed}
+                aria-controls={SIDER_ID}
                 onClick={() => this.setCollapsed(!this.state.collapsed)}
               >
                 {this.state.collapsed ? (
@@ -192,6 +199,5 @@ class InnerAdminLayout extends react.Component<Props, State> {
 
 export default function AdminLayout() {
   const navigate = useNavigate();
-  const { token } = theme.useToken();
-  return <InnerAdminLayout navigate={navigate} token={token} />;
+  return <InnerAdminLayout navigate={navigate} />;
 }

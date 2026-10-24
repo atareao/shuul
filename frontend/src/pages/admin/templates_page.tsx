@@ -599,9 +599,15 @@ export default class TemplatesPage extends React.Component<
             (`wrap={false}`): antes de partirse, los controles se encogen. El
             buscador es el elemento flexible —crece para llevarse el hueco libre
             y se encoge hasta su mínimo— y cada filtro conserva su ancho
-            preferido como mínimo, pudiendo encogerse también. */}
+            preferido, pudiendo encogerse también.
+
+            Cada `Col` flexible declara `minWidth: 0`: sin él su mínimo sería
+            `auto` —el tamaño de su contenido—, lo que pondría un suelo duro a
+            la fila y la haría desbordar su contenedor en ventanas estrechas,
+            justo lo que el contrato prohíbe. El interruptor no se encoge, así
+            que no lo necesita. */}
         <Row gutter={[12, 12]} align="middle" wrap={false}>
-          <Col flex="1 1 200px">
+          <Col flex="1 1 200px" style={{ minWidth: 0 }}>
             <Input
               prefix={<SearchOutlined />}
               aria-label="Search templates"
@@ -611,7 +617,7 @@ export default class TemplatesPage extends React.Component<
               allowClear
             />
           </Col>
-          <Col flex="0 1 160px">
+          <Col flex="0 1 160px" style={{ minWidth: 0 }}>
             <Select
               aria-label="Pipeline"
               style={{ width: "100%" }}
@@ -623,7 +629,7 @@ export default class TemplatesPage extends React.Component<
               }
             />
           </Col>
-          <Col flex="0 1 160px">
+          <Col flex="0 1 160px" style={{ minWidth: 0 }}>
             <Select
               aria-label="Severity"
               style={{ width: "100%" }}
@@ -635,7 +641,7 @@ export default class TemplatesPage extends React.Component<
               }
             />
           </Col>
-          <Col flex="0 1 240px">
+          <Col flex="0 1 240px" style={{ minWidth: 0 }}>
             <Select
               aria-label="Category"
               style={{ width: "100%" }}
@@ -647,7 +653,7 @@ export default class TemplatesPage extends React.Component<
               }
             />
           </Col>
-          <Col flex="0 1 160px">
+          <Col flex="0 1 160px" style={{ minWidth: 0 }}>
             <Select
               aria-label="Action"
               style={{ width: "100%" }}
