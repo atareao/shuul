@@ -1,7 +1,7 @@
 # secrets Specification
 
 ## Purpose
-TBD - created by archiving change secret-hygiene. Update Purpose after archive.
+Shuul firma sus tokens con un secreto que vive en la variable de entorno `SECRET`. Este capability fija lo que la aplicación debe hacer con él: no escribirlo nunca en el log —ni siquiera al arrancar— y denunciar en voz alta cuando es demasiado débil para lo que protege, sin negarse por ello a arrancar.
 
 ## Requirements
 

@@ -1,7 +1,7 @@
 # rules Specification
 
 ## Purpose
-TBD - created by archiving change jail-weight-coherence. Update Purpose after archive.
+La regla es la unidad de decisión de Shuul: los filtros que se evalúan contra cada petición, el veredicto y el pipeline al que pertenece. Este capability fija las invariantes del recurso que el resto del sistema da por ciertas: qué pipelines existen y cómo se validan en la escritura, por qué el peso de una regla de Jail es siempre 0 (el pipeline de Jail evalúa todas las reglas que casan, sin `break`, así que su orden no decide nada) y cómo se ordena la lista de reglas para que la paginación no repita ni pierda filas.
 
 ## Requirements
 

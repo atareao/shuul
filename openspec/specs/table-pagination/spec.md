@@ -1,7 +1,7 @@
 # table-pagination Specification
 
 ## Purpose
-TBD - created by archiving change pagination-defaults. Update Purpose after archive.
+Las vistas de administración son tablas de datos: reglas, baneos, perfiles de rate limit, plantillas y el visor de logs. Este capability fija cómo se paginan para que todas se comporten igual: arrancar en 10 filas y ofrecer los rangos 10, 50 y 100; y, según quién pagine, hacerlo una sola vez —el servidor con `LIMIT`/`OFFSET` o el cliente sobre su propio conjunto—, con la dirección de la ordenación viajando al servidor cuando es él quien ordena.
 
 ## Requirements
 
