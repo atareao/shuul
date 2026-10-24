@@ -452,6 +452,7 @@ mod tests {
             weight: 10,
             mode: "enforce".to_string(),
             pipeline: "jail".to_string(),
+            transformations: String::new(),
             allow: false,
             is_tor: None,
             ip_address: None,

@@ -64,6 +64,7 @@ async fn create_pool() -> SqlitePool {
             weight INTEGER NOT NULL DEFAULT 100,
             mode TEXT NOT NULL DEFAULT 'log_only',
             pipeline TEXT NOT NULL DEFAULT 'waf',
+            transformations TEXT NOT NULL DEFAULT '',
             allow INTEGER NOT NULL DEFAULT 1,
             is_tor INTEGER NOT NULL DEFAULT 0,
             ip_address TEXT, protocol TEXT, fqdn TEXT, path TEXT, query TEXT,
