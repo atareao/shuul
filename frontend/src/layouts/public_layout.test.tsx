@@ -1,16 +1,8 @@
-import { describe, it, expect, vi, beforeAll, beforeEach } from "vitest";
-import { render, screen, within } from "@testing-library/react";
-import userEvent from "@testing-library/user-event";
+import { describe, it, expect, vi, beforeAll } from "vitest";
+import { render, screen } from "@testing-library/react";
 import { MemoryRouter, Routes, Route } from "react-router";
 
 import PublicLayout from "./public_layout";
-import { startSsoLogin } from "@/common/auth";
-
-// El helper del SSO se sustituye por un mock: la navegación de verdad es cosa
-// suya, así que el test no depende de que jsdom navegue.
-vi.mock("@/common/auth", () => ({
-  startSsoLogin: vi.fn(),
-}));
 
 // antd necesita matchMedia en jsdom.
 beforeAll(() => {
@@ -29,10 +21,6 @@ beforeAll(() => {
   });
 });
 
-beforeEach(() => {
-  vi.mocked(startSsoLogin).mockClear();
-});
-
 function renderLayout(): void {
   render(
     <MemoryRouter initialEntries={["/"]}>
@@ -40,38 +28,50 @@ function renderLayout(): void {
         <Route path="/" element={<PublicLayout />}>
           <Route index element={<div>contenido público</div>} />
         </Route>
-        <Route path="/login" element={<div>pantalla de login</div>} />
       </Routes>
     </MemoryRouter>,
   );
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
-// Contrato del delta `ui-shell-and-toolbar`, requisito «La portada pública es la
-// entrada al panel»: el icono de la cabecera pública arranca el SSO sin pasar
-// por ninguna ruta intermedia.
+// Contrato del delta `public-landing-without-header`, requisito «La parte pública
+// no pinta cabecera»: la envoltura pública no pinta cabecera superior ni ofrece
+// un control de inicio de sesión propio, pero conserva su pie de página y el
+// contenido de la ruta hija.
 // ─────────────────────────────────────────────────────────────────────────────
-describe("PublicLayout — el icono de la cabecera arranca el SSO", () => {
-  it("arranca el SSO desde su control de la cabecera, sin navegar a /login", async () => {
-    const user = userEvent.setup();
+describe("PublicLayout — la parte pública no pinta cabecera", () => {
+  it("no pinta ninguna cabecera superior", () => {
     renderLayout();
 
-    const header = document.querySelector<HTMLElement>(".ant-layout-header");
+    expect(document.querySelector(".ant-layout-header")).toBeNull();
+  });
+
+  it("no ofrece ningún control de inicio de sesión en la envoltura", () => {
+    renderLayout();
+
     expect(
-      header,
-      "la parte pública conserva su cabecera (ant-layout-header)",
+      screen.queryByRole("button", { name: /sign in|log\s*in/i }),
+    ).toBeNull();
+  });
+
+  it("conserva el pie de página con el copyright", () => {
+    renderLayout();
+
+    const footer = document.querySelector<HTMLElement>(".ant-layout-footer");
+    expect(
+      footer,
+      "la parte pública debería conservar su pie de página (ant-layout-footer)",
     ).not.toBeNull();
-    if (!header) {
+    if (!footer) {
       return;
     }
 
-    const button = within(header).getByRole("button", {
-      name: /sign in|log\s*in/i,
-    });
-    await user.click(button);
+    expect(footer).toHaveTextContent(`©${new Date().getFullYear()} atareao`);
+  });
 
-    expect(startSsoLogin).toHaveBeenCalledTimes(1);
-    // No pasa por la ruta intermedia: el marcador de `/login` no aparece.
-    expect(screen.queryByText("pantalla de login")).toBeNull();
+  it("sigue renderizando el contenido de la ruta hija", () => {
+    renderLayout();
+
+    expect(screen.getByText("contenido público")).toBeInTheDocument();
   });
 });
