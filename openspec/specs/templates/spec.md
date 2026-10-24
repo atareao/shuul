@@ -150,6 +150,20 @@ El listado SHALL ofrecer filtros por pipeline, severidad, categoría y acción, 
 de la búsqueda por texto. La condición `must_have` SHALL ser **un filtro**, no un
 grupo, sección o acordeón.
 
+La búsqueda por texto SHALL compartir línea con los cuatro filtros y con el interruptor
+`must_have`: la barra de herramientas SHALL ser **una sola línea**, y el buscador NO
+SHALL ocupar una línea propia a ancho completo. La línea NO SHALL envolver: antes de
+partirse, los controles SHALL encogerse. El buscador SHALL ser el elemento flexible:
+SHALL declarar su ancho preferido, crecer por encima de él para ocupar el espacio libre
+y ceder espacio encogiéndose cuando falte. Los filtros SHALL declarar su ancho preferido
+y SHALL poder encogerse también, pero NO SHALL crecer por encima de él: **solo el
+buscador crece**. El interruptor `must_have` NO SHALL encogerse.
+
+Los controles SHALL poder encogerse por debajo del tamaño de su contenido, de modo que
+la fila nunca desborde su contenedor: cada uno NO SHALL fijar un ancho propio en píxeles
+ni un mínimo rígido —un `min-width` con valor positivo sería precisamente lo que
+devolvería a la fila un suelo duro y la haría desbordar en ventanas estrechas—.
+
 El detalle de los filtros de una plantilla SHALL mostrarse en la propia fila
 (expandible) y NO SHALL ocupar el espacio de la lista con etiquetas de resumen.
 
@@ -180,6 +194,25 @@ plantillas `must_have` y después el resto por peso.
 - **WHEN** el usuario filtra por pipeline JAIL y escribe "scanner" en la búsqueda
 - **THEN** SHALL listarse solo las plantillas JAIL cuyo nombre o descripción contenga "scanner"
 
+#### Scenario: The search box shares the line with the filters
+- **WHEN** el usuario abre la biblioteca de plantillas
+- **THEN** el buscador, los cuatro filtros y el interruptor `must_have` SHALL estar en la misma fila
+- **AND** esa fila NO SHALL envolver
+
+#### Scenario: The search box takes the free space
+- **WHEN** la ventana es más ancha que la suma de los anchos preferidos de los controles
+- **THEN** el buscador SHALL crecer para ocupar el hueco sobrante
+
+#### Scenario: The row shrinks before it wraps
+- **WHEN** la ventana se estrecha
+- **THEN** los controles SHALL encogerse por debajo de su ancho preferido, cediendo espacio, y por debajo incluso del tamaño de su contenido
+- **AND** la fila NO SHALL partirse en dos líneas
+- **AND** el contenido NO SHALL desbordar su contenedor: ni barra de desplazamiento horizontal ni recorte
+
+#### Scenario: The switch keeps its size
+- **WHEN** la ventana se estrecha
+- **THEN** el interruptor `must_have` NO SHALL encogerse: conserva su tamaño mientras el resto cede espacio
+
 ### Requirement: The templates endpoint no longer serves rate limit profiles
 
 `GET /api/v1/templates` SHALL devolver únicamente las plantillas de regla agrupadas
@@ -197,3 +230,36 @@ gestión de perfiles de rate limit SHALL vivir exclusivamente en
 - **THEN** NO SHALL existir la función `all_rate_limit_profile_templates()`
 - **AND** NO SHALL existir el tipo `RateLimitProfileTemplate`
 - **AND** los 9 seeds de perfiles SHALL seguir existiendo únicamente en las migraciones SQL de `rate_limit_profiles`
+
+### Requirement: La previsualización de una plantilla no desborda y ofrece el valor completo
+
+Los tags que muestran el valor de un filtro de plantilla SHALL truncar su contenido con elipsis cuando no quepa en el ancho disponible, en vez de desbordar su contenedor. El tag SHALL poder encogerse hasta el ancho del contenedor y NO SHALL fijar un ancho propio en píxeles.
+
+El valor completo SHALL seguir siendo accesible: cada uno de esos tags SHALL ir dentro de un `Tooltip` de antd cuyo `title` sea el valor íntegro, de modo que el texto recortado en pantalla pueda leerse entero.
+
+El texto completo SHALL seguir presente en el DOM del tag: el truncado SHALL ser visual (CSS), no SHALL recortar el valor con JavaScript.
+
+Esto SHALL cumplirse en los dos sitios que muestran los filtros de una plantilla: la previsualización del diálogo de aplicar plantilla —filtros y scope— y el detalle expandible de una fila del listado.
+
+#### Scenario: Un path de 314 caracteres no desborda el diálogo de aplicar plantilla
+- **WHEN** el usuario abre el diálogo de aplicar la plantilla `Scanner directorios+configs+paneles`, cuyo `path` mide 314 caracteres
+- **THEN** el tag del path SHALL llevar el estilo que trunca su contenido (`max-width: 100%`, `overflow: hidden`, `text-overflow: ellipsis` y `white-space: nowrap`)
+
+#### Scenario: El valor recortado se puede leer entero
+- **WHEN** el usuario pasa el ratón por el tag del path de esa plantilla
+- **THEN** SHALL aparecer un tooltip cuyo texto sea el regex completo, sin recortar
+
+#### Scenario: Los filtros cortos se ven como antes
+- **WHEN** el usuario abre el diálogo de aplicar una plantilla cuyos filtros caben en una línea
+- **THEN** cada tag SHALL mostrar su valor completo en una sola línea, sin elipsis visible
+- **AND** el texto del tag SHALL seguir conteniendo el valor íntegro
+
+#### Scenario: El detalle expandible de una fila se comporta igual
+- **WHEN** el usuario expande la fila de una plantilla con un filtro largo
+- **THEN** los tags del detalle SHALL llevar el mismo estilo que los del diálogo
+- **AND** cada uno SHALL ir dentro de un `Tooltip` con su valor completo
+
+#### Scenario: El scope del diálogo también lo usa
+- **WHEN** el usuario escribe un FQDN largo en el diálogo de aplicar plantilla
+- **THEN** el tag del scope SHALL llevar el mismo estilo que los de los filtros
+- **AND** SHALL ir dentro de un `Tooltip` con su valor completo

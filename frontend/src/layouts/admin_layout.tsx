@@ -1,8 +1,8 @@
 import react from "react";
 import { useNavigate, Navigate, Outlet } from "react-router";
 import type { NavigateFunction } from "react-router";
-import { Button, Layout, Menu } from "antd";
-import type { MenuProps } from "antd";
+import { Layout, Menu, theme } from "antd";
+import type { GlobalToken, MenuProps } from "antd";
 import {
   HomeOutlined,
   OrderedListOutlined,
@@ -15,13 +15,15 @@ import {
   EyeOutlined,
   MenuFoldOutlined,
   MenuUnfoldOutlined,
+  MoonOutlined,
+  SunOutlined,
 } from "@ant-design/icons";
 
-import ModeSwitcher from "@/components/mode_switcher";
 import AuthContext from "@/components/auth_context";
-import { VERSION } from "@/constants";
+import ModeContext from "@/components/mode_context";
+import { TITLE } from "@/constants";
+import Logo from "@/assets/logo.svg";
 
-const TITLE = `Shuul (${VERSION})`;
 const { Content, Footer, Sider } = Layout;
 
 /** Identificador de la barra lateral, para que el control de colapsar la anuncie. */
@@ -83,6 +85,8 @@ const AuthGuard = ({ children }: { children: React.ReactNode }) => (
 
 interface Props {
   navigate: NavigateFunction;
+  /** Token de Ant Design del tema activo, para el color del texto de la marca. */
+  token: GlobalToken;
 }
 interface State {
   collapsed: boolean;
@@ -95,6 +99,7 @@ class InnerAdminLayout extends react.Component<Props, State> {
       collapsed: false,
     };
   }
+
   setCollapsed = (collapsed: boolean) => {
     this.setState({ collapsed });
   };
@@ -102,6 +107,24 @@ class InnerAdminLayout extends react.Component<Props, State> {
   handleMenuClick = (e: MenuClickInfo) => {
     console.log(e);
     this.props.navigate(navigations[e.key]);
+  };
+
+  /**
+   * Despacha las entradas del pie por su clave. El tema no se resuelve aquí:
+   * `toggleMode` llega desde el consumidor del contexto de tema.
+   */
+  handleFooterClick = (e: MenuClickInfo, toggleMode: () => void) => {
+    switch (e.key) {
+      case "theme":
+        toggleMode();
+        break;
+      case "logout":
+        this.props.navigate("/admin/logout");
+        break;
+      case "collapse":
+        this.setCollapsed(!this.state.collapsed);
+        break;
+    }
   };
 
   render = () => {
@@ -116,65 +139,81 @@ class InnerAdminLayout extends react.Component<Props, State> {
         <Layout style={{ minHeight: "100vh" }}>
           {/* `trigger={null}` es imprescindible: sin él antd pintaría su
               disparador por defecto dentro de la barra. El disparador real es
-              el botón propio del pie, así que ni `collapsible` ni `onCollapse`
-              tienen ya sentido (no habría nada que los disparase). */}
+              la entrada de colapso del pie, así que ni `collapsible` ni
+              `onCollapse` tienen ya sentido (no habría nada que los disparase).
+              La barra se pega a la ventana y ocupa su altura: así el pie nunca
+              queda por debajo del pliegue y es el menú de navegación el que se
+              desplaza dentro. */}
           <Sider
             id={SIDER_ID}
             trigger={null}
             collapsed={this.state.collapsed}
+            style={{ position: "sticky", top: 0, height: "100vh" }}
             styles={{ body: { display: "flex", flexDirection: "column" } }}
           >
-            <div className="demo-logo-vertical" />
+            {/* La marca encabeza la barra: icono siempre, nombre solo cuando la
+                barra está desplegada. */}
+            <div
+              style={{
+                display: "flex",
+                alignItems: "center",
+                justifyContent: "center",
+                gap: 8,
+                padding: "16px 0",
+                color: this.props.token.colorTextLightSolid,
+              }}
+            >
+              <img src={Logo} alt="Shuul" style={{ height: 32, width: 32 }} />
+              {!this.state.collapsed && <span>Shuul</span>}
+            </div>
             <Menu
               theme="dark"
               defaultSelectedKeys={["1"]}
               selectedKeys={[selectedKey]}
               mode="inline"
               items={items}
+              style={{ flex: 1, overflowY: "auto", minHeight: 0 }}
               onClick={(e) => {
                 this.handleMenuClick(e);
               }}
             />
-            {/* El pie es hermano del menú dentro del cuerpo del `Sider`, no lo
-                envuelve: así el menú nunca queda dentro del pie. El
-                `marginTop: auto` lo ancla al fondo sin depender de CSS global.
-                Con la barra colapsada el raíl mide 80 px, así que los tres
-                controles pasan a columna para no desbordarlo. */}
-            <div
-              style={{
-                marginTop: "auto",
-                display: "flex",
-                flexDirection: this.state.collapsed ? "column" : "row",
-                alignItems: "center",
-                justifyContent: "center",
-                gap: 8,
-                padding: 8,
-              }}
-            >
-              <Button
-                variant="solid"
-                aria-label="Log out"
-                onClick={() => this.props.navigate("/admin/logout")}
-              >
-                <LogoutOutlined />
-              </Button>
-              <ModeSwitcher />
-              <Button
-                variant="solid"
-                aria-label={
-                  this.state.collapsed ? "Expand sidebar" : "Collapse sidebar"
-                }
-                aria-expanded={!this.state.collapsed}
-                aria-controls={SIDER_ID}
-                onClick={() => this.setCollapsed(!this.state.collapsed)}
-              >
-                {this.state.collapsed ? (
-                  <MenuUnfoldOutlined />
-                ) : (
-                  <MenuFoldOutlined />
-                )}
-              </Button>
-            </div>
+            {/* El pie es un `Menu` hermano del de navegación, no lo envuelve:
+                así el menú nunca queda dentro del pie. Sus tres entradas no son
+                seleccionables y se pliegan a iconos con la barra. */}
+            <ModeContext.Consumer>
+              {({ isDarkMode, toggleMode }) => (
+                <Menu
+                  theme="dark"
+                  mode="inline"
+                  selectable={false}
+                  onClick={(e) => this.handleFooterClick(e, toggleMode)}
+                >
+                  <Menu.Item
+                    key="theme"
+                    icon={isDarkMode ? <MoonOutlined /> : <SunOutlined />}
+                  >
+                    Theme
+                  </Menu.Item>
+                  <Menu.Item key="logout" icon={<LogoutOutlined />}>
+                    Log out
+                  </Menu.Item>
+                  <Menu.Item
+                    key="collapse"
+                    icon={
+                      this.state.collapsed ? (
+                        <MenuUnfoldOutlined />
+                      ) : (
+                        <MenuFoldOutlined />
+                      )
+                    }
+                    aria-expanded={!this.state.collapsed}
+                    aria-controls={SIDER_ID}
+                  >
+                    Collapse
+                  </Menu.Item>
+                </Menu>
+              )}
+            </ModeContext.Consumer>
           </Sider>
           <Layout>
             <Content style={{ margin: "0 16px" }}>
@@ -199,5 +238,6 @@ class InnerAdminLayout extends react.Component<Props, State> {
 
 export default function AdminLayout() {
   const navigate = useNavigate();
-  return <InnerAdminLayout navigate={navigate} />;
+  const { token } = theme.useToken();
+  return <InnerAdminLayout navigate={navigate} token={token} />;
 }
