@@ -196,7 +196,7 @@ http:
     shuul-auth:
       forwardAuth:
         address: "http://shuul:3000/api/v1/shuul"
-        trustForwarders: true
+        trustForwardHeader: true
 
   routers:
     my-service:
