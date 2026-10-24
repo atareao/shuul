@@ -11,6 +11,7 @@ import {
   UploadOutlined,
 } from "@ant-design/icons";
 import type Item from "@/models/rule"; // Alias para Rule
+import { isJailPipeline } from "@/models/rule";
 
 // Importamos CustomTable y los tipos necesarios
 import CustomTable from "@/components/custom_table";
@@ -51,7 +52,7 @@ const FIELDS: FieldDefinition<Item>[] = [
     width: 45,
     visible: true,
     render: (_, record) =>
-      record.pipeline === "jail" ? "-" : record.allow ? "✓" : "✗",
+      isJailPipeline(record.pipeline) ? "-" : record.allow ? "✓" : "✗",
   },
   {
     key: "weight",
@@ -62,7 +63,7 @@ const FIELDS: FieldDefinition<Item>[] = [
     visible: true,
     sortKey: "weight",
     render: (_, record) =>
-      record.pipeline === "jail" ? "-" : String(record.weight ?? 100),
+      isJailPipeline(record.pipeline) ? "-" : String(record.weight ?? 100),
   },
   {
     key: "name",
@@ -91,7 +92,7 @@ const FIELDS: FieldDefinition<Item>[] = [
     width: 70,
     visible: true,
     sortKey: "mode",
-    render: (_, record) => (record.pipeline === "jail" ? "-" : record.mode),
+    render: (_, record) => (isJailPipeline(record.pipeline) ? "-" : record.mode),
   },
   {
     key: "rate_limit_profile_name",

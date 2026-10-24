@@ -40,8 +40,11 @@ beforeAll(() => {
 });
 
 // ─── Fixture del catálogo ────────────────────────────────────────────────────
-// Refleja el contrato del delta: `{ waf, jail }`, sin `profiles`. Las cifras
-// son las reales: 24 WAF + 18 JAIL = 42 plantillas, 16 con `must_have: true`.
+// Refleja el contrato del delta: `{ waf, jail }`, sin `profiles`. Los recuentos
+// son los reales —24 WAF + 18 JAIL = 42 plantillas, 16 con `must_have: true`—,
+// pero los pesos del fixture son deliberadamente ficticios: las Jail reales
+// pesan 0 y aquí se les asigna 200 + i justamente para que el test detecte si la
+// interfaz dejase de normalizar el peso de una regla de Jail.
 
 interface TemplatesFixture {
   waf: RuleTemplate[];

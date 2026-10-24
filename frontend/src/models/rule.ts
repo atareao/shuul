@@ -27,3 +27,16 @@ export default interface Rule {
   created_at?: Date;
   updated_at?: Date;
 }
+
+/**
+ * ¿El pipeline indicado es el de Jail?
+ *
+ * El sistema compara el pipeline de forma literal y sensible a mayúsculas, así
+ * que la comparación vive aquí y no repetida en cada vista: un typo en una copia
+ * no lo detectaría el compilador. Acepta `unknown` para poder usarse tanto con
+ * un `Rule`/`RuleTemplate` como con los valores del formulario, que son
+ * `Record<string, unknown>`.
+ */
+export function isJailPipeline(pipeline: unknown): boolean {
+  return pipeline === "jail";
+}

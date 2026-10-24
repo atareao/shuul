@@ -21,6 +21,7 @@ import type { DialogMode } from "@/common/types";
 import { DialogModes } from "@/common/types";
 import type { DialogMessages } from "@/components/dialogs/custom_dialog";
 import type Item from "@/models/rule";
+import { isJailPipeline } from "@/models/rule";
 import type RateLimitProfile from "@/models/rate_limit_profile";
 
 const { Text } = Typography;
@@ -104,7 +105,7 @@ function formatForApi(
     // El pipeline de Jail no ordena por peso (evalúa todas las reglas que casan,
     // sin `break`), así que la interfaz envía siempre 0 y nunca el valor que
     // pudiera quedar en el formulario. El WAF conserva su peso: ahí sí ordena.
-    weight: values.pipeline === "jail" ? 0 : values.weight,
+    weight: isJailPipeline(values.pipeline) ? 0 : values.weight,
     name: values.name || null,
     description: values.description || null,
     mode: values.mode || "enforce",
@@ -350,7 +351,7 @@ export default function RuleDialog({
           onChange={(checked) => updateField("active", checked)}
           disabled={disabled}
         />
-        {formValues.pipeline !== "jail" && (
+        {!isJailPipeline(formValues.pipeline) && (
           <>
             <Text style={{ width: 60, flexShrink: 0, marginLeft: 16 }}>
               {t("Allow")}
@@ -367,7 +368,7 @@ export default function RuleDialog({
         { value: "waf", label: "WAF" },
         { value: "jail", label: "Jail" },
       ])}
-      {formValues.pipeline !== "jail" && (
+      {!isJailPipeline(formValues.pipeline) && (
         <Flex align="center" gap="small">
           <Text style={{ width: 120, flexShrink: 0 }}>{t("Weight")}</Text>
           <InputNumber
@@ -382,7 +383,7 @@ export default function RuleDialog({
       )}
       {renderInputRow("Name", "name")}
       {renderInputRow("Description", "description")}
-      {formValues.pipeline !== "jail" &&
+      {!isJailPipeline(formValues.pipeline) &&
         renderSelectRow("Mode", "mode", [
           { value: "enforce", label: "Enforce" },
           { value: "log_only", label: "Log Only" },

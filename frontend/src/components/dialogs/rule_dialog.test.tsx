@@ -3,6 +3,7 @@ import { render, screen, within, waitFor, cleanup } from "@testing-library/react
 import userEvent from "@testing-library/user-event";
 import type { UserEvent } from "@testing-library/user-event";
 import RuleDialog from "./rule_dialog";
+import type Item from "@/models/rule";
 import { DialogModes } from "@/common/types";
 
 // El diálogo compone sus URLs con `BASE_URL`; se sustituye por un valor fijo
@@ -62,6 +63,13 @@ function postedRuleBodies(fetchStub: FetchStub): RuleBody[] {
     .map(([, init]) => JSON.parse(init.body as string) as RuleBody);
 }
 
+/** Cuerpos JSON de las peticiones PATCH registradas por el `fetch` sustituido. */
+function patchedRuleBodies(fetchStub: FetchStub): RuleBody[] {
+  return fetchStub.mock.calls
+    .filter(([, init]) => init.method === "PATCH")
+    .map(([, init]) => JSON.parse(init.body as string) as RuleBody);
+}
+
 /** `handleCloseDialog` no-op: el diálogo se mantiene montado entre aserciones. */
 const closeDialog = (): void => {};
 
@@ -77,6 +85,39 @@ function renderCreateDialog(): void {
     />,
   );
 }
+
+/** Abre el diálogo de regla en modo edición sobre una regla ya existente. */
+function renderUpdateDialog(item: Item): void {
+  render(
+    <RuleDialog
+      dialogMode={DialogModes.UPDATE}
+      selectedItem={item}
+      handleCloseDialog={closeDialog}
+      endpoint="rules"
+      t={(key: string) => key}
+    />,
+  );
+}
+
+/** Regla de Jail ya almacenada: su peso no decide y no debe propagarse. */
+const JAIL_ITEM: Item = {
+  id: 7,
+  name: "Jail rule",
+  description: "",
+  mode: "log_only",
+  pipeline: "jail",
+  weight: 250,
+};
+
+/** Regla de WAF ya almacenada: aquí el peso ordena y viaja intacto. */
+const WAF_ITEM: Item = {
+  id: 8,
+  name: "WAF rule",
+  description: "",
+  mode: "enforce",
+  pipeline: "waf",
+  weight: 250,
+};
 
 /**
  * `combobox` del campo cuya etiqueta visible es `label`.
@@ -174,5 +215,43 @@ describe("RuleDialog: el peso no se ofrece donde no decide", () => {
     const jailBody = postedRuleBodies(fetchMock)[1];
     expect(jailBody.pipeline).toBe("jail");
     expect(jailBody.weight).toBe(0);
+  });
+
+  it("sends 0 on PATCH for a Jail rule while a WAF rule keeps its stored weight", async () => {
+    const user = userEvent.setup();
+    const fetchMock = vi.fn().mockResolvedValue({
+      ok: true,
+      status: 200,
+      json: async () => ({}),
+    });
+    vi.stubGlobal("fetch", fetchMock);
+
+    // ── Edición de una regla de Jail: el peso no decide en el pipeline, así
+    //    que ni se ofrece ni se propaga; el PATCH lo fija a 0 ──
+    renderUpdateDialog(JAIL_ITEM);
+    expect(await screen.findByText("Pipeline")).toBeTruthy();
+    expect(screen.queryByText("Weight")).toBeNull();
+    expect(screen.queryByRole("spinbutton")).toBeNull();
+
+    await user.click(screen.getByRole("button", { name: "Ok" }));
+    await waitFor(() => expect(patchedRuleBodies(fetchMock)).toHaveLength(1));
+    const jailBody = patchedRuleBodies(fetchMock)[0];
+    expect(jailBody.pipeline).toBe("jail");
+    expect(jailBody.weight).toBe(0);
+
+    // ── Edición de una regla de WAF: el peso ordena la evaluación, así que se
+    //    sigue ofreciendo con el valor almacenado y viaja intacto ──
+    cleanup();
+    renderUpdateDialog(WAF_ITEM);
+    expect(await screen.findByText("Weight")).toBeTruthy();
+    expect((screen.getByRole("spinbutton") as HTMLInputElement).value).toBe(
+      "250",
+    );
+
+    await user.click(screen.getByRole("button", { name: "Ok" }));
+    await waitFor(() => expect(patchedRuleBodies(fetchMock)).toHaveLength(2));
+    const wafBody = patchedRuleBodies(fetchMock)[1];
+    expect(wafBody.pipeline).toBe("waf");
+    expect(wafBody.weight).toBe(250);
   });
 });
