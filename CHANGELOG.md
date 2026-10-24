@@ -1,4 +1,14 @@
 # Changelog
+## [0.23.1] - 2026-10-24
+
+### Bug Fixes
+
+- *(waf)* El GeoIP y el filtro de Tor consumen la dirección resuelta
+
+### Documentation
+
+- *(openspec)* Propone client-address-consistency
+- Anota en el roadmap el defecto medido del GeoIP y Tor
 ## [0.23.0] - 2026-10-24
 
 ### Bug Fixes
@@ -12,6 +22,10 @@
 - Declara el modelo de confianza de las cabeceras de reenvío
 - *(openspec)* Marca las tareas verificadas de public-landing-without-header
 - *(openspec)* Archiva public-landing-without-header
+
+### Miscellaneous Tasks
+
+- Release v0.23.0
 ## [0.22.0] - 2026-10-24
 
 ### Documentation
