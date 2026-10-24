@@ -158,7 +158,33 @@ Conclusión: **el nicho de Shuul justifica motor propio**. Lo que hay que copiar
 
 Cada fase es **un change de OpenSpec independiente y publicable por sí solo**. Ninguna toca el pipeline Jail. Ninguna cambia el comportamiento por defecto de las reglas existentes.
 
-### F1 — Transformaciones (`t:`) · tamaño M · la de mayor valor por esfuerzo
+### F1 — Transformaciones (`t:`) · tamaño M · la de mayor valor por esfuerzo · ✅ entregada
+
+> **✅ Entregada** — change `waf-transformations`, archivado en `openspec/changes/archive/` cuando se cierre.
+>
+> **Lo entregado:**
+>
+> - La columna `transformations` en `rules`.
+> - Las 18 transformaciones y la pipeline, con `parse` / `apply` / `is_empty`.
+> - La aplicación al valor de la petición en `check_match`, con la evidencia sacada del **mismo** recorrido que decide el matcheo.
+> - La validación y la canonización de la especificación en las **tres** vías de escritura (crear, editar e importar).
+> - La exclusión de la caché de reglas activas, con un `error!` que nombra la fila irresoluble y el token.
+> - La clave `"matched"` en el evento de auditoría, con el valor transformado que casó.
+> - Los chips de los 18 nombres canónicos en la pestaña «Request» del diálogo de regla.
+> - Las cuatro plantillas de detección con su pipeline y su severidad.
+>
+> **Desviaciones del boceto, cada una con su porqué:**
+>
+> - **Los 18 decodificadores se escribieron a mano, sin dependencias nuevas.** El crate `urlencoding`, que ya estaba en el proyecto, **no** sirve: convierte `+` en espacio, y la misma transformación se aplica al `path`, donde `+` es un carácter literal. El de Base64 tampoco se añadió: la semántica que hace falta —estricta, y ante cualquier duda dejar el valor intacto— es más simple de escribir que de configurar.
+> - **Solo subieron tres severidades de las cuatro:** `SQL injection probes` y `Command injection probes` a `critico`, `XSS probes` a `alto`; `Path traversal probes` se queda en `alto`. La cuarta ya estaba en su sitio, y subirla habría sido mover un número para cumplir la tarea.
+> - **No se tocó ningún regex de las cuatro plantillas.** La pipeline decodifica **una sola vez** —no hay punto fijo—, así que las alternativas literales `%0a`, `%0d` y `%00` del regex de `Command injection probes` siguen siendo alcanzables: un payload doblemente codificado (`%250a`, `%2500`) emerge de `urlDecodeUni` como el literal y casa la alternativa. Quitarlas habría **debilitado** la detección.
+> - **La UI ofrece los 18 nombres como chips, no como campo de texto con una lista al lado.** El orden importa y un desplegable de selección múltiple lo perdería; con chips el camino común no puede producir un token no canónico, y el parser estricto solo lo ve quien escribe contra la API a mano.
+> - **La especificación se canoniza al escribir.** `urlDecodeUni,none,lowercase` queda almacenado como `lowercase`.
+> - **La evidencia se emite solo con la pipeline no vacía Y al menos un campo de los 14 restringido.** Con la pipeline vacía el valor transformado es el crudo, que el evento ya lleva; y con una pipeline que no restrinja ningún campo —solo `is_tor`, o solo `allow`— no hay nada que anotar.
+> - **`htmlEntityDecode` exige el `;` final: una limitación conocida y deliberada.** HTML5 reconoce la forma sin punto y coma (`&#39`) y esta implementación no, así que `&#39` se deja intacto y `&#39;` se decodifica. Si algún día se quiere conformidad plena, es un cambio de comportamiento que hay que decidir, no un descuido.
+> - **La evidencia también es `None` cuando la regla no casa.** La cadena de comparaciones cortocircuita con `&&`, así que sin ese corte la evidencia describiría campos de una decisión que no se tomó.
+>
+> **Lo medido:** el `path` y la `query` de `X-Forwarded-Uri` llegan **codificados**; el backend queda en **503 pruebas verdes** y el frontend en **92**.
 
 **Por qué primero:** es la que convierte las 24 plantillas actuales en reglas que de verdad bloquean. Todo lo demás se apoya en ella.
 
@@ -213,6 +239,7 @@ impl TransformationPipeline {
 - Regla con `t:urlDecodeUni` y patrón `\.\./` casa con `%2e%2e%2f`.
 - Regla con `t:urlDecodeUni` y patrón `union\s+select` casa con `1%20union%20select%201`.
 - `cargo clippy --all-targets -- -D warnings` y `cargo fmt --check` limpios; `tsc -b --force` y `npm run lint` limpios; cero `eslint-disable`, cero `any`, cero `@ts-ignore`.
+- **Resultado real de F1:** backend **503** verdes y frontend **92**; `cargo clippy --lib --bins` en **0** avisos, `cargo clippy --all-targets` en **83** (la base preexistente, sin añadidos); `cargo fmt --check`, `tsc -b --force` y `npm run lint` limpios.
 
 ### F2 — Condiciones 1:N: colecciones, operadores y lógica · tamaño L · la fase estructural
 
@@ -318,7 +345,7 @@ Merece la pena aunque F1 llegue después: son capas distintas y se complementan.
 | # | Decisión | Recomendación |
 |---|---|---|
 | D1 | ¿Transformaciones opt-in por regla, o un conjunto por defecto global? | **Por regla, pipeline vacía por defecto.** Es lo único que garantiza que ninguna regla existente cambie de comportamiento. Coraza recomienda lo mismo y desaconseja meterlas en `SecDefaultAction`. |
-| D2 | Al actualizar las plantillas de F1, ¿se les añade `t:none` explícito? | **Sí**, por convención y legibilidad. |
+| D2 | Al actualizar las plantillas de F1, ¿se les añade `t:none` explícito? | Recomendación original: **sí**, por convención y legibilidad. **Resuelto: la canonización lo hace innecesario.** El marcador `none` limpia la pipeline al parsear, así que declararlo en una plantilla se normalizaría fuera y la especificación almacenada sería la misma; añadirlo sería peso muerto. |
 | D3 | ¿El modo scoring sustituye a `first match wins` o convive? | **Convive**, `first_match` por defecto y `anomaly` opt-in. |
 | D4 | ¿Se abre la puerta del cuerpo (`forwardBody`)? | **Sí, pero en F5 y opt-in por router.** Antes no aporta nada, porque sin transformaciones el cuerpo se esquiva igual. |
 | D5 | ¿Se asume FFI a libinjection para `@detectSQLi`/`@detectXSS`? | **No por ahora.** Fuera de alcance; revisar tras F2. |

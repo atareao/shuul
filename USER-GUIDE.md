@@ -130,6 +130,43 @@ For Jail rules:
 
 **Missing fields do not match.** A rule matches only when **every** field it restricts matches. If a rule restricts a field and the request does not carry a value for it — the header is absent *or* present but empty — the rule does **not** match. This is the safe failure: a `User-Agent` rule will not silently match every request that has no `User-Agent`. It matters most for the five header-derived fields (`User-Agent`, `Referer`, `Content-Type`, `Accept-Language`, `X-Request-ID`) and for `Country Code` when GeoIP cannot resolve the IP. Traefik only emits those request headers when `accessLog.fields.headers.names` declares them (see the Self-Hosting guide, §2.15), so by default they arrive empty; a restricted field with no value simply does not match — it never matches by absence. When debug logging is on, the matcher reports each discard, naming the field and the rule.
 
+### Transformations
+
+A rule can declare a *pipeline* of transformations that is applied to the **request value** before it is compared with the pattern. It lets a pattern reach the same payload written in another form: without it, `%2e%2e%2f` does not match the pattern `\.\./`, and `1%20union%20select%201` does not match `union\s+select`.
+
+You edit it in the **Request** tab of the rule dialog, in the `Transformations` field. Below it, the 18 canonical names are offered as **chips**: clicking one inserts its name into the specification, **in the order you click**. The order matters — `urlDecodeUni,lowercase` does not give the same result as `lowercase,urlDecodeUni` — which is why this is not a multi-select dropdown. The field can also be typed by hand; the names are **case-sensitive** and any other token is rejected with a `400` that lists the valid ones.
+
+The empty string is the empty pipeline and it is the default: the value is left untouched and the rule behaves exactly as it did before transformations existed. No existing rule changes.
+
+The `none` marker clears the pipeline built up to that point. On save, the specification is **canonicalised**: `urlDecodeUni,none,lowercase` is stored as `lowercase`, so what the API returns is always the pipeline that actually runs. A `PATCH` that **omits** the `transformations` field stores the **empty** pipeline, exactly as omitting `weight`, `mode`, `pipeline` or `allow` resets those fields: the update replaces the whole object, so this is expected behaviour and not a failure.
+
+| Name | What it does |
+|---|---|
+| `urlDecode` | Decodes `%XX` escapes. `+` is left as-is, because the same pipeline runs over the path. |
+| `urlDecodeUni` | As `urlDecode`, plus IIS `%uXXXX` escapes. |
+| `lowercase` / `uppercase` | Changes the case. |
+| `removeNulls` / `replaceNulls` | Removes NUL bytes / turns each one into a space. |
+| `compressWhitespace` | Collapses runs of whitespace into a single space. Does not trim. |
+| `removeWhitespace` | Removes all whitespace. |
+| `normalizePath` / `normalizePathWin` | Resolves `.` and `..` segments with `/` / `\` separators. |
+| `htmlEntityDecode` | `&lt;` → `<`, plus numeric forms. |
+| `jsDecode` | `\u003c` → `<`, plus `\xHH` and single-character escapes. |
+| `cssDecode` | `\3c` → `<`. |
+| `escapeSeqDecode` | `\x3c` → `<`, plus C escapes. |
+| `base64Decode` | Decodes standard Base64; anything that is not valid Base64 is left untouched. |
+| `cmdLine` | Command-line normalisation: drops `\`, quotes and `^`, collapses whitespace. |
+| `trim` | Trims leading and trailing whitespace. |
+| `length` | Replaces the value with its length in bytes, in decimal. |
+
+Two examples:
+
+- **Path traversal.** Pattern `\.\./` on `path`, pipeline `urlDecodeUni,removeNulls`. Blocks a request whose path is `%2e%2e%2f`. Without the pipeline the same request goes through. (This is what the `Path traversal probes` template now declares.)
+- **SQL injection.** Pattern `union\s+select` on `query`, pipeline `urlDecodeUni,compressWhitespace`. Blocks `1%20union%20select%201`.
+
+Two warnings. The pipeline is applied **once**, not until the value stops changing — so a **double** encoding is covered by writing `urlDecodeUni,urlDecodeUni`. And `normalizePath`/`normalizePathWin` resolve `..`, so they must **not** be used in a traversal rule: what is needed there is to **decode** so that the `..` becomes visible.
+
+When a rule declares a pipeline and restricts at least one field, the audit log records under the `"matched"` key the **transformed** value that matched, which lets you tune a rule without guessing why it matched.
+
 ### Rule Modes
 
 | Mode | Behaviour |
