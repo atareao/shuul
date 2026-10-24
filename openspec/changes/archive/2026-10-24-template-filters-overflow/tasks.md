@@ -25,6 +25,6 @@
 
 ## 4. Verificación manual en producción (la hace el usuario)
 
-- [ ] 4.1 En el navegador: abrir *Apply* en `Scanner directorios+configs+paneles` → los filtros se quedan dentro del diálogo, sin barra horizontal, el path se ve recortado con puntos suspensivos y al pasar el ratón aparece entero.
-- [ ] 4.2 En el navegador: expandir esa misma fila → el detalle tampoco desborda y su tooltip también trae el valor completo.
-- [ ] 4.3 En el navegador: aplicar una plantilla de filtros cortos → todo se ve como antes, sin elipsis.
+- [x] 4.1 En el navegador: abrir *Apply* en `Scanner directorios+configs+paneles` → los filtros se quedan dentro del diálogo, sin barra horizontal, el path se ve recortado con puntos suspensivos y al pasar el ratón aparece entero.
+- [x] 4.2 En el navegador: expandir esa misma fila → el detalle tampoco desborda y su tooltip también trae el valor completo.
+- [x] 4.3 En el navegador: aplicar una plantilla de filtros cortos → todo se ve como antes, sin elipsis.
