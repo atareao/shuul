@@ -42,7 +42,7 @@
 
 ## 6. REFACTOR tras la auditoría (hallazgos de los revisores)
 
-- [ ] 6.1 M1: el pipeline se valida en la escritura (creación, edición e importación) y se rechaza lo no admitido; la migración alcanza además el legado con otra capitalización (`COLLATE NOCASE`).
+- [x] 6.1 M1: el pipeline se valida en la escritura (creación, edición e importación) y se rechaza lo no admitido; la migración alcanza además el legado con otra capitalización (`COLLATE NOCASE`).
 - [x] 6.2 m1: test de la rama `ON CONFLICT DO UPDATE` de la importación (reimportar el mismo nombre con un peso distinto de 0).
 - [x] 6.3 m2: el test de la migración comprueba la idempotencia ejecutando el SQL dos veces.
 - [x] 6.4 m3: el test de creación se parte para no arrastrar `clippy::too_many_lines`.
@@ -50,5 +50,5 @@
 - [x] 6.6 Frontend: test de UPDATE en `rule_dialog.test.tsx` y helper único para la comparación con el pipeline `jail`.
 - [ ] 6.7 Aplazado a su propio change: m4 (un `sort_by` fuera de la lista blanca desactiva todo el `ORDER BY`, comportamiento preexistente) y la explicación al usuario de por qué Jail no tiene peso.
 
-- [ ] 6.8 El rechazo no se queda en la API: la UI del import deja de decir «Imported N rules» cuando hubo entradas rechazadas y las nombra.
+- [x] 6.8 El rechazo no se queda en la API: la UI del import deja de decir «Imported N rules» cuando hubo entradas rechazadas y las nombra.
 - [ ] 6.9 Aplazado a su propio change: una fila del WAF con la etiqueta en mayúsculas (`WAF`) no la salta el pipeline de Jail —la comparación literal de `report.rs` es `waf`—, así que participa de un pipeline que no le toca. Es preexistente y ajeno a la invariante del peso de Jail.
