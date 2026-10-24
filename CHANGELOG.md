@@ -1,9 +1,38 @@
 # Changelog
+## [0.19.0] - 2026-10-24
+
+### Documentation
+
+- *(jail-weight-coherence)* Proposal, deltas de spec y tasks
+- *(agents)* El peso de una regla de Jail es siempre 0
+- *(jail-weight-coherence)* El rechazo del pipeline inválido y el legado con otra capitalización
+- *(jail-weight-coherence)* Marca las tareas cerradas del REFACTOR
+
+### Features
+
+- *(jail-weight-coherence)* Deja de arrastrar un peso para Jail (GREEN)
+- *(jail-weight-coherence)* Normaliza el peso de las reglas de Jail (GREEN)
+- *(jail-weight-coherence)* La UI nombra las reglas rechazadas al importar (REFACTOR)
+
+### Refactor
+
+- *(jail-weight-coherence)* Centraliza la comparación con el pipeline jail (REFACTOR)
+- *(jail-weight-coherence)* Normaliza también la etiqueta del pipeline legado (REFACTOR)
+- *(jail-weight-coherence)* Acota el aviso de rechazos y endurece la tolerancia (REFACTOR)
+
+### Testing
+
+- *(jail-weight-coherence)* Añade los tests del peso de Jail (RED)
+- *(frontend)* Fija que el Weight no se ofrece para Jail (RED)
 ## [0.18.1] - 2026-10-23
 
 ### Documentation
 
 - *(openspec)* Propone secret-hygiene (el secreto nunca al log, aviso si es débil)
+
+### Miscellaneous Tasks
+
+- Release v0.18.1
 
 ### Testing
 
