@@ -8,7 +8,7 @@ use crate::constants::DEFAULT_PAGE;
 use crate::models::error::AppError;
 use crate::models::{
     ApiResponse, AppState, Data, NewRule, PagedResponse, Pagination, ReadRuleParams, Rule,
-    UpdateRule, WAF_PIPELINE, normalized_weight, validate_pipeline,
+    UpdateRule, WAF_PIPELINE, normalized_transformations, normalized_weight, validate_pipeline,
 };
 use axum::{
     Json, Router,
@@ -250,6 +250,21 @@ pub struct ImportPayload {
     pub rules: Vec<NewRule>,
 }
 
+/// Registra en `rejected` una entrada de la importación que no se almacenó.
+///
+/// La importación es **por entradas**: la entrada rechazada viaja de vuelta con su
+/// nombre y el motivo —que nombra el token o el pipeline no admitido—, en lugar de
+/// abortar la importación entera o descartarse en silencio. Lo usan las dos
+/// validaciones de [`import_handler`] —el pipeline y la especificación de
+/// transformaciones— para que el rechazo sea idéntico en las dos.
+fn reject_import(rejected: &mut Vec<serde_json::Value>, name: &str, error: &AppError) {
+    debug!("Rule '{name}' rejected on import: {error}");
+    rejected.push(serde_json::json!({
+        "name": name,
+        "reason": error.to_string(),
+    }));
+}
+
 /// Importa reglas desde un JSON array.
 ///
 /// Cada regla se inserta con UPSERT por `name`:
@@ -259,9 +274,12 @@ pub struct ImportPayload {
 /// ```
 ///
 /// La importación es **por entradas**: una entrada con un pipeline no admitido
-/// (lo que no sea exactamente `waf` o `jail`) no se almacena, pero tampoco aborta
-/// la importación entera ni se descarta en silencio —viaja de vuelta en `rejected`
-/// con su nombre y el motivo—. `imported` cuenta solo las que se almacenaron.
+/// (lo que no sea exactamente `waf` o `jail`) o con una especificación de
+/// transformaciones irresoluble no se almacena, pero tampoco aborta la importación
+/// entera ni se descarta en silencio —viaja de vuelta en `rejected` con su nombre y
+/// el motivo—. La especificación se **canoniza** con
+/// [`normalized_transformations`] antes de escribirla, igual que el peso con
+/// [`normalized_weight`]. `imported` cuenta solo las que se almacenaron.
 ///
 /// Después de importar, recarga la caché de reglas.
 ///
@@ -286,28 +304,35 @@ pub async fn import_handler(
         // 0, traiga lo que traiga el JSON.
         let pipeline = rule.pipeline.as_deref().unwrap_or(WAF_PIPELINE);
         if let Err(error) = validate_pipeline(pipeline) {
-            debug!("Rule '{}' rejected on import: {error}", rule.name);
-            rejected.push(serde_json::json!({
-                "name": rule.name,
-                "reason": error.to_string(),
-            }));
+            reject_import(&mut rejected, &rule.name, &error);
             continue;
         }
+        // La especificación de transformaciones se valida y se canoniza también antes
+        // de tocar la base de datos.
+        let transformations =
+            match normalized_transformations(rule.transformations.as_deref().unwrap_or_default()) {
+                Ok(transformations) => transformations,
+                Err(error) => {
+                    reject_import(&mut rejected, &rule.name, &error);
+                    continue;
+                },
+            };
         let weight = normalized_weight(pipeline, rule.weight.unwrap_or(100));
         let sql = r"INSERT INTO rules (
             name, description, weight, mode, pipeline, allow,
             ip_address, protocol, fqdn, path, query,
             city_name, country_name, country_code,
             user_agent, method, referer, content_type, accept_language, x_request_id,
-            rate_limit_profile_id, active, created_at, updated_at
+            rate_limit_profile_id, active, created_at, updated_at, transformations
         ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10,
                   $11, $12, $13, $14, $15, $16, $17, $18, $19, $20,
-                  $21, $22, $23, $24)
+                  $21, $22, $23, $24, $25)
         ON CONFLICT (name) DO UPDATE SET
             description = EXCLUDED.description,
             weight = EXCLUDED.weight,
             mode = EXCLUDED.mode,
             pipeline = EXCLUDED.pipeline,
+            transformations = EXCLUDED.transformations,
             allow = EXCLUDED.allow,
             ip_address = EXCLUDED.ip_address,
             protocol = EXCLUDED.protocol,
@@ -352,6 +377,7 @@ pub async fn import_handler(
             .bind(rule.active.unwrap_or(true))
             .bind(now)
             .bind(now)
+            .bind(transformations)
             .execute(&app_state.pool)
             .await?;
         imported += 1;

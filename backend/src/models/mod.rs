@@ -22,6 +22,7 @@ mod rule;
 mod settings;
 mod stats;
 mod tor_service;
+pub mod transformation;
 mod user;
 
 pub use ban_manager::BanManager;
@@ -41,8 +42,8 @@ pub use report::ReportPayload;
 pub use response::{ApiResponse, EmptyResponse, PagedResponse, Pagination};
 #[allow(unused_imports)]
 pub use rule::{
-    CacheRule, JAIL_PIPELINE, NewRule, ReadRuleParams, Rule, UpdateRule, WAF_PIPELINE,
-    normalized_weight, validate_pipeline,
+    CacheRule, JAIL_PIPELINE, MatchOutcome, NewRule, ReadRuleParams, Rule, UpdateRule,
+    WAF_PIPELINE, normalized_transformations, normalized_weight, validate_pipeline,
 };
 pub use settings::Settings;
 pub use stats::StatsCollector;

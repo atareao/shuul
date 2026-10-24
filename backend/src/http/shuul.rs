@@ -43,6 +43,12 @@ struct RuleMatch {
     rule_id: i32,
     rule_name: String,
     allow: bool,
+    /// La evidencia del matcheo —campo restringido → valor transformado—, tal
+    /// como la devolvió `CacheRule::evaluate`. Es `None` cuando la regla no
+    /// declara pipeline de transformaciones, y tampoco hay evidencia cuando la
+    /// regla **no casa**: una regla descartada no aporta evidencia de ningún
+    /// campo, ni siquiera de los que casaron antes del primero que falló.
+    matched: Option<std::collections::BTreeMap<String, String>>,
 }
 
 /// Main entry point for the shuul service.
@@ -80,7 +86,10 @@ pub async fn shuul(
         let mut matched: Option<RuleMatch> = None;
 
         for cache_rule in rules.iter() {
-            if !cache_rule.matches(&request) {
+            // El recorrido único del matcheo: de `evaluate` salen a la vez la
+            // decisión (`matched`) y la evidencia (`evidence`).
+            let outcome = cache_rule.evaluate(&request);
+            if !outcome.matched {
                 continue;
             }
 
@@ -97,11 +106,21 @@ pub async fn shuul(
 
             // First matching rule wins
             if cache_rule.rule.mode.as_str() == "log_only" {
+                // El `RuleMatch` se construye ANTES de registrar para poder pasar
+                // la evidencia por referencia (`&rm.matched`) y no clonar el mapa
+                // en cada petición. `json!` toma su expresión prestada, así que la
+                // referencia es suficiente: no hay `clone()` ni asignación extra.
+                let rm = RuleMatch {
+                    rule_id: cache_rule.rule.id,
+                    rule_name: cache_rule.rule.name.clone(),
+                    allow: true,
+                    matched: outcome.evidence,
+                };
                 if should_log(&log_all_requests, "admitted") {
                     audit_log!("admitted",
                         "pipeline": "waf",
-                        "rule_id": cache_rule.rule.id,
-                        "rule_name": cache_rule.rule.name,
+                        "rule_id": rm.rule_id,
+                        "rule_name": rm.rule_name,
                         "ip": request.ip_address,
                         "country": request.country_code,
                         "path": request.path,
@@ -110,13 +129,10 @@ pub async fn shuul(
                         "fqdn": request.fqdn,
                         "query": request.query,
                         "referer": request.referer,
+                        "matched": &rm.matched,
                     );
                 }
-                matched = Some(RuleMatch {
-                    rule_id: cache_rule.rule.id,
-                    rule_name: cache_rule.rule.name.clone(),
-                    allow: true,
-                });
+                matched = Some(rm);
                 break;
             }
 
@@ -125,6 +141,7 @@ pub async fn shuul(
                 rule_id: cache_rule.rule.id,
                 rule_name: cache_rule.rule.name.clone(),
                 allow: cache_rule.rule.allow,
+                matched: outcome.evidence,
             });
             break;
         }
@@ -164,6 +181,7 @@ pub async fn shuul(
                     "fqdn": request.fqdn,
                     "query": request.query,
                     "referer": request.referer,
+                    "matched": &rm.matched,
                 );
             }
             EmptyResponse::create(StatusCode::OK, "Ok")
@@ -189,6 +207,7 @@ pub async fn shuul(
                     "fqdn": request.fqdn,
                     "query": request.query,
                     "referer": request.referer,
+                    "matched": &rm.matched,
                 );
             }
             EmptyResponse::create(StatusCode::FORBIDDEN, "Ko")
@@ -632,6 +651,7 @@ mod tests {
             weight: 10,
             mode: "enforce".to_string(),
             pipeline: "jail".to_string(),
+            transformations: String::new(),
             allow: false,
             is_tor: None,
             ip_address: None,
@@ -750,6 +770,177 @@ mod tests {
             entry.rule_name.as_deref(),
             Some("Scanner Aggressive"),
             "banned audit log should include rule_name from the ban"
+        );
+    }
+
+    // ── waf-transformations 1.17: el evento lleva el valor transformado ──
+
+    /// Construye una regla del WAF con `path` y `transformations` dados y el
+    /// resto de campos neutros, lista para el pipeline del WAF.
+    fn waf_rule(id: i32, name: &str, weight: i32, transformations: &str, path: &str) -> Rule {
+        Rule {
+            id,
+            name: name.to_string(),
+            description: String::new(),
+            weight,
+            mode: "enforce".to_string(),
+            pipeline: "waf".to_string(),
+            transformations: transformations.to_string(),
+            allow: false,
+            is_tor: None,
+            ip_address: None,
+            protocol: None,
+            fqdn: None,
+            path: Some(path.to_string()),
+            query: None,
+            city_name: None,
+            country_name: None,
+            country_code: None,
+            user_agent: None,
+            method: None,
+            referer: None,
+            content_type: None,
+            accept_language: None,
+            x_request_id: None,
+            rate_limit_profile_id: None,
+            rate_limit_profile_name: None,
+            active: true,
+            created_at: chrono::Utc::now(),
+            updated_at: chrono::Utc::now(),
+        }
+    }
+
+    /// Construye un `AppState` con **dos** reglas del WAF y **sin** baneos.
+    ///
+    /// No reutiliza `build_test_app_state` a propósito: aquél trae una regla de
+    /// Jail y un baneo para `10.0.0.1`, de modo que una petición acabaría en 403
+    /// por **baneo** y no por **regla**, y el evento observado sería `banned` en
+    /// vez de `denied`.
+    async fn build_waf_rules_app_state() -> Arc<AppState> {
+        let pool = SqlitePoolOptions::new()
+            .connect(":memory:")
+            .await
+            .expect("Failed to create in-memory SQLite pool");
+
+        // Regla A: pipeline `lowercase`. El patrón es insensible a mayúsculas a
+        // propósito: el matcheo por sí solo no distingue el valor crudo del
+        // transformado, así que lo que este test mide es la **evidencia** —que el
+        // evento lleve `/admin` y no `/ADMIN`—, no la decisión.
+        // Regla B: sin pipeline, sólo para el caso negativo.
+        let rules = vec![
+            CacheRule::from_rule(&waf_rule(
+                101,
+                "con-pipeline",
+                10,
+                "lowercase",
+                r"(?i)^/admin$",
+            )),
+            CacheRule::from_rule(&waf_rule(102, "sin-pipeline", 20, "", r"^/banned$")),
+        ];
+
+        let settings = Settings {
+            default_rule_mode: "enforce".to_string(),
+            log_retention_days: 30,
+            log_all_requests: "all".to_string(),
+        };
+
+        Arc::new(AppState {
+            pool,
+            secret: "test-secret".to_string(),
+            geoip: load_geoip_service()
+                .expect("No GeoIP database found. Create one with: python3 create_test_mmdb.py"),
+            tor_service: crate::models::TorService::new(),
+            rules: Mutex::new(rules),
+            stats: StatsCollector::new(),
+            static_dir: "static".to_string(),
+            ban_manager: Mutex::new(BanManager::new(3600, false, vec![1], 86400, 7)),
+            rate_limiter: Mutex::new(HashMap::new()),
+            settings: Mutex::new(settings),
+            pending_bans: Mutex::new(Vec::new()),
+            oidc_metadata: tokio::sync::RwLock::new(None),
+            jwt_validator: tokio::sync::RwLock::new(None),
+            oidc_states: tokio::sync::Mutex::new(HashMap::new()),
+            oidc_client_id: None,
+            oidc_redirect_url: None,
+        })
+    }
+
+    /// Tarea 1.17: una denegación por una regla **con** pipeline produce un
+    /// evento de auditoría que lleva el valor **transformado**; una denegación
+    /// por una regla **sin** pipeline produce un evento **sin** la clave.
+    #[tokio::test]
+    async fn test_waf_denied_event_carries_the_transformed_value() {
+        let _guard = TEST_LOCK.lock().await;
+        // Clear the LOG_COLLECTOR before the test
+        if let Ok(mut collector) = LOG_COLLECTOR.lock() {
+            // Create a fresh collector
+            *collector = crate::models::log_collector::LogCollector::new(1000);
+        }
+
+        let app_state = build_waf_rules_app_state().await;
+
+        // Regla A (`lowercase`): `/ADMIN` se compara con `(?i)^/admin$` y casa.
+        let response = super::shuul(
+            State(Arc::clone(&app_state)),
+            build_headers("10.0.0.9", "example.com", "/ADMIN"),
+        )
+        .await;
+        assert_eq!(
+            response.into_response().status(),
+            403,
+            "una regla del WAF con allow=false debe denegar"
+        );
+
+        // Regla B (sin pipeline): `/banned` casa `^/banned$`.
+        let response = super::shuul(
+            State(Arc::clone(&app_state)),
+            build_headers("10.0.0.9", "example.com", "/banned"),
+        )
+        .await;
+        assert_eq!(
+            response.into_response().status(),
+            403,
+            "la regla sin pipeline también deniega"
+        );
+
+        let entries = LOG_COLLECTOR.lock().map(|c| c.all()).unwrap_or_default();
+
+        // ── Regla A: la evidencia lleva el valor transformado, no el crudo ──
+        let with_pipeline = entries
+            .iter()
+            .find(|e| e.event == "denied" && e.path.as_deref() == Some("/ADMIN"))
+            .expect("debe haber un evento `denied` para `/ADMIN`");
+
+        assert_eq!(
+            with_pipeline
+                .matched
+                .as_ref()
+                .and_then(|matched| matched.get("path"))
+                .map(String::as_str),
+            Some("/admin"),
+            "la evidencia debe llevar el valor TRANSFORMADO `/admin`, no el crudo \
+             `/ADMIN`; evento: {with_pipeline:?}"
+        );
+        assert_eq!(
+            with_pipeline
+                .matched
+                .as_ref()
+                .map(std::collections::BTreeMap::len),
+            Some(1),
+            "sólo `path` está restringido: no puede haber evidencia de otros campos; \
+             evento: {with_pipeline:?}"
+        );
+
+        // ── Regla B: sin pipeline, la clave no aparece ──
+        let without_pipeline = entries
+            .iter()
+            .find(|e| e.event == "denied" && e.path.as_deref() == Some("/banned"))
+            .expect("debe haber un evento `denied` para `/banned`");
+
+        assert!(
+            without_pipeline.matched.is_none(),
+            "una regla sin pipeline NO debe anotar la clave `matched`; evento: \
+             {without_pipeline:?}"
         );
     }
 }

@@ -9,6 +9,7 @@ import {
   Alert,
   Tabs,
   Select,
+  Button,
 } from "antd";
 import type { TabsProps } from "antd";
 import {
@@ -25,6 +26,54 @@ import { isJailPipeline } from "@/models/rule";
 import type RateLimitProfile from "@/models/rate_limit_profile";
 
 const { Text } = Typography;
+
+/**
+ * Los dieciocho nombres canónicos de transformación, **en el orden de la
+ * especificación** (`urlDecode`, `urlDecodeUni`, `lowercase`…) —el mismo que
+ * sirve el backend—.
+ *
+ * El orden importa: la pipeline se aplica de izquierda a derecha y no es
+ * conmutativa (`urlDecodeUni,lowercase` no es `lowercase,urlDecodeUni`), así que
+ * esta lista es sólo el orden en que se ofrecen los chips, no el orden en que se
+ * aplican: el que manda es el orden en que se pulsan.
+ *
+ * El backend **rechaza** cualquier token que no sea exactamente uno de estos,
+ * literal y sensible a mayúsculas (`urldecodeuni` no vale), con un `400` que
+ * nombra el token. Por eso se ofrecen como chips en vez de dejar que se escriban
+ * a mano: el camino común —pulsar— no puede producir un token no canónico, y el
+ * parser estricto sólo lo ve quien escribe contra la API.
+ */
+const CANONICAL_TRANSFORMATIONS = [
+  "urlDecode",
+  "urlDecodeUni",
+  "lowercase",
+  "uppercase",
+  "removeNulls",
+  "replaceNulls",
+  "compressWhitespace",
+  "removeWhitespace",
+  "normalizePath",
+  "normalizePathWin",
+  "htmlEntityDecode",
+  "jsDecode",
+  "cssDecode",
+  "escapeSeqDecode",
+  "base64Decode",
+  "cmdLine",
+  "trim",
+  "length",
+] as const;
+
+/**
+ * Ancho en píxeles de la columna de etiquetas de cada fila del formulario.
+ *
+ * Todas las filas (`renderInputRow`, `renderSelectRow` y las escritas a mano en
+ * las pestañas) reservan esta anchura fija a la etiqueta para que los campos
+ * queden alineados en vertical. El bloque de chips de transformaciones se alinea
+ * bajo el campo —no bajo la etiqueta—, así que se desplaza a la derecha esta
+ * misma anchura más el hueco (`gap`) del `Flex` de antd.
+ */
+const LABEL_WIDTH = 120;
 
 // Props del RuleDialog
 interface RuleDialogProps {
@@ -45,6 +94,7 @@ const DEFAULT_VALUES: Record<string, unknown> = {
   description: "",
   mode: "enforce",
   pipeline: "waf",
+  transformations: "",
   ip_address: "",
   protocol: "",
   fqdn: "",
@@ -76,6 +126,7 @@ function initializeFromItem(item?: Item): Record<string, unknown> {
     description: item.description ?? "",
     mode: item.mode ?? "enforce",
     pipeline: item.pipeline ?? "waf",
+    transformations: item.transformations ?? "",
     ip_address: item.ip_address ?? "",
     protocol: item.protocol ?? "",
     fqdn: item.fqdn ?? "",
@@ -110,6 +161,12 @@ function formatForApi(
     description: values.description || null,
     mode: values.mode || "enforce",
     pipeline: values.pipeline || "waf",
+    // No viaja como `null` —a diferencia del resto de filtros—: la cadena vacía
+    // **es** la pipeline vacía (el valor por defecto del backend) y el `PATCH`
+    // declara el campo como `String` obligatorio, de modo que un `null` no
+    // deserializa. La especificación se envía tal cual se escribió.
+    transformations:
+      typeof values.transformations === "string" ? values.transformations : "",
     ip_address: values.ip_address || null,
     protocol: values.protocol || null,
     fqdn: values.fqdn || null,
@@ -192,6 +249,39 @@ export default function RuleDialog({
 
   const updateField = useCallback((key: string, value: unknown) => {
     setFormValues((prev) => ({ ...prev, [key]: value }));
+  }, []);
+
+  /**
+   * Inserta `token` al final de la especificación, sin reemplazar lo que ya
+   * hubiera: los chips **añaden** a lo escrito a mano.
+   *
+   * La coma solo separa: con el campo vacío el token entra solo, sin coma
+   * inicial. No se deduplica —repetir un token es una elección legítima, porque
+   * la pipeline se aplica una sola vez y `urlDecodeUni,urlDecodeUni` es como se
+   * cubre una doble codificación—, así que pulsar dos veces el mismo chip lo
+   * escribe dos veces.
+   *
+   * Se parte del estado previo con la forma funcional de `setFormValues` y no
+   * del `formValues` del render: dos pulsaciones rápidas leerían el mismo valor
+   * obsoleto y la segunda perdería la primera.
+   *
+   * Antes de concatenar se sanea el **borde derecho** de lo ya escrito: se
+   * descartan las comas y los espacios finales, para que un `trim,` o un `trim `
+   * dejados a mano no produzcan un separador vacío (`trim,,lowercase`). El parser
+   * del backend es estricto y devolvería un `400` nombrando un token vacío
+   * (`unknown transformation token ''`), que no orienta a quien lo lee. Si tras
+   * sanear no queda nada, el token entra solo, sin coma inicial.
+   */
+  const insertTransformation = useCallback((token: string) => {
+    setFormValues((prev) => {
+      const current =
+        typeof prev.transformations === "string" ? prev.transformations : "";
+      const trimmed = current.replace(/[,\s]+$/, "");
+      return {
+        ...prev,
+        transformations: trimmed === "" ? token : `${trimmed},${token}`,
+      };
+    });
   }, []);
 
   const handleApiCall = async () => {
@@ -308,7 +398,7 @@ export default function RuleDialog({
 
   const renderInputRow = (label: string, key: string, placeholder?: string) => (
     <Flex align="center" gap="small">
-      <Text style={{ width: 120, flexShrink: 0 }}>{t(label)}</Text>
+      <Text style={{ width: LABEL_WIDTH, flexShrink: 0 }}>{t(label)}</Text>
       <Input
         style={{ width: "100%" }}
         value={(formValues[key] ?? "") as string | number | undefined}
@@ -326,7 +416,7 @@ export default function RuleDialog({
     placeholder?: string,
   ) => (
     <Flex align="center" gap="small">
-      <Text style={{ width: 120, flexShrink: 0 }}>{t(label)}</Text>
+      <Text style={{ width: LABEL_WIDTH, flexShrink: 0 }}>{t(label)}</Text>
       <Select
         style={{ width: "100%" }}
         value={(formValues[key] ?? undefined) as string | number | undefined}
@@ -345,7 +435,7 @@ export default function RuleDialog({
   const genTab = (
     <Flex vertical gap="middle" style={{ paddingTop: 16 }}>
       <Flex align="center" gap="small">
-        <Text style={{ width: 120, flexShrink: 0 }}>{t("Active")}</Text>
+        <Text style={{ width: LABEL_WIDTH, flexShrink: 0 }}>{t("Active")}</Text>
         <Switch
           checked={Boolean(formValues.active)}
           onChange={(checked) => updateField("active", checked)}
@@ -370,7 +460,7 @@ export default function RuleDialog({
       ])}
       {!isJailPipeline(formValues.pipeline) && (
         <Flex align="center" gap="small">
-          <Text style={{ width: 120, flexShrink: 0 }}>{t("Weight")}</Text>
+          <Text style={{ width: LABEL_WIDTH, flexShrink: 0 }}>{t("Weight")}</Text>
           <InputNumber
             style={{ width: "100%" }}
             value={formValues.weight as number}
@@ -461,7 +551,7 @@ export default function RuleDialog({
       {renderInputRow("FQDN", "fqdn")}
       {renderInputRow("Referer", "referer")}
       <Flex align="center" gap="small">
-        <Text style={{ width: 120, flexShrink: 0 }}>{t("Tor Exit Node")}</Text>
+        <Text style={{ width: LABEL_WIDTH, flexShrink: 0 }}>{t("Tor Exit Node")}</Text>
         <Switch
           checked={Boolean(formValues.is_tor)}
           onChange={(checked) => updateField("is_tor", checked)}
@@ -488,6 +578,52 @@ export default function RuleDialog({
       {renderInputRow("Content Type", "content_type")}
       {renderInputRow("Accept Language", "accept_language")}
       {renderInputRow("X-Request-ID", "x_request_id")}
+      {/*
+        La especificación de transformaciones se edita en dos piezas: el campo de
+        texto —que es el que guarda la verdad y admite escritura a mano— y los
+        dieciocho chips canónicos, que insertan su token al final. Se ofrecen
+        como `Button` y no como `Tag` porque un `Tag` no expone rol de botón: no
+        sería alcanzable ni operable con el teclado. El nombre accesible de cada
+        botón es exactamente el token, sin adornos.
+      */}
+      <Flex vertical gap={4}>
+        <Flex align="center" gap="small">
+          <Text style={{ width: LABEL_WIDTH, flexShrink: 0 }}>
+            {t("Transformations")}
+          </Text>
+          <Input
+            style={{ width: "100%" }}
+            aria-label={t("Transformations")}
+            value={(formValues.transformations ?? "") as string}
+            placeholder={t("Transformations")}
+            onChange={(e) => updateField("transformations", e.target.value)}
+            disabled={disabled}
+          />
+        </Flex>
+        {/* Alineado bajo el campo: el ancho de la etiqueta (`LABEL_WIDTH`) más el
+            `gap` del antd `Flex` (`small` = 8px), que es el hueco que queda entre
+            ambos. Se expone como `group` con nombre accesible propio para que el
+            conjunto de chips se anuncie como tal —y no como botones sueltos— sin
+            cambiar el nombre accesible de cada chip, que sigue siendo el token. */}
+        <Flex
+          wrap
+          gap="small"
+          role="group"
+          aria-label={t("Transformations")}
+          style={{ marginLeft: LABEL_WIDTH + 8 }}
+        >
+          {CANONICAL_TRANSFORMATIONS.map((token) => (
+            <Button
+              key={token}
+              size="small"
+              disabled={disabled}
+              onClick={() => insertTransformation(token)}
+            >
+              {token}
+            </Button>
+          ))}
+        </Flex>
+      </Flex>
     </Flex>
   );
 

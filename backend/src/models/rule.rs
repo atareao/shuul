@@ -11,12 +11,14 @@ use crate::constants::DEFAULT_LIMIT;
 use crate::constants::DEFAULT_PAGE;
 use crate::models::NewRequest;
 use crate::models::error::AppError;
+use crate::models::transformation::TransformationPipeline;
 use chrono::{DateTime, Utc};
 use regex::Regex;
 use serde::{Deserialize, Serialize};
 use sqlx::{Error, Row, SqlitePool, query, sqlite::SqliteRow};
+use std::collections::BTreeMap;
 use std::fmt::Write;
-use tracing::debug;
+use tracing::{debug, error};
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
 pub struct Rule {
@@ -26,6 +28,10 @@ pub struct Rule {
     pub weight: i32,
     pub mode: String,
     pub pipeline: String,
+    /// La especificación `t:` de transformaciones que se aplica al valor de la
+    /// petición antes de compararlo con el patrón. La cadena vacía es la
+    /// pipeline vacía: el valor no se toca.
+    pub transformations: String,
     pub allow: bool,
     pub is_tor: Option<bool>,
     pub ip_address: Option<String>,
@@ -59,6 +65,10 @@ pub struct RuleInfoCounts {
 pub struct CacheRule {
     pub rule: Rule,
     pub is_tor: Option<bool>,
+    /// La pipeline de transformaciones precompilada desde `rule.transformations`.
+    /// El matcher la aplica al valor de la petición en
+    /// [`CacheRule::check_match`].
+    pub transformations: TransformationPipeline,
     pub ip_address: Option<Regex>,
     pub protocol: Option<Regex>,
     pub fqdn: Option<Regex>,
@@ -75,20 +85,34 @@ pub struct CacheRule {
     pub x_request_id: Option<Regex>,
 }
 
-impl CacheRule {
-    /// Construye un `CacheRule` desde una fila de `SQLite`.
-    #[allow(clippy::needless_pass_by_value)]
-    fn from_row(row: SqliteRow) -> Self {
-        let rule = Rule::from_row(&row);
-        Self::from_rule(&rule)
-    }
+/// Resultado de evaluar una regla contra una petición.
+///
+/// La evidencia es el mapa `campo restringido → valor transformado que se
+/// comparó`. Se obtiene del MISMO recorrido que decide `matched`
+/// ([`CacheRule::evaluate`]).
+#[derive(Debug, Clone, Default)]
+pub struct MatchOutcome {
+    /// Si la regla casa la petición.
+    pub matched: bool,
+    /// La evidencia del matcheo: por cada campo que la regla restringe y que
+    /// casó, el valor transformado que se comparó. Es `None` cuando la regla
+    /// **no** casa, cuando la pipeline es vacía o cuando la regla no restringe
+    /// ninguno de los 14 campos.
+    pub evidence: Option<BTreeMap<String, String>>,
+}
 
-    /// Construye un `CacheRule` con los regex precompilados desde una [`Rule`].
-    #[must_use]
-    pub fn from_rule(rule: &Rule) -> Self {
+impl CacheRule {
+    /// Construye un `CacheRule` con los regex precompilados desde una [`Rule`] y
+    /// una pipeline de transformaciones **ya resuelta**.
+    ///
+    /// Es el constructor común de [`CacheRule::from_rule`] y
+    /// [`CacheRule::read_all_active`]; existe para que la especificación se
+    /// parsee **una sola vez** por fila.
+    fn from_rule_and_pipeline(rule: &Rule, transformations: TransformationPipeline) -> Self {
         Self {
             rule: rule.clone(),
             is_tor: rule.is_tor,
+            transformations,
             ip_address: rule
                 .ip_address
                 .as_ref()
@@ -162,19 +186,85 @@ impl CacheRule {
         }
     }
 
+    /// Construye un `CacheRule` con los regex precompilados desde una [`Rule`].
+    ///
+    /// La especificación de transformaciones se resuelve con
+    /// [`TransformationPipeline::parse`], y una que no se pueda leer cae a la
+    /// pipeline vacía ([`TransformationPipeline::default`]), de modo que esta
+    /// función es **total**. Es el camino de las reglas construidas a mano —los
+    /// tests y la conversión [`From<Rule>`]—; el camino de **producción** es
+    /// [`CacheRule::read_all_active`], que es donde la fila con una
+    /// especificación irresoluble se **excluye** de la caché en vez de degradarla
+    /// en silencio a la pipeline vacía.
+    #[must_use]
+    pub fn from_rule(rule: &Rule) -> Self {
+        Self::from_rule_and_pipeline(
+            rule,
+            TransformationPipeline::parse(&rule.transformations).unwrap_or_default(),
+        )
+    }
+
     /// Lee todas las reglas activas desde la base de datos.
+    ///
+    /// Cada fila pasa por [`TransformationPipeline::parse`]: una especificación
+    /// que no se pueda leer **excluye** la regla de la caché —no la degrada— y
+    /// emite un `error!` que nombra la regla y el token. Cargarla con las
+    /// transformaciones que sí se reconocen, o con ninguna, la haría decidir algo
+    /// distinto de lo que su autor escribió, que es el fallo silencioso que se
+    /// evita.
+    ///
+    /// Una fila irresoluble **no** hace que la función devuelva `Err`: se excluye
+    /// y el resto de reglas se carga con normalidad.
     ///
     /// # Errors
     ///
     /// Returns an error if the database query fails.
     pub async fn read_all_active(pool: &SqlitePool) -> Result<Vec<Self>, Error> {
         let sql = "SELECT * FROM rules WHERE active = 1 ORDER BY weight ASC";
-        query(sql).map(Self::from_row).fetch_all(pool).await
+        let rows = query(sql).fetch_all(pool).await?;
+
+        let mut rules = Vec::with_capacity(rows.len());
+        for row in &rows {
+            let rule = Rule::from_row(row);
+            match TransformationPipeline::parse(&rule.transformations) {
+                Ok(transformations) => {
+                    rules.push(Self::from_rule_and_pipeline(&rule, transformations));
+                },
+                Err(parse_error) => {
+                    error!(
+                        rule_id = rule.id,
+                        rule_name = %rule.name,
+                        token = parse_error.token(),
+                        "regla excluida de la caché: su especificación de \
+                         transformaciones no se puede leer: {parse_error}"
+                    );
+                },
+            }
+        }
+
+        Ok(rules)
     }
 
-    /// Check if this rule matches a request.
+    /// Evalúa la regla contra una petición y devuelve el resultado **y** su
+    /// evidencia.
+    ///
+    /// Es el **único** recorrido del matcheo: recorre los 14 filtros —cada uno
+    /// por [`CacheRule::check_match`]— más `check_tor`, y de ese mismo recorrido
+    /// salen tanto `matched` como la evidencia. NO existe un segundo recorrido
+    /// que reevalúe los filtros: dos recorridos divergirían y la evidencia
+    /// dejaría de describir la decisión que de verdad se tomó (lo verifica la
+    /// tarea 5.3 del change).
+    ///
+    /// La evidencia es `Some` **solo** cuando la regla **casa**, la pipeline es no
+    /// vacía **y** la regla restringe al menos uno de los 14 campos: con la
+    /// pipeline vacía nadie inserta nada en el mapa, y con la pipeline no vacía pero
+    /// sin ningún campo de los 14 restringido tampoco, porque el brazo `(None, _)`
+    /// de [`CacheRule::check_match`] es neutral y no inserta. Y una regla que **no**
+    /// casa devuelve `None` aunque algún campo evaluado antes del primero que falló
+    /// haya casado: la cadena `&&` cortocircuita y la evidencia debe describir la
+    /// decisión que de verdad se tomó.
     #[must_use]
-    pub fn matches(&self, request: &NewRequest) -> bool {
+    pub fn evaluate(&self, request: &NewRequest) -> MatchOutcome {
         let check_tor = |rule_tor: Option<bool>, request_tor: Option<bool>| -> bool {
             // If rule has is_tor = Some(true), only match when request is Tor.
             // If rule has is_tor = None or Some(false), the filter is neutral.
@@ -184,72 +274,142 @@ impl CacheRule {
                 true
             }
         };
+        // La evidencia se acumula en el MISMO recorrido que decide `matched`.
+        let mut evidence = BTreeMap::new();
         // Si CUALQUIERA de las comprobaciones devuelve 'false', el metodo devuelve 'false'.
-        self.check_match(
+        let matched = self.check_match(
             "ip_address",
             self.ip_address.as_ref(),
             request.ip_address.as_ref(),
+            &mut evidence,
         ) && self.check_match(
             "protocol",
             self.protocol.as_ref(),
             request.protocol.as_ref(),
-        ) && self.check_match("fqdn", self.fqdn.as_ref(), request.fqdn.as_ref())
-            && self.check_match("path", self.path.as_ref(), request.path.as_ref())
-            && self.check_match("query", self.query.as_ref(), request.query.as_ref())
-            && self.check_match(
-                "city_name",
-                self.city_name.as_ref(),
-                request.city_name.as_ref(),
-            )
-            && self.check_match(
-                "country_name",
-                self.country_name.as_ref(),
-                request.country_name.as_ref(),
-            )
-            && self.check_match(
-                "country_code",
-                self.country_code.as_ref(),
-                request.country_code.as_ref(),
-            )
-            && self.check_match(
-                "user_agent",
-                self.user_agent.as_ref(),
-                request.user_agent.as_ref(),
-            )
-            && self.check_match("method", self.method.as_ref(), request.method.as_ref())
-            && self.check_match("referer", self.referer.as_ref(), request.referer.as_ref())
-            && self.check_match(
-                "content_type",
-                self.content_type.as_ref(),
-                request.content_type.as_ref(),
-            )
-            && self.check_match(
-                "accept_language",
-                self.accept_language.as_ref(),
-                request.accept_language.as_ref(),
-            )
-            && self.check_match(
-                "x_request_id",
-                self.x_request_id.as_ref(),
-                request.x_request_id.as_ref(),
-            )
-            && check_tor(self.is_tor, request.is_tor)
+            &mut evidence,
+        ) && self.check_match(
+            "fqdn",
+            self.fqdn.as_ref(),
+            request.fqdn.as_ref(),
+            &mut evidence,
+        ) && self.check_match(
+            "path",
+            self.path.as_ref(),
+            request.path.as_ref(),
+            &mut evidence,
+        ) && self.check_match(
+            "query",
+            self.query.as_ref(),
+            request.query.as_ref(),
+            &mut evidence,
+        ) && self.check_match(
+            "city_name",
+            self.city_name.as_ref(),
+            request.city_name.as_ref(),
+            &mut evidence,
+        ) && self.check_match(
+            "country_name",
+            self.country_name.as_ref(),
+            request.country_name.as_ref(),
+            &mut evidence,
+        ) && self.check_match(
+            "country_code",
+            self.country_code.as_ref(),
+            request.country_code.as_ref(),
+            &mut evidence,
+        ) && self.check_match(
+            "user_agent",
+            self.user_agent.as_ref(),
+            request.user_agent.as_ref(),
+            &mut evidence,
+        ) && self.check_match(
+            "method",
+            self.method.as_ref(),
+            request.method.as_ref(),
+            &mut evidence,
+        ) && self.check_match(
+            "referer",
+            self.referer.as_ref(),
+            request.referer.as_ref(),
+            &mut evidence,
+        ) && self.check_match(
+            "content_type",
+            self.content_type.as_ref(),
+            request.content_type.as_ref(),
+            &mut evidence,
+        ) && self.check_match(
+            "accept_language",
+            self.accept_language.as_ref(),
+            request.accept_language.as_ref(),
+            &mut evidence,
+        ) && self.check_match(
+            "x_request_id",
+            self.x_request_id.as_ref(),
+            request.x_request_id.as_ref(),
+            &mut evidence,
+        ) && check_tor(self.is_tor, request.is_tor);
+
+        MatchOutcome {
+            matched,
+            // La clave solo existe cuando hay algo que decir: un mapa vacío se
+            // colapsa a `None` para que el evento no lleve un objeto vacío. Y una
+            // regla que NO casa no emite evidencia aunque algún campo evaluado
+            // antes del primero que falló haya casado: la cadena `&&` cortocircuita
+            // y la evidencia debe describir la decisión que de verdad se tomó.
+            evidence: if !matched || evidence.is_empty() {
+                None
+            } else {
+                Some(evidence)
+            },
+        }
+    }
+
+    /// Indica si la regla casa la petición.
+    ///
+    /// Es un envoltorio de [`CacheRule::evaluate`]: su resultado es exactamente
+    /// `self.evaluate(request).matched`.
+    #[must_use]
+    pub fn matches(&self, request: &NewRequest) -> bool {
+        self.evaluate(request).matched
     }
 
     /// Evalúa un filtro de la regla contra el valor de la petición.
     ///
-    /// Es el **único** punto de decisión del matcheo: `matches()` lo invoca una
-    /// vez por cada uno de los 14 filtros. El contrato de los tres brazos es:
+    /// Es el **único** punto de decisión del matcheo: [`CacheRule::evaluate`] lo
+    /// invoca una vez por cada uno de los 14 filtros. El contrato de los tres
+    /// brazos es:
     ///
-    /// - `(Some(regex), Some(valor))` → decide el regex: `true` si casa, `false` si no;
+    /// - `(Some(regex), Some(valor))` → la pipeline de transformaciones se aplica
+    ///   **al valor de la petición** —nunca al patrón, que se usa tal como se
+    ///   compiló— y el regex decide sobre el resultado. Si casa y la pipeline no
+    ///   está vacía, el valor **transformado** que se comparó queda en `evidence`
+    ///   bajo el nombre del campo;
     /// - `(Some(_), None)` → la regla **restringe** el campo y la petición **no** lo
     ///   trae: la condición NO se cumple (`false`) y se emite un `debug!` que nombra
-    ///   el campo y la regla, de modo que el descarte no sea mudo;
+    ///   el campo y la regla, de modo que el descarte no sea mudo. La pipeline no se
+    ///   aplica a un valor ausente;
     /// - `(None, _)` → la regla **no** restringe el campo: es **neutral** y se cumple
-    ///   traiga la petición valor o no.
-    fn check_match(&self, field: &str, filter: Option<&Regex>, value: Option<&String>) -> bool {
+    ///   traiga la petición valor o no, y no añade nada a `evidence`.
+    ///
+    /// Con la pipeline vacía [`TransformationPipeline::apply`] devuelve
+    /// [`std::borrow::Cow::Borrowed`] y `evidence` no se toca: el matcheo queda byte
+    /// a byte como estaba.
+    fn check_match(
+        &self,
+        field: &str,
+        filter: Option<&Regex>,
+        value: Option<&String>,
+        evidence: &mut BTreeMap<String, String>,
+    ) -> bool {
         match (filter, value) {
-            (Some(regex), Some(v)) => regex.is_match(v),
+            (Some(regex), Some(v)) => {
+                let transformed = self.transformations.apply(v);
+                let matched = regex.is_match(&transformed);
+                if matched && !self.transformations.is_empty() {
+                    evidence.insert(field.to_string(), transformed.into_owned());
+                }
+                matched
+            },
             (Some(_), None) => {
                 debug!(
                     field = field,
@@ -271,6 +431,9 @@ pub struct NewRule {
     pub weight: Option<i32>,
     pub mode: Option<String>,
     pub pipeline: Option<String>,
+    /// La especificación `t:` de transformaciones de la regla. Ausente o vacía
+    /// es la pipeline vacía.
+    pub transformations: Option<String>,
     pub allow: Option<bool>,
     pub is_tor: Option<bool>,
     pub ip_address: Option<String>,
@@ -299,6 +462,11 @@ pub struct UpdateRule {
     pub weight: i32,
     pub mode: String,
     pub pipeline: String,
+    /// La especificación `t:` de transformaciones de la regla. Ausente es la
+    /// pipeline vacía: el `#[serde(default)]` mantiene compatibles los `PATCH`
+    /// que no la envían (el valor por defecto de la columna es la cadena vacía).
+    #[serde(default)]
+    pub transformations: String,
     pub allow: bool,
     pub is_tor: Option<bool>,
     pub ip_address: Option<String>,
@@ -350,6 +518,26 @@ pub fn validate_pipeline(pipeline: &str) -> Result<(), AppError> {
     Err(AppError::InvalidInput(format!(
         "pipeline no admitido: «{pipeline}»; se admiten «{WAF_PIPELINE}» y «{JAIL_PIPELINE}»"
     )))
+}
+
+/// La especificación canónica con la que se almacena una regla.
+///
+/// Es el **único punto de validación y de canonización** de la especificación de
+/// transformaciones; lo invocan las tres vías de escritura del cliente —creación
+/// ([`Rule::create`]), edición ([`Rule::update`]) e importación
+/// ([`crate::http::rule::import_handler`])—, de modo que lo almacenado es siempre
+/// una especificación canónica: el marcador `none` deja de aparecer y la regla
+/// declara la pipeline que de verdad se aplica.
+///
+/// # Errors
+///
+/// Devuelve [`AppError::InvalidInput`] —que la API traduce a `400 Bad Request`—
+/// si la especificación contiene un token que no se reconoce. El mensaje nombra
+/// el token y lista los válidos.
+pub fn normalized_transformations(spec: &str) -> Result<String, AppError> {
+    TransformationPipeline::parse(spec)
+        .map(|pipeline| pipeline.spec().to_string())
+        .map_err(|error| AppError::InvalidInput(error.to_string()))
 }
 
 /// Peso con el que se almacena una regla, en función de su pipeline.
@@ -409,6 +597,7 @@ impl Rule {
             weight: row.get("weight"),
             mode: row.get("mode"),
             pipeline: row.get("pipeline"),
+            transformations: row.get("transformations"),
             allow: row.get("allow"),
             is_tor: row.get("is_tor"),
             ip_address: row.get("ip_address"),
@@ -437,23 +626,30 @@ impl Rule {
     ///
     /// El pipeline pasa por [`validate_pipeline`] —solo `waf` o `jail`— y el peso
     /// por [`normalized_weight`]: una regla de Jail se almacena siempre con peso 0,
-    /// traiga lo que traiga la petición.
+    /// traiga lo que traiga la petición. La especificación de transformaciones pasa
+    /// por [`normalized_transformations`], que la canoniza al escribirla: el
+    /// marcador `none` no llega a la base de datos y la regla declara la pipeline
+    /// que de verdad se aplica.
     ///
     /// # Errors
     ///
     /// Devuelve [`AppError::InvalidInput`] si el pipeline no es un pipeline
-    /// admitido, y un error de base de datos si la consulta falla.
+    /// admitido o si la especificación de transformaciones contiene un token que no
+    /// se reconoce, y un error de base de datos si la consulta falla.
     pub async fn create(pool: &SqlitePool, rule: NewRule) -> Result<Self, AppError> {
-        let sql = "INSERT INTO rules (name, description, weight, mode, pipeline, allow,
+        let sql =
+            "INSERT INTO rules (name, description, weight, mode, pipeline, transformations, allow,
             is_tor, ip_address, protocol, fqdn, path, query, city_name, country_name,
             country_code, user_agent, method, referer, content_type,
             accept_language, x_request_id, rate_limit_profile_id,
-            active, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?,
+            active, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?,
             ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?,
             ?, ?, ?, ?, ?, ?, ?) RETURNING *";
         let now = Utc::now();
         let pipeline = rule.pipeline.unwrap_or_else(|| WAF_PIPELINE.to_string());
         validate_pipeline(&pipeline)?;
+        let transformations =
+            normalized_transformations(rule.transformations.as_deref().unwrap_or_default())?;
         let weight = normalized_weight(&pipeline, rule.weight.unwrap_or(100));
         query(sql)
             .bind(&rule.name)
@@ -461,6 +657,7 @@ impl Rule {
             .bind(weight)
             .bind(rule.mode.unwrap_or_else(|| "log_only".to_string()))
             .bind(pipeline)
+            .bind(transformations)
             .bind(rule.allow.unwrap_or(true))
             .bind(rule.is_tor.unwrap_or(false))
             .bind(rule.ip_address)
@@ -528,12 +725,16 @@ impl Rule {
     ///
     /// El pipeline pasa por [`validate_pipeline`] —solo `waf` o `jail`— y el peso
     /// por [`normalized_weight`]: una regla de Jail sigue almacenada con peso 0
-    /// aunque la petición envíe otro valor.
+    /// aunque la petición envíe otro valor. La especificación de transformaciones
+    /// pasa por [`normalized_transformations`], que la canoniza al escribirla: el
+    /// marcador `none` no llega a la base de datos y la regla declara la pipeline
+    /// que de verdad se aplica.
     ///
     /// # Errors
     ///
     /// Devuelve [`AppError::InvalidInput`] si el pipeline no es un pipeline
-    /// admitido, y un error de base de datos si la consulta falla.
+    /// admitido o si la especificación de transformaciones contiene un token que no
+    /// se reconoce, y un error de base de datos si la consulta falla.
     pub async fn update(pool: &SqlitePool, rule: UpdateRule) -> Result<Self, AppError> {
         let sql = "UPDATE rules SET
                 name = ?,
@@ -541,6 +742,7 @@ impl Rule {
                 weight = ?,
                 mode = ?,
                 pipeline = ?,
+                transformations = ?,
                 allow = ?,
                 is_tor = ?,
                 ip_address = ?,
@@ -565,6 +767,7 @@ impl Rule {
         let now = Utc::now();
         let pipeline = rule.pipeline;
         validate_pipeline(&pipeline)?;
+        let transformations = normalized_transformations(&rule.transformations)?;
         let weight = normalized_weight(&pipeline, rule.weight);
         query(sql)
             .bind(&rule.name)
@@ -572,6 +775,7 @@ impl Rule {
             .bind(weight)
             .bind(&rule.mode)
             .bind(pipeline)
+            .bind(transformations)
             .bind(rule.allow)
             .bind(rule.is_tor)
             .bind(rule.ip_address)
@@ -831,7 +1035,9 @@ impl Rule {
 mod tests {
     use super::*;
     use crate::models::NewRequest;
+    use crate::models::transformation::TransformationPipeline;
     use chrono::Utc;
+    use std::borrow::Cow;
     use std::sync::{Arc, Mutex};
 
     fn make_request(is_tor: Option<bool>) -> NewRequest {
@@ -864,6 +1070,7 @@ mod tests {
             weight: 100,
             mode: "enforce".to_string(),
             pipeline: "waf".to_string(),
+            transformations: String::new(),
             allow: false,
             is_tor,
             ip_address: None,
@@ -934,7 +1141,7 @@ mod tests {
         assert_eq!(rule.is_tor, Some(false));
     }
 
-    // ── missing-header-fields: matcher (RED) ──
+    // ── missing-header-fields: matcher ──
 
     /// Construye una `CacheRule` desde la base de `make_rule` y aplica los
     /// filtros que indique `configure` antes de compilar los regex.
@@ -955,8 +1162,8 @@ mod tests {
     /// Escenario: Restricted field absent makes the rule not match.
     /// Regla con regex de `user_agent` y petición sin `user_agent` → NO casa.
     ///
-    /// RED: hoy `check_match` devuelve `true` en `(Some(_), None)`, así que el
-    /// test falla en aserción (no en compilación).
+    /// El brazo `(Some(_), None)` de `check_match` devuelve `false`: la regla
+    /// restringe el campo y la petición no lo trae.
     #[test]
     fn test_matches_restricted_field_absent_does_not_match() {
         let rule = make_rule_with(|r| r.user_agent = Some("curl".to_string()));
@@ -998,7 +1205,8 @@ mod tests {
     /// Escenario: One absent field discards a rule that matches on the others.
     /// `path` casa pero `x_request_id` está ausente → la regla NO casa.
     ///
-    /// RED: hoy el campo ausente es neutral y la regla casa → falla en aserción.
+    /// El `&&` cortocircuita en el primer campo restringido y ausente: los demás
+    /// no llegan a evaluarse y la regla se descarta.
     #[test]
     fn test_matches_absent_field_discards_rule_matching_others() {
         let rule = make_rule_with(|r| {
@@ -1031,8 +1239,8 @@ mod tests {
     /// Escenario: A present but empty header counts as absent.
     /// `from_request` colapsa la cabecera vacía a `None` y la regla NO casa.
     ///
-    /// RED: el colapso a `None` ya pasa, pero la regla casa por el brazo
-    /// `(Some(_), None)` → la segunda aserción falla.
+    /// El colapso a `None` ocurre en `from_request` y el matcher descarta la
+    /// regla por el brazo `(Some(_), None)`.
     #[test]
     fn test_matches_present_but_empty_header_counts_as_absent() {
         let mut headers = http::HeaderMap::new();
@@ -1096,9 +1304,8 @@ mod tests {
     /// Un match descartado por campo ausente emite un `debug!` que nombra el
     /// campo y la regla.
     ///
-    /// RED: hoy no se emite nada → falla en aserción. No se fija el texto
-    /// literal del mensaje: sólo que nombre el campo y algo que identifique la
-    /// regla (su nombre o su id).
+    /// No se fija el texto literal del mensaje: sólo que nombre el campo y algo
+    /// que identifique la regla (su nombre o su id).
     #[test]
     fn test_matches_absent_field_emits_debug_diagnostic() {
         let rule = make_rule_with(|r| {
@@ -1148,6 +1355,272 @@ mod tests {
         assert!(
             !log.contains("regla-diagnostico"),
             "no debe nombrar la regla en un no-match legítimo por regex; log: {log:?}"
+        );
+    }
+
+    // ── waf-transformations: el matcher aplica la pipeline ──
+
+    /// Escenario 1.7: una evasión codificada casa con la transformación.
+    ///
+    /// Una regla con `transformations: "urlDecodeUni"` y patrón `\.\./` casa una
+    /// petición cuyo `path` es `%2e%2e%2f`, porque la pipeline decodifica el valor
+    /// antes de compararlo.
+    ///
+    /// La **misma** regla con la pipeline vacía NO casa: ese segundo aserto es la
+    /// medida del agujero actual —el valor crudo `%2e%2e%2f` no contiene `../`— y
+    /// es lo que justifica la funcionalidad.
+    #[test]
+    fn test_transformation_url_decode_uni_matches_encoded_traversal() {
+        let request = make_request_with(|q| q.path = Some("%2e%2e%2f".to_string()));
+
+        let rule = make_rule_with(|r| {
+            r.transformations = "urlDecodeUni".to_string();
+            r.path = Some(r"\.\./".to_string());
+        });
+        assert!(
+            rule.matches(&request),
+            "con la pipeline `urlDecodeUni` el path `%2e%2e%2f` debe decodificarse \
+             a `../` y casar `\\.\\./`"
+        );
+
+        let rule_without_pipeline = make_rule_with(|r| {
+            r.path = Some(r"\.\./".to_string());
+        });
+        assert!(
+            !rule_without_pipeline.matches(&request),
+            "sin pipeline el valor crudo `%2e%2e%2f` no casa `\\.\\./`: es la evasión \
+             que hoy pasa sin ser detectada"
+        );
+    }
+
+    /// Escenario 1.8: una pipeline encadenada casa la inyección SQL codificada.
+    ///
+    /// `urlDecodeUni,compressWhitespace` decodifica `%20` a espacio y colapsa los
+    /// huecos, de modo que `1%20union%20select%201` casa `union\s+select`.
+    #[test]
+    fn test_transformation_url_decode_uni_and_compress_whitespace_matches_sql_injection() {
+        let rule = make_rule_with(|r| {
+            r.transformations = "urlDecodeUni,compressWhitespace".to_string();
+            r.path = Some(r"union\s+select".to_string());
+        });
+        let request = make_request_with(|q| q.path = Some("1%20union%20select%201".to_string()));
+
+        assert!(
+            rule.matches(&request),
+            "tras `urlDecodeUni,compressWhitespace`, `1%20union%20select%201` debe \
+             casar `union\\s+select`"
+        );
+    }
+
+    /// Escenario 1.9: con la pipeline vacía nada cambia (caracterización).
+    ///
+    /// Es la garantía de que ninguna regla existente cambia de comportamiento: las
+    /// dos evasiones de 1.7 y 1.8 NO casan con la pipeline vacía —igual que antes
+    /// de existir las transformaciones— y la pipeline vacía no copia el valor.
+    #[test]
+    fn test_empty_pipeline_keeps_the_old_behaviour_and_borrows() {
+        let traversal = make_request_with(|q| q.path = Some("%2e%2e%2f".to_string()));
+        let rule_traversal = make_rule_with(|r| r.path = Some(r"\.\./".to_string()));
+        assert!(
+            !rule_traversal.matches(&traversal),
+            "la evasión de path traversal no casa sin pipeline"
+        );
+
+        let sqli = make_request_with(|q| q.path = Some("1%20union%20select%201".to_string()));
+        let rule_sqli = make_rule_with(|r| r.path = Some(r"union\s+select".to_string()));
+        assert!(
+            !rule_sqli.matches(&sqli),
+            "la inyección SQL codificada no casa sin pipeline"
+        );
+
+        // La pipeline vacía es la de la regla sin transformaciones y no copia el
+        // valor: `apply` devuelve `Cow::Borrowed`.
+        assert!(
+            rule_traversal.transformations.is_empty(),
+            "una regla sin `transformations` tiene la pipeline vacía"
+        );
+        let pipeline =
+            TransformationPipeline::parse("").expect("la cadena vacía es una pipeline válida");
+        let value = "%2e%2e%2f";
+        assert!(
+            matches!(pipeline.apply(value), Cow::Borrowed(_)),
+            "la pipeline vacía no debe copiar el valor"
+        );
+    }
+
+    /// Escenario del delta `rule-matching`: «La pipeline no se aplica al patrón».
+    ///
+    /// El caso que lo demuestra es el único en el que transformar el patrón
+    /// cambiaría el resultado: con `lowercase` el valor `/ADMIN` pasa a `/admin`,
+    /// y el patrón `[A-Z]+` —comparado **tal como se escribió**— ya no casa. Si la
+    /// pipeline se aplicase también al patrón, `[A-Z]+` habría pasado a `[a-z]+`
+    /// y la regla habría casado. El control sin pipeline cierra el argumento: el
+    /// mismo patrón contra el mismo valor crudo sí casa, así que la diferencia
+    /// entre los dos casos es exactamente lo que la pipeline hizo —tocar el valor
+    /// y no el patrón—.
+    #[test]
+    fn test_transformation_applies_to_request_value_not_to_pattern() {
+        let with_pipeline = make_rule_with(|r| {
+            r.transformations = "lowercase".to_string();
+            r.path = Some("[A-Z]+".to_string());
+        });
+        let without_pipeline = make_rule_with(|r| r.path = Some("[A-Z]+".to_string()));
+        let request = make_request_with(|q| q.path = Some("/ADMIN".to_string()));
+
+        assert!(
+            !with_pipeline.matches(&request),
+            "el valor se transforma a `/admin` y el patrón `[A-Z]+` se compara tal \
+             como se escribió: la regla NO puede casar"
+        );
+        assert!(
+            without_pipeline.matches(&request),
+            "sin pipeline el mismo patrón sí casa el valor crudo: si esto no casara, \
+             el test no distinguiría el patrón transformado del no transformado"
+        );
+    }
+
+    /// Escenario 1.11: un campo restringido y ausente sigue ausente.
+    ///
+    /// Con la pipeline activa, un campo que la regla restringe y que la petición no
+    /// trae sigue sin casar y sigue emitiendo el `debug!` que lo nombra.
+    #[test]
+    fn test_absent_restricted_field_still_fails_and_diagnoses_with_pipeline() {
+        let rule = make_rule_with(|r| {
+            r.id = 4242;
+            r.name = "regla-pipeline".to_string();
+            r.transformations = "urlDecodeUni".to_string();
+            r.user_agent = Some("curl".to_string());
+        });
+        let request = make_request(None); // user_agent ausente
+
+        let mut matched = true;
+        let log = capture_debug(|| {
+            matched = rule.matches(&request);
+        });
+
+        assert!(
+            !matched,
+            "un campo restringido y ausente sigue sin casar con la pipeline activa"
+        );
+        assert!(
+            log.contains("user_agent"),
+            "el diagnóstico debe nombrar el campo ausente; log capturado: {log:?}"
+        );
+        assert!(
+            log.contains("regla-pipeline") || log.contains("4242"),
+            "el diagnóstico debe identificar la regla; log capturado: {log:?}"
+        );
+    }
+
+    /// Escenario 1.12: la evidencia sale del mismo recorrido que decide el matcheo.
+    ///
+    /// - con la pipeline no vacía, `evaluate` devuelve por cada campo restringido
+    ///   que casó el valor **transformado**;
+    /// - con la pipeline vacía, `evidence` es `None`;
+    /// - un campo que la regla no restringe nunca aparece en la evidencia.
+    #[test]
+    fn test_evaluate_evidence_contract() {
+        // Caso 1: pipeline no vacía → evidencia con el valor transformado.
+        let rule = make_rule_with(|r| {
+            r.transformations = "lowercase".to_string();
+            r.path = Some(r"(?i)^/admin$".to_string());
+        });
+        let request = make_request_with(|q| {
+            q.path = Some("/ADMIN".to_string());
+            q.user_agent = Some("curl".to_string());
+        });
+        let outcome = rule.evaluate(&request);
+
+        assert!(
+            outcome.matched,
+            "el patrón insensible a mayúsculas casa `/ADMIN`"
+        );
+        assert!(
+            outcome.evidence.is_some(),
+            "con pipeline no vacía y un campo restringido que casó debe haber evidencia"
+        );
+        let evidence = outcome.evidence.unwrap_or_default();
+        assert_eq!(
+            evidence.get("path").map(String::as_str),
+            Some("/admin"),
+            "la evidencia debe llevar el valor transformado, no el crudo"
+        );
+        assert!(
+            !evidence.contains_key("user_agent"),
+            "un campo que la regla no restringe nunca aparece en la evidencia"
+        );
+
+        // Caso 2: pipeline vacía → sin evidencia.
+        let rule_empty = make_rule_with(|r| r.path = Some(r"^/admin$".to_string()));
+        let outcome_empty = rule_empty.evaluate(&make_request_with(|q| {
+            q.path = Some("/admin".to_string());
+        }));
+        assert!(
+            outcome_empty.matched,
+            "la regla sin pipeline casa el valor crudo"
+        );
+        assert!(
+            outcome_empty.evidence.is_none(),
+            "sin pipeline no se emite evidencia"
+        );
+    }
+
+    /// Una regla que **no** casa no emite evidencia, aunque algún campo evaluado
+    /// antes del que falló haya casado.
+    ///
+    /// La cadena `&&` de [`CacheRule::evaluate`] cortocircuita: `path` se evalúa
+    /// antes que `user_agent` y puede haber casado, pero la decisión final es
+    /// «no casa» y la evidencia describe **esa** decisión. Sin este corte, un
+    /// consumidor que registrase la evidencia sin mirar `matched` afirmaría que
+    /// `path` casó en una petición que se descartó.
+    ///
+    /// El segundo tramo repite la evaluación con el `user_agent` presente —y
+    /// casando— para que el aserto no pueda pasar por la razón equivocada: la
+    /// misma petición **sí** casa y **sí** emite la evidencia de `path` cuando no
+    /// hay ningún campo que falle.
+    #[test]
+    fn test_evaluate_no_match_emits_no_evidence() {
+        // `path` casa tras `lowercase` (`/ADMIN` → `/admin`), pero `user_agent`
+        // está restringido y ausente: la regla NO casa.
+        let rule = make_rule_with(|r| {
+            r.transformations = "lowercase".to_string();
+            r.path = Some(r"^/admin$".to_string());
+            r.user_agent = Some("curl".to_string());
+        });
+        let request = make_request_with(|q| {
+            q.path = Some("/ADMIN".to_string());
+            q.user_agent = None;
+        });
+        let outcome = rule.evaluate(&request);
+
+        assert!(
+            !outcome.matched,
+            "la regla restringe `user_agent` y la petición no lo trae: NO casa"
+        );
+        assert!(
+            outcome.evidence.is_none(),
+            "una regla que no casa no debe emitir evidencia, aunque `path` haya \
+             casado antes de fallar `user_agent`; evidencia: {:?}",
+            outcome.evidence
+        );
+
+        // El `path` SÍ habría casado: con `user_agent` presente la regla casa y
+        // emite la evidencia de `path` con el valor transformado.
+        let request_with_ua = make_request_with(|q| {
+            q.path = Some("/ADMIN".to_string());
+            q.user_agent = Some("curl".to_string());
+        });
+        let outcome_with_ua = rule.evaluate(&request_with_ua);
+
+        assert!(
+            outcome_with_ua.matched,
+            "con `user_agent` presente y casando, la regla casa"
+        );
+        let evidence = outcome_with_ua.evidence.unwrap_or_default();
+        assert_eq!(
+            evidence.get("path").map(String::as_str),
+            Some("/admin"),
+            "una regla que casa sí emite la evidencia de `path` con el valor transformado"
         );
     }
 }
