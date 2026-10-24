@@ -1,4 +1,18 @@
 # Changelog
+## [0.20.0] - 2026-10-24
+
+### Documentation
+
+- *(openspec)* El change ui-shell-and-toolbar
+- *(openspec)* Precisa el ancho preferido y las limitaciones aceptadas
+
+### Features
+
+- *(ui)* La entrada al panel es la portada, y el pie de la barra lateral gobierna la sesión
+
+### Refactor
+
+- *(ui)* Cierra los hallazgos de la auditoría del armazón
 ## [0.19.1] - 2026-10-24
 
 ### Bug Fixes
@@ -10,6 +24,10 @@
 - *(openspec)* Archiva los siete changes publicados y pliega sus deltas en las specs
 - *(openspec)* Redacta el Purpose de las tres specs creadas por el archive
 - *(template-filters-overflow)* Spec, proposal y ledger del change
+
+### Miscellaneous Tasks
+
+- Release v0.19.1
 ## [0.19.0] - 2026-10-24
 
 ### Documentation
