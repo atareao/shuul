@@ -168,7 +168,7 @@ export default function RateLimitProfileDialog({
 
       if (!response.ok) {
         if (response.status === 401) {
-          window.location.href = "/login";
+          window.location.href = "/";
           return;
         }
         let errorBody: { message?: string } = {};

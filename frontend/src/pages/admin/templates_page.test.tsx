@@ -910,3 +910,130 @@ describe("previsualización de filtros: los valores largos no desbordan", () => 
     expect(methodTag.textContent).toContain("GET");
   });
 });
+
+// ─── La barra de herramientas es una sola línea ──────────────────────────────
+// Delta `ui-shell-and-toolbar`, requisito MODIFIED «Templates are presented as a
+// single filterable listing»: el buscador deja su línea propia a ancho completo
+// y comparte fila con los cuatro filtros y el interruptor `must_have`. La fila
+// no envuelve: antes de partirse, los controles se encogen. El buscador es el
+// elemento flexible —crece para llevarse el hueco libre y se encoge— y cada
+// filtro declara su ancho preferido, pudiendo encogerse también.
+//
+// El tercer token del `flex` de cada `Col` es el **ancho preferido**
+// (`flex-basis`), no un mínimo. No se declara ningún `min-width`, a propósito:
+// el ancho efectivo lo reparte la fila, y un suelo rígido sería precisamente lo
+// que haría que la línea desbordara su contenedor al estrecharse la ventana
+// —justo lo que el contrato prohíbe—. El mínimo real de un elemento flexible es
+// su tamaño mínimo automático de contenido, que calcula el navegador.
+//
+// jsdom no calcula layout, así que lo que se fija aquí es el **mecanismo**
+// declarado en los estilos inline: dónde vive cada control, si la fila envuelve
+// y qué `flex` declara cada `Col`. La comprobación visual es del operador.
+
+describe("barra de herramientas: buscador y filtros comparten una sola línea", () => {
+  /** Tokens del `flex` declarado en el estilo inline de una `Col`. */
+  function flexTokens(col: HTMLElement): string[] {
+    return col.style.flex.trim().split(/\s+/).filter((t) => t.length > 0);
+  }
+
+  /** ¿Es `token` una longitud CSS (`200px`, `12rem`, `20%`, `30ch`…)? */
+  function isLength(token: string): boolean {
+    return /^-?\d+(\.\d+)?(px|em|rem|%|ch|vw|vh)$/.test(token);
+  }
+
+  /** Factor de crecimiento/encogimiento de un token de `flex`. */
+  function flexNumber(token: string): number {
+    return Number.parseFloat(token);
+  }
+
+  /** La `Col` que envuelve un control de la barra de herramientas. */
+  function colOf(control: HTMLElement): HTMLElement {
+    const col = control.closest<HTMLElement>(".ant-col");
+    expect(
+      col,
+      "cada control de la barra de herramientas debe vivir en su propia Col",
+    ).not.toBeNull();
+    if (!col) {
+      throw new Error("No hay Col");
+    }
+    return col;
+  }
+
+  /**
+   * Renderiza la página y devuelve el buscador con la fila que debe compartir
+   * con los filtros: la `Row` más cercana que lo contiene. Que exista esa fila
+   * es justamente lo que fija el contrato.
+   */
+  async function toolbar(): Promise<{ input: HTMLElement; row: HTMLElement }> {
+    renderPage();
+    const input = await screen.findByRole("textbox", {
+      name: /search templates/i,
+    });
+    const row = input.closest<HTMLElement>(".ant-row");
+    expect(
+      row,
+      "el buscador debe estar dentro de la misma Row que los filtros",
+    ).not.toBeNull();
+    if (!row) {
+      throw new Error("No hay Row");
+    }
+    return { input, row };
+  }
+
+  const FILTER_NAMES = [/pipeline/i, /severity/i, /category/i, /action/i];
+
+  // ─── Tarea 1.9 ───────────────────────────────────────────────────────────
+  it("sitúa el buscador, los cuatro filtros y el interruptor must_have en la misma fila", async () => {
+    const { row } = await toolbar();
+
+    expect(
+      within(row).getByRole("textbox", { name: /search templates/i }),
+    ).toBeTruthy();
+    for (const name of FILTER_NAMES) {
+      expect(within(row).getByRole("combobox", { name })).toBeTruthy();
+    }
+    expect(
+      within(row).getByRole("switch", { name: /must have/i }),
+    ).toBeTruthy();
+  });
+
+  // ─── Tarea 1.9 ───────────────────────────────────────────────────────────
+  it("declara la fila sin envolver", async () => {
+    const { row } = await toolbar();
+
+    expect(row.classList.contains("ant-row-no-wrap")).toBe(true);
+  });
+
+  // ─── Tarea 1.9 ───────────────────────────────────────────────────────────
+  it("hace del buscador el elemento flexible: crece, se encoge y declara su ancho preferido", async () => {
+    const { input } = await toolbar();
+
+    const tokens = flexTokens(colOf(input));
+    expect(tokens).toHaveLength(3);
+    expect(flexNumber(tokens[0])).toBeGreaterThan(0);
+    expect(flexNumber(tokens[1])).toBeGreaterThan(0);
+    expect(isLength(tokens[2])).toBe(true);
+  });
+
+  // ─── Tarea 1.9 ───────────────────────────────────────────────────────────
+  it("deja que los cuatro filtros se encojan, cada uno desde su propio ancho preferido", async () => {
+    const { row } = await toolbar();
+
+    for (const name of FILTER_NAMES) {
+      const tokens = flexTokens(colOf(within(row).getByRole("combobox", { name })));
+      expect(tokens).toHaveLength(3);
+      expect(flexNumber(tokens[0])).toBe(0);
+      expect(flexNumber(tokens[1])).toBe(1);
+      expect(isLength(tokens[2])).toBe(true);
+    }
+  });
+
+  // ─── Tarea 1.9 ───────────────────────────────────────────────────────────
+  it("ya no declara el buscador a ancho completo", async () => {
+    const { input } = await toolbar();
+
+    const wrapper = input.closest<HTMLElement>(".ant-input-affix-wrapper");
+    expect(input.style.width).not.toBe("100%");
+    expect(wrapper?.style.width).not.toBe("100%");
+  });
+});

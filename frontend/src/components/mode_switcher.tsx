@@ -16,7 +16,6 @@ export default class ModeSwitcher extends React.Component {
               unCheckedChildren={<SunOutlined />}
               checked={isDarkMode}
               onChange={() => toggleMode()}
-              style={{ marginLeft: 16 }}
               aria-label="Toggle dark mode"
             />
           );

@@ -60,7 +60,7 @@ export default class SettingsPage extends React.Component<
         },
       });
       if (response.status === 401) {
-        window.location.href = "/login";
+        window.location.href = "/";
         return;
       }
       const json = await response.json();
@@ -92,7 +92,7 @@ export default class SettingsPage extends React.Component<
         this.setState({ settings: json.data });
       } else {
         if (response.status === 401) {
-          window.location.href = "/login";
+          window.location.href = "/";
           return;
         }
         message.error(json.message || "Failed to save settings");
