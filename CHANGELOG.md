@@ -1,4 +1,15 @@
 # Changelog
+## [0.19.1] - 2026-10-24
+
+### Bug Fixes
+
+- *(templates)* Los tags de filtro truncan con elipsis y el valor íntegro va en un tooltip
+
+### Documentation
+
+- *(openspec)* Archiva los siete changes publicados y pliega sus deltas en las specs
+- *(openspec)* Redacta el Purpose de las tres specs creadas por el archive
+- *(template-filters-overflow)* Spec, proposal y ledger del change
 ## [0.19.0] - 2026-10-24
 
 ### Documentation
@@ -13,6 +24,10 @@
 - *(jail-weight-coherence)* Deja de arrastrar un peso para Jail (GREEN)
 - *(jail-weight-coherence)* Normaliza el peso de las reglas de Jail (GREEN)
 - *(jail-weight-coherence)* La UI nombra las reglas rechazadas al importar (REFACTOR)
+
+### Miscellaneous Tasks
+
+- Release v0.19.0
 
 ### Refactor
 
