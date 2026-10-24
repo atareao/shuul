@@ -309,6 +309,8 @@ de los otros como transporte.
 - Para cada match: carga perfil desde DB, si `status_code ∈ fail_codes` → `record()` + ban si excede.
 - Fire-and-forget: siempre devuelve 200 OK.
 - Recibe `ReportPayload` desde el plugin de Traefik (legacy) o desde el `JournaldReader` (API de Docker o gatewayd); ambos caminos convergen en `run_jail_pipeline`.
+- **El peso de una regla de Jail es siempre 0.** El pipeline de Jail itera **todas** las reglas que casan, sin `break`: su orden no decide nada, así que un peso distinto de 0 sería una elección sin efecto que la interfaz, además, oculta. El catálogo declara 0 para las **18** plantillas de Jail (`templates.rs`); la API impone 0 al **crear, editar e importar** una regla con `pipeline: "jail"` (helper único `models::normalized_weight`); y la migración `20261023000000_normalize_jail_rule_weight.up.sql` normaliza a 0 lo ya almacenado. **El WAF no se ve afectado** porque salta las reglas jail-only (`shuul.rs`), y allí el peso sí decide (`first match wins` por `weight ASC`).
+- **La lista de reglas desempata por `rules.id`.** `read_paged` ordena por el criterio pedido y desempata por `rules.id ASC`, para que dos consultas con pesos repetidos devuelvan **el mismo** orden y la paginación con `LIMIT ? OFFSET ?` no repita ni pierda filas empatadas. **No** se aplica al `ORDER BY weight ASC` que carga las reglas del WAF: el orden de evaluación se queda como estaba.
 
 ### CacheRule
 

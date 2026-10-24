@@ -11,6 +11,8 @@ import {
   UploadOutlined,
 } from "@ant-design/icons";
 import type Item from "@/models/rule"; // Alias para Rule
+import type { RuleImportNotice, RuleImportResult } from "@/models/rule";
+import { describeRuleImport, isJailPipeline } from "@/models/rule";
 
 // Importamos CustomTable y los tipos necesarios
 import CustomTable from "@/components/custom_table";
@@ -22,6 +24,20 @@ import { BASE_URL } from "@/constants";
 // 1. Constantes de configuración (fuera de la clase)
 const TITLE = "Rules";
 const ENDPOINT = "rules";
+
+/**
+ * Despacho del aviso de importación por `kind`.
+ *
+ * Es un mapa sobre la unión —y no un `if/else` binario— para que un `kind`
+ * futuro rompa la compilación aquí en vez de pintarse como éxito en silencio.
+ */
+const IMPORT_NOTICE_HANDLERS: Record<
+  RuleImportNotice["kind"],
+  (text: string) => void
+> = {
+  success: (text) => message.success(text),
+  warning: (text) => message.warning(text),
+};
 
 // Definición de los campos (tipados para Item, que es Rule)
 const FIELDS: FieldDefinition<Item>[] = [
@@ -51,7 +67,7 @@ const FIELDS: FieldDefinition<Item>[] = [
     width: 45,
     visible: true,
     render: (_, record) =>
-      record.pipeline === "jail" ? "-" : record.allow ? "✓" : "✗",
+      isJailPipeline(record.pipeline) ? "-" : record.allow ? "✓" : "✗",
   },
   {
     key: "weight",
@@ -62,7 +78,7 @@ const FIELDS: FieldDefinition<Item>[] = [
     visible: true,
     sortKey: "weight",
     render: (_, record) =>
-      record.pipeline === "jail" ? "-" : String(record.weight ?? 100),
+      isJailPipeline(record.pipeline) ? "-" : String(record.weight ?? 100),
   },
   {
     key: "name",
@@ -91,7 +107,7 @@ const FIELDS: FieldDefinition<Item>[] = [
     width: 70,
     visible: true,
     sortKey: "mode",
-    render: (_, record) => (record.pipeline === "jail" ? "-" : record.mode),
+    render: (_, record) => (isJailPipeline(record.pipeline) ? "-" : record.mode),
   },
   {
     key: "rate_limit_profile_name",
@@ -228,8 +244,9 @@ export class InnerPage extends React.Component<
           throw new Error(`Import failed: ${response.status}`);
         }
 
-        const result = await response.json();
-        message.success(`Imported ${result.imported} rules`);
+        const result: RuleImportResult = await response.json();
+        const notice = describeRuleImport(result);
+        IMPORT_NOTICE_HANDLERS[notice.kind](notice.text);
         this.setState((prev) => ({
           refreshCounter: prev.refreshCounter + 1,
         }));

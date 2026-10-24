@@ -26,6 +26,7 @@ import {
 } from "@ant-design/icons";
 import type { RuleTemplate, TemplatesResponse } from "@/models/template";
 import type Rule from "@/models/rule";
+import { isJailPipeline } from "@/models/rule";
 import { loadData } from "@/common/utils";
 import { BASE_URL } from "@/constants";
 
@@ -216,6 +217,10 @@ export default class TemplatesPage extends React.Component<
   // --- Rule Template apply modal ---
 
   private openApplyModal = (template: RuleTemplate) => {
+    // El peso de un template de Jail se fija a 0 ya en la apertura: el campo no
+    // llega a ofrecerse y así el valor por defecto (o el de una aplicación
+    // anterior) no se arrastra hasta el payload. El WAF sí conserva el peso del
+    // template porque ahí ordena la evaluación (`first match wins`).
     this.setState({
       modalVisible: true,
       selectedTemplate: template,
@@ -223,7 +228,7 @@ export default class TemplatesPage extends React.Component<
       ipAddress: "",
       ruleName: template.name,
       ruleDescription: template.description,
-      ruleWeight: template.weight ?? 100,
+      ruleWeight: isJailPipeline(template.pipeline) ? 0 : (template.weight ?? 100),
     });
   };
 
@@ -252,8 +257,11 @@ export default class TemplatesPage extends React.Component<
       const body: RuleCreatePayload = {
         name: this.state.ruleName,
         description: this.state.ruleDescription,
-        mode: template.pipeline === "jail" ? "log_only" : "enforce",
-        weight: this.state.ruleWeight,
+        mode: isJailPipeline(template.pipeline) ? "log_only" : "enforce",
+        // El peso de una regla de Jail es siempre 0: el pipeline evalúa todas
+        // las reglas que casan, sin `break`, así que el orden no decide nada.
+        // El WAF conserva el peso elegido, que sí ordena la evaluación.
+        weight: isJailPipeline(template.pipeline) ? 0 : this.state.ruleWeight,
         allow: template.allow,
         pipeline: template.pipeline,
         // All filter fields from template:
@@ -276,7 +284,7 @@ export default class TemplatesPage extends React.Component<
       };
 
       // If jail template has a rate_limit_profile_id, include it
-      if (template.pipeline === "jail" && template.rate_limit_profile_id) {
+      if (isJailPipeline(template.pipeline) && template.rate_limit_profile_id) {
         body.rate_limit_profile_id = template.rate_limit_profile_id;
       }
 
@@ -412,7 +420,7 @@ export default class TemplatesPage extends React.Component<
       title: "Pipeline",
       key: "pipeline",
       render: (_, t) =>
-        t.pipeline === "jail" ? (
+        isJailPipeline(t.pipeline) ? (
           <Tag icon={<LockOutlined />} color="orange">
             Jail
           </Tag>
@@ -438,7 +446,7 @@ export default class TemplatesPage extends React.Component<
       title: "Action",
       key: "action",
       render: (_, t) =>
-        t.pipeline === "jail" ? (
+        isJailPipeline(t.pipeline) ? (
           <Tag color="purple">Rate limit</Tag>
         ) : (
           <Tag
@@ -453,7 +461,7 @@ export default class TemplatesPage extends React.Component<
       title: "Profile",
       key: "profile",
       render: (_, t) =>
-        t.pipeline === "jail" && t.rate_limit_profile_name ? (
+        isJailPipeline(t.pipeline) && t.rate_limit_profile_name ? (
           <Tag color="orange" style={{ fontSize: 11 }}>
             {t.rate_limit_profile_name}
           </Tag>
@@ -667,7 +675,7 @@ export default class TemplatesPage extends React.Component<
 
               {/* Pipeline + Action row */}
               <Flex wrap gap="small" style={{ marginBottom: 12 }}>
-                {selected?.pipeline === "jail" ? (
+                {isJailPipeline(selected?.pipeline) ? (
                   <Tag
                     icon={<LockOutlined />}
                     color="orange"
@@ -683,7 +691,7 @@ export default class TemplatesPage extends React.Component<
                     Pipeline: WAF
                   </Tag>
                 )}
-                {selected?.pipeline !== "jail" && (
+                {!isJailPipeline(selected?.pipeline) && (
                   <Tag
                     icon={
                       selected?.allow ? (
@@ -698,16 +706,18 @@ export default class TemplatesPage extends React.Component<
                     Action: {selected?.allow ? "Allow" : "Deny"}
                   </Tag>
                 )}
-                <Tag style={{ fontSize: 13, padding: "2px 8px" }}>
-                  Weight: {this.state.ruleWeight}
-                </Tag>
+                {!isJailPipeline(selected?.pipeline) && (
+                  <Tag style={{ fontSize: 13, padding: "2px 8px" }}>
+                    Weight: {this.state.ruleWeight}
+                  </Tag>
+                )}
                 <Tag
                   color={this.state.ruleActive ? "green" : "default"}
                   style={{ fontSize: 13, padding: "2px 8px" }}
                 >
                   Active: {this.state.ruleActive ? "Yes" : "No"}
                 </Tag>
-                {selected?.pipeline !== "jail" && (
+                {!isJailPipeline(selected?.pipeline) && (
                   <Tag
                     color="purple"
                     style={{ fontSize: 13, padding: "2px 8px" }}
@@ -715,7 +725,7 @@ export default class TemplatesPage extends React.Component<
                     Mode: Enforce
                   </Tag>
                 )}
-                {selected?.pipeline === "jail" && (
+                {isJailPipeline(selected?.pipeline) && (
                   <Tag
                     color="purple"
                     style={{ fontSize: 13, padding: "2px 8px" }}
@@ -823,7 +833,7 @@ export default class TemplatesPage extends React.Component<
               </Flex>
 
               {/* Rate limit profile for jail */}
-              {selected?.pipeline === "jail" &&
+              {isJailPipeline(selected?.pipeline) &&
                 selected?.rate_limit_profile_name && (
                   <>
                     <div
@@ -872,18 +882,22 @@ export default class TemplatesPage extends React.Component<
                 addonBefore="Description"
                 allowClear
               />
-              <Flex align="center" gap="small">
-                <Text style={{ width: 100, flexShrink: 0 }}>Weight</Text>
-                <InputNumber
-                  style={{ width: "100%" }}
-                  value={this.state.ruleWeight}
-                  min={1}
-                  max={99999}
-                  onChange={(value) =>
-                    this.setState({ ruleWeight: value ?? 100 })
-                  }
-                />
-              </Flex>
+              {/* El campo Weight sólo se ofrece cuando el pipeline lo usa para
+                  ordenar (WAF). Para Jail el peso es siempre 0 y no se elige. */}
+              {!isJailPipeline(selected?.pipeline) && (
+                <Flex align="center" gap="small">
+                  <Text style={{ width: 100, flexShrink: 0 }}>Weight</Text>
+                  <InputNumber
+                    style={{ width: "100%" }}
+                    value={this.state.ruleWeight}
+                    min={1}
+                    max={99999}
+                    onChange={(value) =>
+                      this.setState({ ruleWeight: value ?? 100 })
+                    }
+                  />
+                </Flex>
+              )}
               <Flex align="center" gap="small">
                 <Text style={{ width: 100, flexShrink: 0 }}>Active</Text>
                 <Switch
