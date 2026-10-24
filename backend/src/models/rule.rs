@@ -10,6 +10,7 @@
 use crate::constants::DEFAULT_LIMIT;
 use crate::constants::DEFAULT_PAGE;
 use crate::models::NewRequest;
+use crate::models::error::AppError;
 use chrono::{DateTime, Utc};
 use regex::Regex;
 use serde::{Deserialize, Serialize};
@@ -318,6 +319,55 @@ pub struct UpdateRule {
     pub active: bool,
 }
 
+/// Nombre del pipeline del WAF: `first match wins` por `weight ASC`, que es el
+/// único sitio donde el peso decide.
+pub const WAF_PIPELINE: &str = "waf";
+
+/// Nombre del pipeline cuyas reglas no se ordenan: itera **todas** las que casan.
+pub const JAIL_PIPELINE: &str = "jail";
+
+/// Comprueba que el pipeline sea uno de los admitidos: `waf` o `jail`.
+///
+/// La comparación es **exacta y sensible a mayúsculas**, igual que la del resto
+/// del sistema (`shuul.rs` salta las reglas `jail`, `report.rs` salta las `waf`):
+/// aceptar `JAIL` como sinónimo de `jail` sería admitir un valor que ninguna de
+/// esas dos comparaciones reconoce, de modo que la regla participaría de un
+/// pipeline —o de ninguno— sin que se le apliquen sus invariantes, señaladamente
+/// la del peso 0.
+///
+/// Es el **único punto de validación** del pipeline; lo invocan las tres vías de
+/// escritura del cliente —creación ([`Rule::create`]), edición ([`Rule::update`])
+/// e importación ([`crate::http::rule::import_handler`])—.
+///
+/// # Errors
+///
+/// Devuelve [`AppError::InvalidInput`] —que la API traduce a `400 Bad Request`—
+/// si el pipeline no es exactamente `waf` o `jail`.
+pub fn validate_pipeline(pipeline: &str) -> Result<(), AppError> {
+    if pipeline == WAF_PIPELINE || pipeline == JAIL_PIPELINE {
+        return Ok(());
+    }
+    Err(AppError::InvalidInput(format!(
+        "pipeline no admitido: «{pipeline}»; se admiten «{WAF_PIPELINE}» y «{JAIL_PIPELINE}»"
+    )))
+}
+
+/// Peso con el que se almacena una regla, en función de su pipeline.
+///
+/// El pipeline de Jail evalúa **todas** las reglas que casan, sin `break`: su orden
+/// —y por tanto su peso— no decide nada, así que una regla de Jail se almacena
+/// **siempre** con peso 0. El del WAF es `first match wins` por `weight ASC`, que es
+/// el único sitio donde el número decide, y ahí se conserva el peso pedido.
+///
+/// Es el **único punto de coerción** del peso; lo invocan las tres vías de escritura
+/// del cliente —creación ([`Rule::create`]), edición ([`Rule::update`]) e importación
+/// ([`crate::http::rule::import_handler`])—, de modo que la API nunca confía en el
+/// peso que trae la petición.
+#[must_use]
+pub fn normalized_weight(pipeline: &str, weight: i32) -> i32 {
+    if pipeline == JAIL_PIPELINE { 0 } else { weight }
+}
+
 #[allow(dead_code)]
 #[derive(Debug, Deserialize)]
 pub struct ReadRuleParams {
@@ -385,10 +435,15 @@ impl Rule {
 
     /// Creates a new rule in the database.
     ///
+    /// El pipeline pasa por [`validate_pipeline`] —solo `waf` o `jail`— y el peso
+    /// por [`normalized_weight`]: una regla de Jail se almacena siempre con peso 0,
+    /// traiga lo que traiga la petición.
+    ///
     /// # Errors
     ///
-    /// Returns an error if the database query fails.
-    pub async fn create(pool: &SqlitePool, rule: NewRule) -> Result<Self, Error> {
+    /// Devuelve [`AppError::InvalidInput`] si el pipeline no es un pipeline
+    /// admitido, y un error de base de datos si la consulta falla.
+    pub async fn create(pool: &SqlitePool, rule: NewRule) -> Result<Self, AppError> {
         let sql = "INSERT INTO rules (name, description, weight, mode, pipeline, allow,
             is_tor, ip_address, protocol, fqdn, path, query, city_name, country_name,
             country_code, user_agent, method, referer, content_type,
@@ -397,12 +452,15 @@ impl Rule {
             ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?,
             ?, ?, ?, ?, ?, ?, ?) RETURNING *";
         let now = Utc::now();
+        let pipeline = rule.pipeline.unwrap_or_else(|| WAF_PIPELINE.to_string());
+        validate_pipeline(&pipeline)?;
+        let weight = normalized_weight(&pipeline, rule.weight.unwrap_or(100));
         query(sql)
             .bind(&rule.name)
             .bind(rule.description.unwrap_or_default())
-            .bind(rule.weight.unwrap_or(100))
+            .bind(weight)
             .bind(rule.mode.unwrap_or_else(|| "log_only".to_string()))
-            .bind(rule.pipeline.unwrap_or_else(|| "waf".to_string()))
+            .bind(pipeline)
             .bind(rule.allow.unwrap_or(true))
             .bind(rule.is_tor.unwrap_or(false))
             .bind(rule.ip_address)
@@ -426,6 +484,7 @@ impl Rule {
             .map(|row| Self::from_row(&row))
             .fetch_one(pool)
             .await
+            .map_err(AppError::from)
     }
 
     /// Reads rule info (total or active count).
@@ -467,10 +526,15 @@ impl Rule {
 
     /// Updates an existing rule.
     ///
+    /// El pipeline pasa por [`validate_pipeline`] —solo `waf` o `jail`— y el peso
+    /// por [`normalized_weight`]: una regla de Jail sigue almacenada con peso 0
+    /// aunque la petición envíe otro valor.
+    ///
     /// # Errors
     ///
-    /// Returns an error if the database query fails.
-    pub async fn update(pool: &SqlitePool, rule: UpdateRule) -> Result<Self, Error> {
+    /// Devuelve [`AppError::InvalidInput`] si el pipeline no es un pipeline
+    /// admitido, y un error de base de datos si la consulta falla.
+    pub async fn update(pool: &SqlitePool, rule: UpdateRule) -> Result<Self, AppError> {
         let sql = "UPDATE rules SET
                 name = ?,
                 description = ?,
@@ -499,12 +563,15 @@ impl Rule {
             WHERE id = ?
             RETURNING *";
         let now = Utc::now();
+        let pipeline = rule.pipeline;
+        validate_pipeline(&pipeline)?;
+        let weight = normalized_weight(&pipeline, rule.weight);
         query(sql)
             .bind(&rule.name)
             .bind(&rule.description)
-            .bind(rule.weight)
+            .bind(weight)
             .bind(&rule.mode)
-            .bind(&rule.pipeline)
+            .bind(pipeline)
             .bind(rule.allow)
             .bind(rule.is_tor)
             .bind(rule.ip_address)
@@ -528,6 +595,7 @@ impl Rule {
             .map(|row| Self::from_row(&row))
             .fetch_one(pool)
             .await
+            .map_err(AppError::from)
     }
 
     /// Counts rules with the given filters.
@@ -674,11 +742,17 @@ impl Rule {
         ]
         .contains(&sort_by)
         {
-            if params.asc.unwrap_or(true) {
-                let _ = write!(sql, " ORDER BY {sort_by} ASC");
+            // El criterio pedido SHALL desempatar de forma determinista: sin desempate
+            // SQLite puede devolver las filas empatadas en cualquier orden y, al paginar
+            // con `LIMIT ? OFFSET ?`, una misma fila se repite en una página y desaparece
+            // de la siguiente. La columna va cualificada (`rules.id`) porque la consulta
+            // lleva el JOIN de `rate_limit_profiles`, que también tiene `id`.
+            let direction = if params.asc.unwrap_or(true) {
+                "ASC"
             } else {
-                let _ = write!(sql, " ORDER BY {sort_by} DESC");
-            }
+                "DESC"
+            };
+            let _ = write!(sql, " ORDER BY {sort_by} {direction}, rules.id ASC");
         }
         sql.push_str(" LIMIT ? OFFSET ?");
         let mut query = query(&sql);
