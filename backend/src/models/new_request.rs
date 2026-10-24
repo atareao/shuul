@@ -45,7 +45,16 @@ impl NewRequest {
     /// cuando la cabecera falta o está presente pero vacía: el filtro
     /// `.filter(|s| !s.is_empty())` colapsa ambos casos a `None`. A efectos del
     /// matcheo, una cabecera ausente y una presente pero vacía son indistinguibles.
-    #[allow(clippy::too_many_lines, clippy::option_if_let_else)]
+    ///
+    /// **Todos** los consumidores de la dirección del cliente parten de la
+    /// dirección resuelta (`ip_address`: el último elemento de `x-forwarded-for`,
+    /// ya validado como `IpAddr`), nunca de la cabecera cruda. Tanto la consulta
+    /// `GeoIP` como la de Tor se hacen contra `ip_address`, y ninguna se intenta
+    /// cuando ésta es `None`: sin dirección válida no hay nada que consultar. El
+    /// único diagnóstico que puede emitirse en ese camino es el del resolvedor, y
+    /// solo cuando **había un valor no vacío que no resolvió**: una cabecera
+    /// ausente o vacía colapsa a `None` sin producir diagnóstico alguno.
+    #[allow(clippy::too_many_lines)]
     pub fn from_request(
         headers: &http::HeaderMap,
         geoip: Option<&GeoIpService>,
@@ -119,26 +128,26 @@ impl NewRequest {
             }
         });
 
-        // GeoIP lookup: usa el cache de GeoIpService si está disponible
-        let (city_name, country_name, country_code) = if let Some(geoip) = geoip {
-            let ip_data = geoip.lookup(ip);
-            (
-                ip_data.city_name.filter(|s| !s.is_empty()),
-                ip_data.country_name.filter(|s| !s.is_empty()),
-                ip_data.country_code.filter(|s| !s.is_empty()),
-            )
-        } else {
-            (None, None, None)
+        // GeoIP lookup: usa el cache de GeoIpService si está disponible y hay
+        // una dirección resuelta contra la que consultar
+        let (city_name, country_name, country_code) = match (geoip, ip_address.as_deref()) {
+            (Some(geoip), Some(resolved_ip)) => {
+                let ip_data = geoip.lookup(resolved_ip);
+                (
+                    ip_data.city_name.filter(|s| !s.is_empty()),
+                    ip_data.country_name.filter(|s| !s.is_empty()),
+                    ip_data.country_code.filter(|s| !s.is_empty()),
+                )
+            },
+            _ => (None, None, None),
         };
 
-        // Tor lookup: usa TorService si está disponible
-        let is_tor = tor_service.and_then(|ts| {
-            if ip.is_empty() {
-                None
-            } else {
-                ts.is_exit_node(ip)
-            }
-        });
+        // Tor lookup: usa TorService si está disponible y hay una dirección
+        // resuelta contra la que consultar
+        let is_tor = match (tor_service, ip_address.as_deref()) {
+            (Some(ts), Some(resolved_ip)) => ts.is_exit_node(resolved_ip),
+            _ => None,
+        };
 
         // Extraer encabezados HTTP adicionales con prefijo x-forwarded-* + fallback
         let user_agent = headers
@@ -308,6 +317,41 @@ mod tests {
             headers.insert("x-forwarded-for", v.parse().unwrap());
         }
         headers
+    }
+
+    /// Carga el servicio `GeoIP` desde el fichero mmdb, probando varias rutas.
+    ///
+    /// El fichero `GeoLite2-City.mmdb` es un **requisito declarado de la suite**:
+    /// los tests que consultan `GeoIP` no pueden ejercer sus aserciones sin él, así
+    /// que su ausencia es un fallo explícito, nunca un salto silencioso.
+    /// `.github/workflows/ci.yml` lo descarga en `geo/` cuando el secreto
+    /// `MAXMIND_LICENSE_KEY` está definido (y omite el paso de tests cuando no lo
+    /// está).
+    ///
+    /// # Panics
+    ///
+    /// Entra en pánico si no encuentra el fichero en ninguna de las rutas
+    /// probadas —`geo/`, `/app/geo/` y `../geo/`, relativas a `backend/`—, con un
+    /// mensaje accionable que nombra las rutas y el mecanismo de descarga.
+    fn require_geoip_service() -> GeoIpService {
+        let paths = [
+            "geo/GeoLite2-City.mmdb",
+            "/app/geo/GeoLite2-City.mmdb",
+            "../geo/GeoLite2-City.mmdb",
+        ];
+        for path in &paths {
+            if let Ok(reader) = maxminddb::Reader::open_readfile(path) {
+                return GeoIpService::new(reader);
+            }
+        }
+        panic!(
+            "falta la base GeoLite2-City.mmdb, que esta suite requiere: se ha buscado en \
+             `geo/GeoLite2-City.mmdb`, `/app/geo/GeoLite2-City.mmdb` y \
+             `../geo/GeoLite2-City.mmdb` (relativas a `backend/`). `.github/workflows/ci.yml` \
+             la descarga en `geo/` cuando el secreto `MAXMIND_LICENSE_KEY` está definido, y \
+             omite el paso de tests cuando no lo está. Define el secreto o coloca el fichero \
+             en `backend/geo/GeoLite2-City.mmdb` para ejecutar la suite completa."
+        )
     }
 
     /// Escenario: Un solo valor.
@@ -500,5 +544,127 @@ mod tests {
                 "`ip_address` debe parsear como IpAddr; el valor {ip:?} no parsea"
             );
         }
+    }
+
+    // ── la dirección resuelta es la que consumen GeoIP y Tor ──
+
+    /// Escenario: una cadena de saltos con `GeoIP` disponible.
+    /// La consulta `GeoIP` se hace contra la dirección resuelta —el último
+    /// elemento de la cadena—, así que `country_code` se rellena y el `GeoIP` no
+    /// emite el diagnóstico de sintaxis que emite al recibir la cadena entera.
+    #[test]
+    fn test_chain_with_geoip_consults_the_resolved_address() {
+        let geoip = require_geoip_service();
+        let headers = headers_with_forwarded_for(Some("192.0.2.1, 8.8.8.8"));
+
+        let mut ip_address: Option<String> = None;
+        let mut country_code: Option<String> = None;
+        let log = capture_debug(|| {
+            let request = NewRequest::from_request(&headers, Some(&geoip), None);
+            ip_address = request.ip_address;
+            country_code = request.country_code;
+        });
+
+        assert_eq!(ip_address.as_deref(), Some("8.8.8.8"));
+        assert!(
+            country_code.is_some(),
+            "con GeoIP disponible la consulta debe hacerse contra la dirección \
+             resuelta (8.8.8.8 → US), no contra la cadena; log capturado: {log:?}"
+        );
+        assert!(
+            !log.contains("invalid IP address syntax"),
+            "el GeoIP no debe recibir la cadena cruda; log capturado: {log:?}"
+        );
+    }
+
+    /// Escenario: una cadena de saltos con el filtro de Tor disponible.
+    /// La consulta de Tor se hace contra la dirección resuelta, así que
+    /// `is_tor` es `Some(true)` y no queda en `None` por culpa de la cadena.
+    #[test]
+    fn test_chain_with_tor_consults_the_resolved_address() {
+        let tor = TorService::new();
+        tor.load_from_str("185.220.101.1\n185.220.101.2\n");
+        let headers = headers_with_forwarded_for(Some("192.0.2.1, 185.220.101.1"));
+
+        let request = NewRequest::from_request(&headers, None, Some(&tor));
+
+        assert_eq!(request.ip_address.as_deref(), Some("185.220.101.1"));
+        assert_eq!(
+            request.is_tor,
+            Some(true),
+            "el filtro de Tor debe consultarse con la dirección resuelta, no con \
+             la cadena (que no parsea como IpAddr y deja `is_tor` en `None`)"
+        );
+    }
+
+    /// Escenario: una dirección irresoluble no se consulta.
+    /// Los cuatro campos derivados de los consumidores de la dirección —
+    /// `country_code`, `country_name`, `city_name` e `is_tor`— quedan en `None`,
+    /// como exige el spec `request-extraction` para el caso de dirección no
+    /// resuelta; el único diagnóstico es el del resolvedor, que nombra el valor
+    /// descartado, y ningún consumidor emite un diagnóstico de sintaxis.
+    #[test]
+    fn test_unresolvable_address_does_not_consult_geoip_nor_tor() {
+        let geoip = require_geoip_service();
+        let tor = TorService::new();
+        tor.load_from_str("185.220.101.1\n");
+        let headers = headers_with_forwarded_for(Some("no-soy-una-direccion"));
+
+        let mut request: Option<NewRequest> = None;
+        let log = capture_debug(|| {
+            request = Some(NewRequest::from_request(&headers, Some(&geoip), Some(&tor)));
+        });
+        let request = request.expect("`from_request` debe haberse ejecutado dentro del closure");
+
+        assert_eq!(request.ip_address, None);
+        assert_eq!(request.is_tor, None);
+        assert_eq!(
+            request.country_code, None,
+            "sin dirección resuelta el GeoIP no se consulta y `country_code` \
+             queda en `None`"
+        );
+        assert_eq!(
+            request.country_name, None,
+            "sin dirección resuelta el GeoIP no se consulta y `country_name` \
+             queda en `None`; el spec `request-extraction` exige los cuatro \
+             campos derivados de los consumidores de la dirección en `None`"
+        );
+        assert_eq!(
+            request.city_name, None,
+            "sin dirección resuelta el GeoIP no se consulta y `city_name` queda \
+             en `None`; el spec `request-extraction` exige los cuatro campos \
+             derivados de los consumidores de la dirección en `None`"
+        );
+        assert!(
+            log.contains("no-soy-una-direccion"),
+            "el diagnóstico del resolvedor debe nombrar el valor descartado; \
+             log capturado: {log:?}"
+        );
+        assert!(
+            !log.contains("invalid IP address syntax"),
+            "sin dirección válida no debe consultarse el GeoIP; log capturado: {log:?}"
+        );
+    }
+
+    /// Escenario: un solo valor sigue resolviéndose igual (guardián: hoy pasa).
+    /// Con una sola dirección `GeoIP` y Tor ya se consultaban bien; el arreglo no
+    /// puede romper ese camino.
+    #[test]
+    fn test_single_value_still_consults_geoip_and_tor() {
+        let geoip = require_geoip_service();
+        let tor = TorService::new();
+        tor.load_from_str("185.220.101.1\n");
+        let headers = headers_with_forwarded_for(Some("8.8.8.8"));
+
+        let request = NewRequest::from_request(&headers, Some(&geoip), Some(&tor));
+
+        assert_eq!(request.ip_address.as_deref(), Some("8.8.8.8"));
+        assert_eq!(request.is_tor, Some(false));
+        assert!(
+            request.country_code.is_some(),
+            "con GeoIP disponible `country_code` debe rellenarse para 8.8.8.8; \
+             obtenido: {:?}",
+            request.country_code
+        );
     }
 }

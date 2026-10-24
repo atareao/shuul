@@ -48,6 +48,20 @@ Semántica de `check_match` (`rule.rs:250`): `(None, _)` → casa; `(_, None)` �
 | Niveles de paranoia | PL1–PL4 | No |
 | Compatibilidad SecLang / CRS | 100 % CRS v4 | No |
 
+### 1.4 Un defecto medido y cerrado: la dirección del cliente la consumen todos
+
+`NewRequest::from_request()` resuelve la dirección del cliente **una sola vez**: toma el último elemento de `X-Forwarded-For` —el mismo del que el `JournaldReader` deriva la dirección del access log—, lo recorta y lo valida como `IpAddr`. Ese valor es el que usan **los tres** consumidores: el campo `ip_address`, la consulta `GeoIP` y la consulta del filtro de Tor. Cuando no hay dirección válida, ninguna de las dos consultas se intenta.
+
+No siempre fue así. Medido en producción el 2026-10-24, con la imagen v0.23.0, una petición con `X-Forwarded-For: 192.0.2.1, 203.0.113.7` dejaba
+
+```
+ERROR backend::models::ipdata: Look data for ip: "192.0.2.1, 203.0.113.7": invalid IP address syntax
+```
+
+aunque el campo `ip` del registro de auditoría ya salía correcto (`203.0.113.7`). La resolución se había arreglado, pero el `GeoIP` y el Tor seguían recibiendo la cabecera **cruda**, así que con una cadena de saltos los dos caían en fail-open: el `GeoIP` no resolvía —y las reglas por país y por ciudad dejaban de casar— y `is_exit_node` hacía `parse::<IpAddr>().ok()?`, fallaba y dejaba `is_tor` en `None` —y las reglas de Tor dejaban de casar—.
+
+Hoy no se disparaba porque el despliegue mantiene `trustForwardHeader` en `false` y Traefik sustituye la cabecera: llega un solo valor. **Encenderlo es justo lo que introduce cadenas**, así que el orden importa y está escrito: primero la resolución a un solo valor —y que **todos** los consumidores la usen—, después la confianza en la cabecera. El change `client-address-consistency` cierra ese hueco.
+
 ---
 
 ## 2. Los cuatro agujeros, con evidencia
