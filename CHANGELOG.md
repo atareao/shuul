@@ -1,4 +1,17 @@
 # Changelog
+## [0.23.0] - 2026-10-24
+
+### Bug Fixes
+
+- *(waf)* La dirección del cliente se resuelve a una sola dirección
+
+### Documentation
+
+- Añade el roadmap del WAF frente a Coraza
+- *(openspec)* Propone waf-input-integrity
+- Declara el modelo de confianza de las cabeceras de reenvío
+- *(openspec)* Marca las tareas verificadas de public-landing-without-header
+- *(openspec)* Archiva public-landing-without-header
 ## [0.22.0] - 2026-10-24
 
 ### Documentation
@@ -9,6 +22,10 @@
 ### Features
 
 - *(ui)* La parte pública pierde su cabecera y la portada ocupa el alto disponible
+
+### Miscellaneous Tasks
+
+- Release v0.22.0
 ## [0.21.0] - 2026-10-24
 
 ### Documentation
