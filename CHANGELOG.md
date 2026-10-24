@@ -1,4 +1,14 @@
 # Changelog
+## [0.21.0] - 2026-10-24
+
+### Documentation
+
+- *(openspec)* Archiva los dos changes verificados en v0.20.0
+- *(openspec)* El change admin-sidebar-and-version
+
+### Features
+
+- *(ui)* La barra lateral lleva la marca, el pie es un menú y la versión se declara en producción
 ## [0.20.0] - 2026-10-24
 
 ### Documentation
@@ -9,6 +19,10 @@
 ### Features
 
 - *(ui)* La entrada al panel es la portada, y el pie de la barra lateral gobierna la sesión
+
+### Miscellaneous Tasks
+
+- Release v0.20.0
 
 ### Refactor
 
