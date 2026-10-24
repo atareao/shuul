@@ -32,6 +32,6 @@
 
 ## 5. Verificación manual (operador, en `co1`)
 
-- [ ] 5.1 Desplegar la imagen nueva y repetir la inyección de una cadena (`X-Forwarded-For: 192.0.2.1, 203.0.113.7`): el registro SHALL mostrar `ip` de un solo valor y NO SHALL aparecer `ERROR … invalid IP address syntax`.
-- [ ] 5.2 Confirmar que las reglas por país vuelven a casar para una petición con cadena.
+- [x] 5.1 Desplegar la imagen nueva y repetir la inyección de una cadena (`X-Forwarded-For: 192.0.2.1, 203.0.113.7`): el registro SHALL mostrar `ip` de un solo valor y NO SHALL aparecer `ERROR … invalid IP address syntax`. **Medido en `co1` el 2026-10-24 con v0.23.1 (digest `sha256:289954fd…`)**: inyectando `X-Forwarded-For: 192.0.2.1, 8.8.8.8` el registro de auditoría muestra `"ip":"8.8.8.8"` y `"country":"US"` —un solo valor, con el GeoIP resolviendo— y no aparece ningún `ERROR … invalid IP address syntax`.
+- [x] 5.2 Confirmar que las reglas por país vuelven a casar para una petición con cadena. **Medido**: la cadena `192.0.2.1, 45.92.11.17` produce `[DENIED]` con `country: "DE"` y `rule_id: 4` («Geo blocking») — HTTP 403. Antes de la corrección esa misma petición daba `country: null` y pasaba con 200 (fail-open).
 - [ ] 5.3 **Solo entonces**, retomar la tarea 5.3 de `waf-input-integrity`: activar `trustForwardHeader: true` con `forwardedHeaders.trustedIPs` y verificar que la dirección que Shuul registra sigue siendo la del cliente.
