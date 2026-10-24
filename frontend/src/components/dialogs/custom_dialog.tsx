@@ -148,7 +148,7 @@ class InnerDialog<T> extends React.Component<Props<T>, State<T>> {
       console.log("====================");
       if (!response.ok || response.status > 299) {
         if (response.status === 401) {
-          window.location.href = "/login";
+          window.location.href = "/";
           return;
         }
         // ... (lógica de manejo de errores, sin cambios)

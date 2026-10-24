@@ -49,7 +49,7 @@ export const loadData = async <T>(
     // 2. Manejar respuestas no-OK (ej: 404, 500)
     if (!response.ok) {
       if (response.status === 401) {
-        window.location.href = "/login";
+        window.location.href = "/";
         throw new Error("Session expired");
       }
       let errorBody: { message?: string } = {};
