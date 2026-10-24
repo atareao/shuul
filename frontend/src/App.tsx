@@ -1,5 +1,5 @@
 import React, { lazy, Suspense } from "react";
-import { BrowserRouter, Routes, Route } from "react-router";
+import { BrowserRouter, Routes, Route, Navigate } from "react-router";
 import i18n from "i18next";
 import { initReactI18next } from "react-i18next";
 import LanguageDetector from "i18next-browser-languagedetector";
@@ -12,7 +12,6 @@ import ModeContext, { ModeContextProvider } from "@/components/mode_context";
 const PublicLayout = lazy(() => import("@/layouts/public_layout"));
 const AdminLayout = lazy(() => import("@/layouts/admin_layout"));
 const HomePage = lazy(() => import("@/pages/public/home_page"));
-const LoginPage = lazy(() => import("@/pages/public/login_page"));
 const LogoutPage = lazy(() => import("@/pages/admin/logout_page"));
 const DashboardPage = lazy(() => import("@/pages/admin/dashboard_page"));
 const RulesPage = lazy(() => import("@/pages/admin/rules_page"));
@@ -67,7 +66,10 @@ export default class App extends React.Component {
                       <Routes>
                         <Route path="/" element={<PublicLayout />}>
                           <Route index element={<HomePage />} />
-                          <Route path="login" element={<LoginPage />} />
+                          {/* `/login` ya no es una ruta propia: un enlace o
+                              marcador anterior acaba en la portada, que es la
+                              única entrada al flujo SSO. */}
+                          <Route path="login" element={<Navigate to="/" replace />} />
                         </Route>
                         <Route path="/admin" element={<AdminLayout />}>
                           <Route index element={<DashboardPage />} />

@@ -168,7 +168,7 @@ export default function RuleDialog({
             setProfiles(json.data);
           }
         } else if (response.status === 401) {
-          window.location.href = "/login";
+          window.location.href = "/";
           return;
         }
       } catch {
@@ -241,7 +241,7 @@ export default function RuleDialog({
 
       if (!response.ok) {
         if (response.status === 401) {
-          window.location.href = "/login";
+          window.location.href = "/";
           return;
         }
         let errorBody: { message?: string } = {};

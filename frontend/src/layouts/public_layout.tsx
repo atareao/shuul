@@ -1,12 +1,11 @@
 import react from "react";
 import { Outlet } from "react-router";
 import { Button, Layout, theme } from "antd";
-import { useNavigate } from "react-router";
-import type { NavigateFunction } from "react-router";
 import type { GlobalToken } from "antd";
 import { LoginOutlined } from "@ant-design/icons";
 
 import ModeSwitcher from "@/components/mode_switcher";
+import { startSsoLogin } from "@/common/auth";
 
 const { Header, Footer, Content } = Layout;
 
@@ -20,7 +19,6 @@ interface Props {
    * poder tipar el acceso sin `any`.
    */
   token: GlobalToken & { coloBgLayout?: string };
-  navigate: NavigateFunction;
 }
 
 class InnerPublicLayout extends react.Component<Props> {
@@ -38,11 +36,15 @@ class InnerPublicLayout extends react.Component<Props> {
             display: "flex",
             alignItems: "center",
             justifyContent: "flex-end",
+            // La separación entre el botón de entrar y el conmutador de tema
+            // es cosa del contenedor: el conmutador ya no declara márgenes
+            // propios, porque dentro del pie del panel descuadrarían.
+            gap: 16,
             height: 64,
             paddingInline: 48,
           }}
         >
-          <Button variant="solid" onClick={() => this.props.navigate("/login")}>
+          <Button variant="solid" onClick={() => startSsoLogin()}>
             <LoginOutlined />
           </Button>
           <ModeSwitcher />
@@ -60,7 +62,6 @@ class InnerPublicLayout extends react.Component<Props> {
 }
 
 export default function PublicLayout() {
-  const navigate = useNavigate();
   const { token } = theme.useToken();
-  return <InnerPublicLayout navigate={navigate} token={token} />;
+  return <InnerPublicLayout token={token} />;
 }

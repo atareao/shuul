@@ -2,8 +2,9 @@ import react from "react";
 import { useNavigate } from "react-router";
 import type { NavigateFunction } from "react-router";
 import { useTranslation } from "react-i18next";
-import { Flex, Typography } from "antd";
+import { Button, Flex, Typography } from "antd";
 import Logo from "@/assets/logo.svg";
+import { startSsoLogin } from "@/common/auth";
 
 interface Props {
   navigate: NavigateFunction;
@@ -33,6 +34,12 @@ export class HomeInnerPage extends react.Component<Props> {
         </Typography.Title>
         <Flex gap="middle" align="center" vertical>
           <img src={Logo} alt="Logo" style={{ width: 200, marginBottom: 20 }} />
+          {/* La portada es la entrada al panel: es el único botón rotulado que
+              arranca el SSO, con el mismo mecanismo que usaba la página de
+              inicio de sesión eliminada. */}
+          <Button type="primary" size="large" onClick={() => startSsoLogin()}>
+            Sign in with PocketID
+          </Button>
         </Flex>
       </Flex>
     );

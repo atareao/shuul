@@ -317,7 +317,7 @@ export default class TemplatesPage extends React.Component<
         message.success(`Rule "${this.state.ruleName}" created successfully`);
       } else {
         if (response.status === 401) {
-          window.location.href = "/login";
+          window.location.href = "/";
           return;
         }
         const err = await response.json();
@@ -592,23 +592,32 @@ export default class TemplatesPage extends React.Component<
             puede ser más corto que la página actual: si `page` no volviera a 1,
             el usuario se quedaría en una página fuera de rango y vería la tabla
             vacía. Por eso la búsqueda y todos los filtros resetean `page`; es el
-            mismo reset que ya aplica `CustomTable`.
-            El buscador, además, ocupa su propia línea a ancho completo para no
-            competir por el espacio con los filtros. */}
-        <Input
-          prefix={<SearchOutlined />}
-          aria-label="Search templates"
-          placeholder="Search templates..."
-          style={{ width: "100%" }}
-          value={this.state.search}
-          onChange={(e) => this.setState({ search: e.target.value, page: 1 })}
-          allowClear
-        />
+            mismo reset que ya aplica `CustomTable`. */}
 
-        {/* Rejilla de anchos fijos: cada filtro mide lo mismo sea cual sea el
-            ancho de la ventana. `Row` envuelve por defecto. */}
-        <Row gutter={[12, 12]} align="middle">
-          <Col flex="0 0 160px">
+        {/* La barra de herramientas es una sola línea: el buscador entra en la
+            fila de los filtros como primer elemento. La fila no envuelve
+            (`wrap={false}`): antes de partirse, los controles se encogen. El
+            buscador es el elemento flexible —crece para llevarse el hueco libre
+            y se encoge hasta su mínimo— y cada filtro conserva su ancho
+            preferido, pudiendo encogerse también.
+
+            Cada `Col` flexible declara `minWidth: 0`: sin él su mínimo sería
+            `auto` —el tamaño de su contenido—, lo que pondría un suelo duro a
+            la fila y la haría desbordar su contenedor en ventanas estrechas,
+            justo lo que el contrato prohíbe. El interruptor no se encoge, así
+            que no lo necesita. */}
+        <Row gutter={[12, 12]} align="middle" wrap={false}>
+          <Col flex="1 1 200px" style={{ minWidth: 0 }}>
+            <Input
+              prefix={<SearchOutlined />}
+              aria-label="Search templates"
+              placeholder="Search templates..."
+              value={this.state.search}
+              onChange={(e) => this.setState({ search: e.target.value, page: 1 })}
+              allowClear
+            />
+          </Col>
+          <Col flex="0 1 160px" style={{ minWidth: 0 }}>
             <Select
               aria-label="Pipeline"
               style={{ width: "100%" }}
@@ -620,7 +629,7 @@ export default class TemplatesPage extends React.Component<
               }
             />
           </Col>
-          <Col flex="0 0 160px">
+          <Col flex="0 1 160px" style={{ minWidth: 0 }}>
             <Select
               aria-label="Severity"
               style={{ width: "100%" }}
@@ -632,7 +641,7 @@ export default class TemplatesPage extends React.Component<
               }
             />
           </Col>
-          <Col flex="0 0 240px">
+          <Col flex="0 1 240px" style={{ minWidth: 0 }}>
             <Select
               aria-label="Category"
               style={{ width: "100%" }}
@@ -644,7 +653,7 @@ export default class TemplatesPage extends React.Component<
               }
             />
           </Col>
-          <Col flex="0 0 160px">
+          <Col flex="0 1 160px" style={{ minWidth: 0 }}>
             <Select
               aria-label="Action"
               style={{ width: "100%" }}

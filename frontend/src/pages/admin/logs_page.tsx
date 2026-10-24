@@ -169,7 +169,7 @@ export class InnerPage extends React.Component<Props, State> {
         body: JSON.stringify({ capacity: newCapacity }),
       });
       if (response.status === 401) {
-        window.location.href = "/login";
+        window.location.href = "/";
         return;
       }
       const json = await response.json();
