@@ -546,6 +546,44 @@ mod tests {
         }
     }
 
+    // ── waf-transformations 1.13: ¿`path` y `query` llegan codificados? ──
+
+    /// MEDICIÓN (tarea 1.13): mide de dónde salen `path` y `query` y si llegan
+    /// codificados o decodificados.
+    ///
+    /// Con `x-forwarded-uri: /a/%2e%2e/b?q=%2e%2e` el valor observado es
+    /// `path = "/a/%2e%2e/b"` y `query = "q=%2e%2e"`: los dos llegan
+    /// **codificados**, tal cual los escribió el cliente. `Uri::path()` y
+    /// `Uri::query()` devuelven los componentes **crudos** del *request-target*:
+    /// `http::Uri` no decodifica los escapes porcentuales ni normaliza los
+    /// segmentos `..`.
+    ///
+    /// Implicación para la plantilla de path traversal: como la petición llega
+    /// codificada, la plantilla **necesita** `urlDecodeUni` sobre `path` —si no,
+    /// un patrón `\.\./` nunca vería el `../`— y sobre `query` **si además filtra
+    /// por `query`**, porque ahí los escapes tampoco vienen resueltos. Un
+    /// `normalizePath` suelto tampoco bastaría: sin decodificar antes no hay
+    /// ningún segmento `..` que normalizar.
+    #[test]
+    fn test_forwarded_uri_reaches_path_and_query_percent_encoded() {
+        let mut headers = http::HeaderMap::new();
+        headers.insert("x-forwarded-uri", "/a/%2e%2e/b?q=%2e%2e".parse().unwrap());
+
+        let request = NewRequest::from_request(&headers, None, None);
+
+        // MEDICIÓN (tarea 1.13): valores observados, no supuestos.
+        assert_eq!(
+            request.path.as_deref(),
+            Some("/a/%2e%2e/b"),
+            "el `path` llega codificado: `%2e%2e` no se decodifica a `..`"
+        );
+        assert_eq!(
+            request.query.as_deref(),
+            Some("q=%2e%2e"),
+            "la `query` llega codificada: `%2e%2e` no se decodifica a `..`"
+        );
+    }
+
     // ── la dirección resuelta es la que consumen GeoIP y Tor ──
 
     /// Escenario: una cadena de saltos con `GeoIP` disponible.

@@ -29,6 +29,11 @@ pub struct LogEntry {
     pub status_code: Option<i32>,
     pub profile: Option<String>,
     pub reason: Option<String>,
+    /// La evidencia del matcheo del WAF: por cada campo que la regla restringe
+    /// y que casó, el valor **transformado** que se comparó. Es `None` cuando
+    /// no procede (la regla **no casa**, pipeline vacía o ningún campo de los 14
+    /// restringido).
+    pub matched: Option<std::collections::BTreeMap<String, String>>,
 }
 
 /// Ring buffer collector with configurable capacity.
@@ -198,6 +203,15 @@ macro_rules! audit_log {
                 .get("reason")
                 .and_then(|v| v.as_str())
                 .map(|s| s.to_string()),
+            // La evidencia del matcheo, con tres resoluciones:
+            // - clave ausente → `Value::Null`, que no deserializa a un mapa → `None`;
+            // - objeto vacío → se colapsa a `None` con el `filter`, porque el
+            //   contrato prohíbe emitir evidencia sin ningún campo restringido
+            //   (un objeto vacío en el evento sería ruido);
+            // - objeto con entradas → `Some(mapa)`.
+            matched: serde_json::from_value(json_value["matched"].clone())
+                .ok()
+                .filter(|m: &std::collections::BTreeMap<String, String>| !m.is_empty()),
         };
         $crate::models::log_collector::push_log(entry);
     }};

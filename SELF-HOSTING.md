@@ -59,6 +59,8 @@ Three things have to be right for shuul to see the **real** client address. Do t
 
 **1. shuul must resolve the address to a single value.** `X-Forwarded-For` is a **chain**, not a value: a client can prepend entries of its own. shuul resolves it to exactly one address — the **last** element, the one the nearest hop observed, which is the same address the Jail pipeline derives from Traefik's access log. If those two disagreed, bans would be recorded against one address and checked against another, and they would never apply. An element that cannot be resolved leaves the address empty, and shuul logs the discarded value at `DEBUG` level (`RUST_LOG=backend=debug`). **Upgrade before doing step 2** — and keep an eye on the logs afterwards: if the client address suddenly stops resolving, step 2 is the first place to look.
 
+**Why the last element is the right one.** Traefik *appends* the address of the peer it observed to the `X-Forwarded-For` it forwards: the option that would stop it, `notAppendXForwardedFor`, defaults to `false`. So the last element is the nearest hop — and the same address the Jail pipeline reads from the access log. This holds **only while `forwardedHeaders.trustedIPs` stays empty**: with Traefik as the edge it drops the client's own `X-Forwarded-For` and appends the real client, leaving a one-element chain. Add a trusted upstream proxy to `trustedIPs` and the chain grows — Traefik keeps what it receives and appends its own peer — so the last element becomes the proxy and the client moves to the first. If you ever introduce one, revisit this: the address shuul checks and the one the access log records have to keep agreeing.
+
 **2. Then declare who you trust.** Traefik is your edge, so nobody upstream is trusted. On the entry point:
 
 ```yaml
@@ -1457,3 +1459,21 @@ networks:
   proxy:
     external: true
 ```
+
+---
+
+## 15. Rule transformations: why they exist and when to use them
+
+**The problem, measured.** Every rule compares the value **as it arrives**, with no normalisation, so the same payload encoded another way slips past. Before this change, the `Path traversal probes` template denied exactly the requests that already came decoded: against a scanner that encodes, it was decoration.
+
+**How the value arrives.** Measured in this repository: `X-Forwarded-Uri` delivers `path` and `query` **encoded** — `Uri::path()` does not decode percent escapes — so a `%2e%2e%2f` arrives literally and a `\.\./` pattern does not see it. That is why the four detection templates start with `urlDecodeUni`.
+
+**When to use them.** When the pattern describes a **normalised form** of a payload (traversal, SQL injection, XSS, command injection) and the attacker controls the encoding. When the pattern describes an exact literal that is not encoded (a concrete path, a concrete `User-Agent`), the pipeline adds nothing and only costs.
+
+**When not to use them.** `normalizePath`/`normalizePathWin` in a traversal rule: they resolve `..` and erase exactly the signal you are looking for. And the **encoding** transformations (`base64Encode`, `urlEncode`, `hexEncode`) and the **parity** ones (`md5`, `sha1`) are not offered: they are no use for detection.
+
+**Cost.** The empty pipeline returns the value **borrowed** — it copies nothing and touches nothing — so a rule that declares no transformations behaves byte for byte as before and pays nothing. Only a non-empty pipeline transforms.
+
+**Diagnosis.** If a rule with transformations does not block what it should, set `RUST_LOG=backend=debug` and look at the audit event: the `"matched"` key carries the **transformed** value that was compared, which is what lets you see whether the pattern and the pipeline agree. If that key is absent from the event, either the rule declares no pipeline or it restricts none of the 14 fields.
+
+**A row that does not load.** If a row in `rules` holds an unresolvable specification — for example one edited by hand against the database — the rule does **not** enter the active-rule cache and startup emits an `error!` naming the rule and the token. This is deliberate: loading it with the transformations that are recognised — or with none — would make it decide something different from what its author wrote.

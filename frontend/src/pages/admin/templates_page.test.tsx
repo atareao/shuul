@@ -86,6 +86,9 @@ function makeRuleTemplate(
     x_request_id: null,
     is_tor: null,
     allow: true,
+    // El backend sirve siempre el campo (vacío cuando la plantilla no declara
+    // pipeline), así que el fixture lo declara como cualquier otro.
+    transformations: "",
     rate_limit_profile_id: null,
     rate_limit_profile_name: null,
     requires_fqdn: false,
@@ -628,6 +631,7 @@ interface CreatedRuleBody {
   name: string;
   pipeline: string;
   weight: number;
+  transformations: string;
 }
 
 /** Forma mínima del `fetch` sustituido: solo importan las opciones de cada
@@ -1074,5 +1078,92 @@ describe("barra de herramientas: buscador y filtros comparten una sola línea", 
     expect(wrapper).not.toBeNull();
     expect(input.style.width).not.toBe("100%");
     expect(wrapper?.style.width).not.toBe("100%");
+  });
+});
+
+// ─── La pipeline de transformaciones viaja con la plantilla aplicada ──────────
+// Escenario del delta `templates`: una plantilla declara su pipeline de
+// transformaciones y, al aplicarla, la regla creada la hereda. El campo es la
+// especificación canónica tal cual la sirve el backend: `Path traversal probes`
+// decodifica los escapes porcentuales y elimina los NUL antes de comparar, así
+// que su pipeline es `urlDecodeUni,removeNulls`. Las plantillas que no
+// declaran ninguna —todas las de Jail— viajan con la cadena vacía.
+
+describe("apply modal: la pipeline de transformaciones de la plantilla", () => {
+  afterEach(() => {
+    vi.unstubAllGlobals();
+  });
+
+  /** Sustituye `fetch` por un doble que responde 200 con un cuerpo vacío. */
+  function stubFetch(): FetchStub {
+    const fetchMock = vi.fn().mockResolvedValue({
+      ok: true,
+      status: 200,
+      json: async () => ({}),
+    });
+    vi.stubGlobal("fetch", fetchMock);
+    return fetchMock;
+  }
+
+  /**
+   * Aplica la única plantilla del catálogo servido y devuelve el cuerpo del
+   * `POST` que creó la regla.
+   */
+  async function applySingleTemplate(
+    user: UserEvent,
+    fetchStub: FetchStub,
+    template: RuleTemplate,
+  ): Promise<CreatedRuleBody> {
+    renderPage();
+    await expectRows(1);
+    await user.click(
+      screen.getByRole("button", { name: `Apply template ${template.name}` }),
+    );
+    const dialog = await screen.findByRole("dialog");
+    await user.click(
+      within(dialog).getByRole("button", { name: /create rule/i }),
+    );
+    await waitFor(() => expect(createdRuleBodies(fetchStub)).toHaveLength(1));
+    return createdRuleBodies(fetchStub)[0];
+  }
+
+  it("transfers the template's transformation pipeline to the created rule", async () => {
+    const user = userEvent.setup();
+    const fetchMock = stubFetch();
+
+    const template = makeRuleTemplate({
+      name: "Path traversal probes",
+      pipeline: "waf",
+      path: "\\.\\./",
+      transformations: "urlDecodeUni,removeNulls",
+    });
+    vi.mocked(loadData).mockResolvedValue({
+      status: 200,
+      data: { waf: [template], jail: [] },
+    });
+
+    const body = await applySingleTemplate(user, fetchMock, template);
+    expect(body.pipeline).toBe("waf");
+    expect(body.transformations).toBe("urlDecodeUni,removeNulls");
+  });
+
+  it("transfers an empty pipeline for a template that declares none", async () => {
+    const user = userEvent.setup();
+    const fetchMock = stubFetch();
+
+    const template = makeRuleTemplate({
+      name: "Scanner Aggressive",
+      pipeline: "jail",
+      rate_limit_profile_id: 9,
+      rate_limit_profile_name: "Scanner Aggressive",
+    });
+    vi.mocked(loadData).mockResolvedValue({
+      status: 200,
+      data: { waf: [], jail: [template] },
+    });
+
+    const body = await applySingleTemplate(user, fetchMock, template);
+    expect(body.pipeline).toBe("jail");
+    expect(body.transformations).toBe("");
   });
 });
