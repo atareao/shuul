@@ -30,4 +30,4 @@
 
 ## 5. Archivado
 
-- [ ] 5.1 `openspec archive public-landing-without-header` en rama propia, y actualizar el `Purpose` de `openspec/specs/app-shell/spec.md` —que hoy dice «la envoltura pública con su cabecera»—, porque el archivado no lo reescribe.
+- [x] 5.1 `openspec archive public-landing-without-header` en rama propia, y actualizar el `Purpose` de `openspec/specs/app-shell/spec.md` —que hoy dice «la envoltura pública con su cabecera»—, porque el archivado no lo reescribe.
