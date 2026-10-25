@@ -66,7 +66,6 @@ pub struct RuleInfoCounts {
 #[derive(Debug, Clone)]
 pub struct CacheRule {
     pub rule: Rule,
-    pub is_tor: Option<bool>,
     /// El conjunto ordenado de condiciones de la regla. En **producción**
     /// ([`CacheRule::read_all_active`]) se **lee** de la tabla `rule_conditions`
     /// ([`Rule::read_conditions`]), que es la fuente persistida del matcheo; la
@@ -104,7 +103,6 @@ impl CacheRule {
     fn from_rule_and_pipeline(rule: &Rule, transformations: &TransformationPipeline) -> Self {
         Self {
             rule: rule.clone(),
-            is_tor: rule.is_tor,
             conditions: condition::project(rule, transformations),
         }
     }
@@ -140,9 +138,9 @@ impl CacheRule {
     /// `rule_conditions`** ordenado por `position` ([`Rule::read_conditions`]), no
     /// proyectando los 14 campos en memoria: la tabla es la fuente persistida del
     /// matcheo. La proyección desde esas filas es equivalente a la de los 14
-    /// campos —la escritura usa la misma proyección—, de modo que la decisión y la
-    /// evidencia no cambian. `is_tor` sigue fuera del conjunto: es el predicado
-    /// booleano que [`CacheRule::evaluate`] combina al final.
+    /// campos y la columna `is_tor` —la escritura usa la misma proyección—, de
+    /// modo que la decisión y la evidencia no cambian. La colección `is_tor` es
+    /// una condición más del conjunto, evaluada en AND con las demás.
     ///
     /// Una fila irresoluble **no** hace que la función devuelva `Err`: se excluye
     /// y el resto de reglas se carga con normalidad.
@@ -160,11 +158,7 @@ impl CacheRule {
             match TransformationPipeline::parse(&rule.transformations) {
                 Ok(_) => {
                     let conditions = Rule::read_conditions(pool, rule.id).await?;
-                    rules.push(Self {
-                        is_tor: rule.is_tor,
-                        rule,
-                        conditions,
-                    });
+                    rules.push(Self { rule, conditions });
                 },
                 Err(parse_error) => {
                     error!(
@@ -185,9 +179,9 @@ impl CacheRule {
     /// evidencia.
     ///
     /// Es el **único** recorrido del matcheo: recorre el conjunto ordenado de
-    /// condiciones —cada una por [`CacheRule::condition_matches`]— más
-    /// `check_tor`, y de ese mismo recorrido salen tanto `matched` como la
-    /// evidencia. NO existe un segundo recorrido que reevalúe las condiciones:
+    /// condiciones —cada una por [`CacheRule::condition_matches`]— y de ese mismo
+    /// recorrido salen tanto `matched` como la evidencia. NO existe un segundo
+    /// recorrido que reevalúe las condiciones:
     /// dos recorridos divergirían y la evidencia dejaría de describir la decisión
     /// que de verdad se tomó (lo verifica la tarea 5.3 del change).
     ///
@@ -203,15 +197,6 @@ impl CacheRule {
     /// tomó.
     #[must_use]
     pub fn evaluate(&self, request: &NewRequest) -> MatchOutcome {
-        let check_tor = |rule_tor: Option<bool>, request_tor: Option<bool>| -> bool {
-            // If rule has is_tor = Some(true), only match when request is Tor.
-            // If rule has is_tor = None or Some(false), the filter is neutral.
-            if rule_tor == Some(true) {
-                request_tor == Some(true)
-            } else {
-                true
-            }
-        };
         // La evidencia se acumula en el MISMO recorrido que decide `matched`.
         let mut evidence = BTreeMap::new();
         // Si CUALQUIERA de las condiciones devuelve 'false', el metodo devuelve
@@ -223,7 +208,7 @@ impl CacheRule {
                 break;
             }
         }
-        let matched = fields_matched && check_tor(self.is_tor, request.is_tor);
+        let matched = fields_matched;
 
         MatchOutcome {
             matched,
@@ -263,6 +248,12 @@ impl CacheRule {
     ///   (`false`) y se emite un `debug!` que nombra el campo y la regla, de modo
     ///   que el descarte no sea mudo. La pipeline no se aplica a un valor ausente.
     ///
+    /// La colección booleana `is_tor` es la excepción: su valor no viene de
+    /// `request_value` sino de [`NewRequest::is_tor`]. Decide el operador:
+    /// `@truthy` cumple con `Some(true)`; `Some(false)` y `None` no cumplen y
+    /// emiten el `debug!`; cualquier otro operador sobre `is_tor` es incoherente y
+    /// no casa. La pipeline es vacía y la colección **no** anota evidencia.
+    ///
     /// Las colecciones que la regla **no** restringe no generan condición: su
     /// ausencia del conjunto es el brazo neutral. Con la pipeline vacía
     /// [`TransformationPipeline::apply`] devuelve
@@ -274,6 +265,46 @@ impl CacheRule {
         request: &NewRequest,
         evidence: &mut BTreeMap<String, String>,
     ) -> bool {
+        // La colección booleana `is_tor` no se resuelve por
+        // [`Collection::request_value`], que devuelve texto, sino desde el
+        // booleano de la petición. **Decide el operador**: `@truthy` cumple con
+        // `Some(true)`; `Some(false)` y la ausencia (`None`) NO cumplen y emiten
+        // el `debug!` que nombra la colección y la regla —la ausencia es el brazo
+        // fail-open, hermano del de los campos ausentes—. Cualquier **otro**
+        // operador sobre `is_tor` es incoherente con la colección —la autoría lo
+        // rechaza y la lectura lo descarta— y no casa, con diagnóstico, en vez de
+        // casar por el mero hecho de ser `IsTor`. La pipeline es vacía por
+        // contrato: un booleano no se transforma. La colección NO anota evidencia
+        // (decisión explícita, revisable): la forma del evento de auditoría no
+        // cambia.
+        if condition.collection == Collection::IsTor {
+            match &condition.operator {
+                Operator::Truthy => {
+                    if request.is_tor == Some(true) {
+                        return true;
+                    }
+                    debug!(
+                        field = condition.collection.field_name(),
+                        key = ?condition.key,
+                        rule_id = self.rule.id,
+                        rule_name = %self.rule.name,
+                        "condición no cumplida: la petición no es Tor (o no se sabe)"
+                    );
+                    return false;
+                },
+                Operator::Rx(_) => {
+                    debug!(
+                        field = condition.collection.field_name(),
+                        operator = condition.operator.name(),
+                        key = ?condition.key,
+                        rule_id = self.rule.id,
+                        rule_name = %self.rule.name,
+                        "condición no cumplida: operador incoherente con la colección booleana"
+                    );
+                    return false;
+                },
+            }
+        }
         let Some(value) = condition
             .collection
             .request_value(request, condition.key.as_deref())
@@ -290,6 +321,10 @@ impl CacheRule {
         let transformed = condition.pipeline.apply(value);
         let matched = match &condition.operator {
             Operator::Rx(regex) => regex.is_match(&transformed),
+            // `@truthy` solo es válido para `is_tor`, que se resolvió arriba: una
+            // combinación incoherente (operador booleano sobre una colección de
+            // texto) no casa. La lectura ya descarta esas filas.
+            Operator::Truthy => false,
         };
         if matched && !condition.pipeline.is_empty() {
             // La evidencia usa la clave compuesta `campo[clave]` para las
@@ -371,17 +406,19 @@ impl From<&Condition> for ConditionInput {
     /// `transformations`, `operator` y `pattern`—, de modo que el ciclo
     /// lectura→edición es estable: lo que se lee se puede reenviar tal cual.
     /// La pipeline viaja en su especificación canónica
-    /// ([`TransformationPipeline::spec`]) y el operador como `@rx`, que es el
-    /// único que admite esta fase.
+    /// ([`TransformationPipeline::spec`]) y el operador en su nombre canónico
+    /// ([`Operator::name`]): `@rx` con el patrón, o `@truthy` con patrón vacío
+    /// para `is_tor`.
     fn from(condition: &Condition) -> Self {
         let pattern = match &condition.operator {
             Operator::Rx(regex) => regex.as_str(),
+            Operator::Truthy => "",
         };
         Self {
             collection: condition.collection.field_name().to_string(),
             key: condition.key.clone(),
             transformations: condition.pipeline.spec().to_string(),
-            operator: Some("@rx".to_string()),
+            operator: Some(condition.operator.name().to_string()),
             pattern: pattern.to_string(),
         }
     }
@@ -401,8 +438,12 @@ impl ConditionInput {
     /// - la colección debe ser conocida ([`Collection::from_field_name`]);
     /// - la clave es obligatoria exactamente cuando la colección la exige
     ///   ([`Collection::requires_key`]) y no debe venir en caso contrario;
-    /// - el operador debe ser ausente o `@rx` (F2b-2a no admite otros);
-    /// - el patrón debe compilar con [`Regex::new`];
+    /// - el operador es ausente o `@rx` para las colecciones de texto, y
+    ///   `@truthy` **solo** para `is_tor` —con patrón vacío, sin clave y sin
+    ///   transformaciones—; `@truthy` fuera de `is_tor` y `@rx` sobre `is_tor`
+    ///   se rechazan;
+    /// - el patrón debe compilar con [`Regex::new`] (para `is_tor`/`@truthy` es
+    ///   vacío);
     /// - las transformaciones deben resolverse con
     ///   [`TransformationPipeline::parse`];
     /// - para `request_headers` la clave se normaliza a minúsculas, igual que
@@ -445,21 +486,52 @@ impl ConditionInput {
             None
         };
 
-        match self.operator.as_deref() {
-            None | Some("@rx") => {},
-            Some(other) => {
+        // El operador decide la forma de la condición. `@truthy` es el operador
+        // booleano y **solo** es válido para la colección `is_tor`, que exige
+        // patrón vacío, `key` ausente (ya validado arriba) y transformaciones
+        // vacías. Las colecciones de texto admiten ausente o `@rx`. Cualquier otro
+        // caso es `400`.
+        let operator = match (collection, self.operator.as_deref()) {
+            (Collection::IsTor, None | Some("@truthy")) => {
+                if !self.pattern.is_empty() {
+                    return Err(AppError::InvalidInput(
+                        "la condición «is_tor» con «@truthy» no admite patrón".to_string(),
+                    ));
+                }
+                if !self.transformations.is_empty() {
+                    return Err(AppError::InvalidInput(
+                        "la condición «is_tor» con «@truthy» no admite transformaciones"
+                            .to_string(),
+                    ));
+                }
+                Operator::Truthy
+            },
+            (Collection::IsTor, Some(other)) => {
                 return Err(AppError::InvalidInput(format!(
-                    "operador no admitido: «{other}»; en esta fase solo se admite «@rx»"
+                    "la colección «is_tor» exige el operador «@truthy», no «{other}»"
                 )));
             },
-        }
-
-        let regex = Regex::new(&self.pattern).map_err(|error| {
-            AppError::InvalidInput(format!(
-                "el patrón de la condición «{}» no compila: {error}",
-                collection.field_name()
-            ))
-        })?;
+            (_, Some("@truthy")) => {
+                return Err(AppError::InvalidInput(format!(
+                    "«@truthy» solo es válido para la colección «is_tor», no para «{}»",
+                    collection.field_name()
+                )));
+            },
+            (_, None | Some("@rx")) => {
+                let regex = Regex::new(&self.pattern).map_err(|error| {
+                    AppError::InvalidInput(format!(
+                        "el patrón de la condición «{}» no compila: {error}",
+                        collection.field_name()
+                    ))
+                })?;
+                Operator::Rx(regex)
+            },
+            (_, Some(other)) => {
+                return Err(AppError::InvalidInput(format!(
+                    "operador no admitido: «{other}»"
+                )));
+            },
+        };
 
         let pipeline = TransformationPipeline::parse(&self.transformations)
             .map_err(|error| AppError::InvalidInput(error.to_string()))?;
@@ -468,7 +540,7 @@ impl ConditionInput {
             collection,
             key,
             pipeline,
-            operator: Operator::Rx(regex),
+            operator,
         })
     }
 }
@@ -685,17 +757,19 @@ impl Rule {
                 .map_err(|error| AppError::Other(format!("demasiadas condiciones: {error}")))?;
             let pattern = match &condition.operator {
                 Operator::Rx(regex) => regex.as_str(),
+                Operator::Truthy => "",
             };
             query(
                 "INSERT INTO rule_conditions
                     (rule_id, position, collection, key, transformations, operator, pattern, negate)
-                 VALUES (?, ?, ?, ?, ?, '@rx', ?, 0)",
+                 VALUES (?, ?, ?, ?, ?, ?, ?, 0)",
             )
             .bind(rule.id)
             .bind(position)
             .bind(condition.collection.field_name())
             .bind(condition.key.as_deref())
             .bind(condition.pipeline.spec())
+            .bind(condition.operator.name())
             .bind(pattern)
             .execute(&mut *conn)
             .await?;
@@ -730,14 +804,21 @@ impl Rule {
     }
 
     /// Parsea una fila de `rule_conditions` en una [`Condition`], o `None` si la
-    /// fila debe descartarse (colección desconocida, patrón no compilable,
-    /// especificación de transformaciones no legible o clave ausente en una
-    /// colección que la exige).
+    /// fila debe descartarse (colección desconocida, operador incoherente con su
+    /// colección, patrón no compilable, especificación de transformaciones no
+    /// legible o clave ausente en una colección que la exige).
+    ///
+    /// La columna `operator` reconstruye el operador: `@rx` (para las colecciones
+    /// de texto) o `@truthy` (solo para `is_tor`). Una fila incoherente —`@truthy`
+    /// en una colección de texto, `is_tor` con operador distinto de `@truthy`,
+    /// `@truthy` con patrón, clave o transformaciones— se **descarta** con un
+    /// diagnóstico que la nombra, en vez de aplicarse mal: es el fallo seguro
+    /// frente al rollback a una imagen anterior, que no conoce `@truthy`.
     ///
     /// Es el criterio compartido por [`Rule::read_conditions`] y
     /// [`Rule::read_conditions_batch`]: una fila irresoluble se descarta con un
-    /// `warn!` que la nombra en vez de tumbar la carga. Reutilizarlo evita que
-    /// los dos caminos de lectura diverjan.
+    /// `warn!`/`debug!` que la nombra en vez de tumbar la carga. Reutilizarlo
+    /// evita que los dos caminos de lectura diverjan.
     fn condition_from_row(rule_id: i32, row: &SqliteRow) -> Option<Condition> {
         let collection_name: String = row.get("collection");
         let Some(collection) = Collection::from_field_name(&collection_name) else {
@@ -748,16 +829,63 @@ impl Rule {
             );
             return None;
         };
+        let operator_name: String = row.get("operator");
         let pattern: String = row.get("pattern");
-        let Ok(regex) = Regex::new(&pattern) else {
-            debug!(
-                rule_id,
-                collection = %collection_name,
-                "condición descartada: el patrón no compila"
-            );
-            return None;
-        };
         let transformations: String = row.get("transformations");
+        let key: Option<String> = row.try_get("key").ok().flatten();
+
+        let operator = match (collection, operator_name.as_str()) {
+            (Collection::IsTor, "@truthy") => {
+                if !pattern.is_empty() || key.is_some() || !transformations.is_empty() {
+                    warn!(
+                        rule_id,
+                        collection = %collection_name,
+                        "condición descartada: «@truthy» exige patrón vacío, sin clave y sin \
+                         transformaciones"
+                    );
+                    return None;
+                }
+                Operator::Truthy
+            },
+            (Collection::IsTor, other) => {
+                warn!(
+                    rule_id,
+                    collection = %collection_name,
+                    operator = %other,
+                    "condición descartada: la colección «is_tor» exige el operador «@truthy»"
+                );
+                return None;
+            },
+            (_, "@truthy") => {
+                warn!(
+                    rule_id,
+                    collection = %collection_name,
+                    "condición descartada: «@truthy» solo es válido para la colección «is_tor»"
+                );
+                return None;
+            },
+            (_, "@rx") => {
+                let Ok(regex) = Regex::new(&pattern) else {
+                    debug!(
+                        rule_id,
+                        collection = %collection_name,
+                        "condición descartada: el patrón no compila"
+                    );
+                    return None;
+                };
+                Operator::Rx(regex)
+            },
+            (_, other) => {
+                warn!(
+                    rule_id,
+                    collection = %collection_name,
+                    operator = %other,
+                    "condición descartada: operador desconocido"
+                );
+                return None;
+            },
+        };
+
         let pipeline = match TransformationPipeline::parse(&transformations) {
             Ok(pipeline) => pipeline,
             Err(error) => {
@@ -769,7 +897,6 @@ impl Rule {
                 return None;
             },
         };
-        let key: Option<String> = row.try_get("key").ok().flatten();
         if collection.requires_key() && key.is_none() {
             warn!(
                 rule_id,
@@ -782,7 +909,7 @@ impl Rule {
             collection,
             key,
             pipeline,
-            operator: Operator::Rx(regex),
+            operator,
         })
     }
 
@@ -806,7 +933,7 @@ impl Rule {
         pool: &SqlitePool,
         rule_id: i32,
     ) -> Result<Vec<Condition>, Error> {
-        let sql = "SELECT collection, key, transformations, pattern
+        let sql = "SELECT collection, key, transformations, operator, pattern
                    FROM rule_conditions WHERE rule_id = ? ORDER BY position ASC";
         let rows = query(sql).bind(rule_id).fetch_all(pool).await?;
 
@@ -841,7 +968,7 @@ impl Rule {
         // del lote, nunca una consulta por regla.
         let placeholders = vec!["?"; rule_ids.len()].join(", ");
         let sql = format!(
-            "SELECT rule_id, collection, key, transformations, pattern
+            "SELECT rule_id, collection, key, transformations, operator, pattern
              FROM rule_conditions WHERE rule_id IN ({placeholders})
              ORDER BY rule_id, position ASC"
         );
@@ -1327,7 +1454,7 @@ impl Rule {
 mod tests {
     use super::*;
     use crate::models::NewRequest;
-    use crate::models::condition::Collection;
+    use crate::models::condition::{Collection, Condition, Operator};
     use crate::models::transformation::TransformationPipeline;
     use chrono::Utc;
     use std::borrow::Cow;
@@ -1426,17 +1553,38 @@ mod tests {
         assert!(!rule.matches(&request));
     }
 
-    /// Escenario: CacheRule::from_rule() copies is_tor field
+    /// Escenario (migrado de `test_cache_rule_from_rule_copies_is_tor`): la
+    /// columna `is_tor` de la regla se proyecta a una condición `is_tor`/`@truthy`
+    /// en `CacheRule`, que es el modelo de condiciones que decide ahora.
+    ///
+    /// Intención preservada del test original: `Some(true)` produce el filtro Tor
+    /// activo, mientras que `None` y `Some(false)` no producen condición alguna
+    /// (neutrales).
     #[test]
-    fn test_cache_rule_from_rule_copies_is_tor() {
-        let rule = make_rule(Some(true));
-        assert_eq!(rule.is_tor, Some(true));
+    fn test_cache_rule_from_rule_projects_is_tor_condition() {
+        let tor = make_rule(Some(true));
+        assert!(
+            tor.conditions
+                .iter()
+                .any(|condition| condition.collection == Collection::IsTor
+                    && matches!(condition.operator, Operator::Truthy)),
+            "`is_tor = Some(true)` debe proyectarse a una condición `is_tor`/`@truthy`; \
+             condiciones: {:?}",
+            tor.conditions
+        );
 
-        let rule = make_rule(None);
-        assert_eq!(rule.is_tor, None);
-
-        let rule = make_rule(Some(false));
-        assert_eq!(rule.is_tor, Some(false));
+        for neutral in [None, Some(false)] {
+            let cache = make_rule(neutral);
+            assert!(
+                cache
+                    .conditions
+                    .iter()
+                    .all(|condition| condition.collection != Collection::IsTor),
+                "`is_tor = {neutral:?}` es neutral y no debe proyectar condición; \
+                 condiciones: {:?}",
+                cache.conditions
+            );
+        }
     }
 
     // ── missing-header-fields: matcher ──
@@ -1953,14 +2101,16 @@ mod tests {
                 Collection::ContentType => r.content_type = pattern,
                 Collection::AcceptLanguage => r.accept_language = pattern,
                 Collection::RequestId => r.x_request_id = pattern,
-                // Las cinco colecciones nuevas no se proyectan desde los 14
-                // campos del modo simple; este helper de caracterización solo
-                // recorre `Collection::ALL`, así que no las toca.
+                // Las cinco colecciones nuevas y la booleana no se proyectan
+                // desde los 14 campos del modo simple; este helper de
+                // caracterización solo recorre `Collection::ALL`, así que no las
+                // toca.
                 Collection::RequestCookies
                 | Collection::RequestHeaders
                 | Collection::ArgsGet
                 | Collection::RequestBasename
-                | Collection::RequestExtension => {},
+                | Collection::RequestExtension
+                | Collection::IsTor => {},
             }
         })
     }
@@ -1998,6 +2148,8 @@ mod tests {
                 },
                 Collection::RequestBasename => q.basename = value,
                 Collection::RequestExtension => q.extension = value,
+                // La colección booleana se resuelve desde `NewRequest::is_tor`.
+                Collection::IsTor => q.is_tor = Some(true),
             }
         })
     }
@@ -2101,10 +2253,11 @@ mod tests {
 
     /// caracterización: verifica el comportamiento final.
     ///
-    /// `is_tor` queda fuera del conjunto de condiciones: es el predicado
-    /// booleano que decide por sí solo, además de las condiciones de campo.
+    /// `is_tor` es una condición más del conjunto, evaluada en AND con las de los
+    /// campos: una regla con `is_tor` y `path` casa solo si el path casa **y** la
+    /// petición es Tor.
     #[test]
-    fn test_is_tor_stays_outside_the_condition_set() {
+    fn test_is_tor_is_a_condition_evaluated_with_the_others() {
         let rule = make_rule_with(|r| {
             r.is_tor = Some(true);
             r.path = Some("^/admin$".to_string());
@@ -2126,6 +2279,194 @@ mod tests {
         assert!(
             rule.matches(&tor),
             "la misma petición marcada como Tor sí casa"
+        );
+    }
+
+    // ── F2b-3: matcheo de la colección booleana `is_tor` ──
+
+    /// Construye una `CacheRule` con un conjunto de condiciones **explícito**, sin
+    /// proyectar los campos de la regla.
+    fn make_rule_with_conditions(conditions: Vec<Condition>) -> CacheRule {
+        let mut cache = make_rule(None);
+        cache.conditions = conditions;
+        cache
+    }
+
+    /// La condición booleana canónica de la colección `is_tor`.
+    fn tor_condition() -> Condition {
+        Condition {
+            collection: Collection::IsTor,
+            key: None,
+            pipeline: TransformationPipeline::default(),
+            operator: Operator::Truthy,
+        }
+    }
+
+    /// Escenario del delta: «Una petición de Tor cumple la condición» y sus
+    /// hermanos —`Some(false)` y `None` NO cumplen—.
+    #[test]
+    fn test_is_tor_condition_resolves_the_request_boolean() {
+        let rule = make_rule_with_conditions(vec![tor_condition()]);
+
+        assert!(
+            rule.matches(&make_request(Some(true))),
+            "`@truthy` cumple cuando el booleano de la petición es `true`"
+        );
+        assert!(
+            !rule.matches(&make_request(Some(false))),
+            "`@truthy` NO cumple con `Some(false)`"
+        );
+        assert!(
+            !rule.matches(&make_request(None)),
+            "`@truthy` NO cumple con `None`: la ausencia del dato es fail-open"
+        );
+    }
+
+    /// Escenario del delta: «La ausencia del dato es fail-open y diagnostica».
+    #[test]
+    fn test_is_tor_absence_emits_debug_naming_collection_and_rule() {
+        let mut rule = make_rule_with_conditions(vec![tor_condition()]);
+        rule.rule.id = 4242;
+        rule.rule.name = "regla-tor-diagnostico".to_string();
+
+        let log = capture_debug(|| {
+            let _ = rule.matches(&make_request(None));
+        });
+
+        assert!(
+            log.contains("is_tor"),
+            "el diagnóstico debe nombrar la colección; log capturado: {log:?}"
+        );
+        assert!(
+            log.contains("regla-tor-diagnostico") || log.contains("4242"),
+            "el diagnóstico debe identificar la regla; log capturado: {log:?}"
+        );
+    }
+
+    /// Escenario del delta: «La colección booleana no anota evidencia».
+    #[test]
+    fn test_is_tor_condition_does_not_annotate_evidence() {
+        let path_condition = Condition {
+            collection: Collection::Path,
+            key: None,
+            pipeline: TransformationPipeline::parse("lowercase").unwrap_or_default(),
+            operator: Operator::Rx(Regex::new(r"^/admin/\d+$").unwrap()),
+        };
+        let rule = make_rule_with_conditions(vec![path_condition, tor_condition()]);
+        let request = make_request_with(|q| {
+            q.path = Some("/ADMIN/42".to_string());
+            q.is_tor = Some(true);
+        });
+
+        let outcome = rule.evaluate(&request);
+        assert!(
+            outcome.matched,
+            "la petición Tor con `path` casado cumple la regla"
+        );
+        let evidence = outcome.evidence.expect("debe haber evidencia de `path`");
+        assert!(
+            evidence.contains_key("path"),
+            "la evidencia de `path` debe existir; evidencia: {evidence:?}"
+        );
+        assert!(
+            !evidence.contains_key("is_tor"),
+            "la colección booleana NO debe anotar evidencia; evidencia: {evidence:?}"
+        );
+    }
+
+    // ── F2b-3: validación de la autoría avanzada ──
+
+    /// Escenario: «Una condición de `is_tor` con `@truthy` se acepta».
+    #[test]
+    fn test_compile_accepts_is_tor_truthy() {
+        let input = ConditionInput {
+            collection: "is_tor".to_string(),
+            key: None,
+            transformations: String::new(),
+            operator: Some("@truthy".to_string()),
+            pattern: String::new(),
+        };
+
+        let condition = input.compile().expect("`is_tor`/`@truthy` debe aceptarse");
+
+        assert_eq!(condition.collection, Collection::IsTor);
+        assert!(
+            matches!(condition.operator, Operator::Truthy),
+            "la condición compilada debe llevar el operador booleano"
+        );
+        assert!(condition.key.is_none(), "no admite clave");
+        assert!(condition.pipeline.is_empty(), "no admite transformaciones");
+    }
+
+    /// Escenario: «`@truthy` en una colección de texto se rechaza (400)».
+    #[test]
+    fn test_compile_rejects_truthy_on_text_collection() {
+        let input = ConditionInput {
+            collection: "path".to_string(),
+            key: None,
+            transformations: String::new(),
+            operator: Some("@truthy".to_string()),
+            pattern: "^/admin$".to_string(),
+        };
+
+        assert!(
+            input.compile().is_err(),
+            "`@truthy` fuera de `is_tor` debe rechazarse"
+        );
+    }
+
+    /// Escenario: «`@rx` sobre `is_tor` se rechaza (400)».
+    #[test]
+    fn test_compile_rejects_rx_on_is_tor() {
+        let input = ConditionInput {
+            collection: "is_tor".to_string(),
+            key: None,
+            transformations: String::new(),
+            operator: Some("@rx".to_string()),
+            pattern: "true".to_string(),
+        };
+
+        assert!(
+            input.compile().is_err(),
+            "`@rx` sobre `is_tor` debe rechazarse"
+        );
+    }
+
+    /// Una condición de `is_tor` con `@truthy` exige patrón vacío, sin clave y sin
+    /// transformaciones.
+    #[test]
+    fn test_compile_rejects_truthy_with_pattern_key_or_transformations() {
+        let with_pattern = ConditionInput {
+            collection: "is_tor".to_string(),
+            key: None,
+            transformations: String::new(),
+            operator: Some("@truthy".to_string()),
+            pattern: "true".to_string(),
+        };
+        assert!(
+            with_pattern.compile().is_err(),
+            "`@truthy` exige patrón vacío"
+        );
+
+        let with_key = ConditionInput {
+            collection: "is_tor".to_string(),
+            key: Some("k".to_string()),
+            transformations: String::new(),
+            operator: Some("@truthy".to_string()),
+            pattern: String::new(),
+        };
+        assert!(with_key.compile().is_err(), "`@truthy` no admite clave");
+
+        let with_transformations = ConditionInput {
+            collection: "is_tor".to_string(),
+            key: None,
+            transformations: "lowercase".to_string(),
+            operator: Some("@truthy".to_string()),
+            pattern: String::new(),
+        };
+        assert!(
+            with_transformations.compile().is_err(),
+            "`@truthy` no admite transformaciones"
         );
     }
 }

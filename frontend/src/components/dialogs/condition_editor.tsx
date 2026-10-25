@@ -37,47 +37,53 @@ export default function ConditionEditor({
    * Una fila del editor de condiciones.
    *
    * La clave sólo se ofrece —y se exige— en las colecciones que la resuelven por
-   * nombre; en el resto no aparece. El operador se muestra como texto fijo: hoy
-   * `@rx` es el único, y ofrecerlo editable insinuaría que hay elección. La
-   * fila se envuelve en un `listitem` para que la lista entera sea anunciable
-   * como un conjunto ordenado.
+   * nombre; en el resto no aparece. El operador se muestra como texto fijo, fijado
+   * por la colección: `@rx` en las colecciones de texto y `@truthy` en la booleana
+   * `is_tor`, que además omite patrón, clave y transformaciones. Ofrecerlo
+   * editable insinuaría que hay elección. La fila se envuelve en un `listitem`
+   * para que la lista entera sea anunciable como un conjunto ordenado.
    */
-  const renderConditionRow = (row: DraftCondition) => (
-    <div role="listitem" key={row.uid}>
-      <Flex
-        vertical
-        gap="small"
-        style={{
-          border: "1px solid var(--color-border)",
-          borderRadius: 6,
-          padding: 12,
-          marginBottom: 8,
-        }}
-      >
-        <Flex align="center" gap="small">
-          <Text style={{ width: LABEL_WIDTH, flexShrink: 0 }}>
-            {t("Collection")}
-          </Text>
-          <Select<Collection>
-            style={{ width: "100%" }}
-            aria-label={t("Collection")}
-            value={row.collection}
-            showSearch
-            optionFilterProp="label"
-            onChange={(value) =>
-              onUpdate(row.uid, {
-                collection: value,
-                key: collectionRequiresKey(value) ? row.key : "",
-              })
-            }
-            disabled={disabled}
-            options={CONDITION_COLLECTIONS.map((collection) => ({
-              value: collection,
-              label: collection,
-            }))}
-          />
-        </Flex>
-        {collectionRequiresKey(row.collection) && (
+  const renderConditionRow = (row: DraftCondition) => {
+    // La colección booleana `is_tor` no se compara contra un patrón ni se
+    // resuelve por nombre: su fila fija `@truthy` y omite patrón, clave y
+    // transformaciones, que no tendrían sentido.
+    const isTor = row.collection === "is_tor";
+    return (
+      <div role="listitem" key={row.uid}>
+        <Flex
+          vertical
+          gap="small"
+          style={{
+            border: "1px solid var(--color-border)",
+            borderRadius: 6,
+            padding: 12,
+            marginBottom: 8,
+          }}
+        >
+          <Flex align="center" gap="small">
+            <Text style={{ width: LABEL_WIDTH, flexShrink: 0 }}>
+              {t("Collection")}
+            </Text>
+            <Select<Collection>
+              style={{ width: "100%" }}
+              aria-label={t("Collection")}
+              value={row.collection}
+              showSearch
+              optionFilterProp="label"
+              onChange={(value) =>
+                onUpdate(row.uid, {
+                  collection: value,
+                  key: collectionRequiresKey(value) ? row.key : "",
+                })
+              }
+              disabled={disabled}
+              options={CONDITION_COLLECTIONS.map((collection) => ({
+                value: collection,
+                label: collection,
+              }))}
+            />
+          </Flex>
+          {collectionRequiresKey(row.collection) && (
             <Flex align="start" gap="small">
               <Text style={{ width: LABEL_WIDTH, flexShrink: 0, paddingTop: 4 }}>
                 {t("Key")}
@@ -97,73 +103,76 @@ export default function ConditionEditor({
                 )}
               </Flex>
             </Flex>
-        )}
-        <Flex align="center" gap="small">
-          <Text style={{ width: LABEL_WIDTH, flexShrink: 0 }}>
-            {t("Pattern")}
-          </Text>
-          <Input
-            style={{ width: "100%" }}
-            aria-label={t("Pattern")}
-            value={row.pattern}
-            onChange={(e) =>
-              onUpdate(row.uid, { pattern: e.target.value })
-            }
-            disabled={disabled}
-          />
-        </Flex>
-        <Flex vertical gap={4}>
+          )}
+          {!isTor && (
+            <Flex align="center" gap="small">
+              <Text style={{ width: LABEL_WIDTH, flexShrink: 0 }}>
+                {t("Pattern")}
+              </Text>
+              <Input
+                style={{ width: "100%" }}
+                aria-label={t("Pattern")}
+                value={row.pattern}
+                onChange={(e) => onUpdate(row.uid, { pattern: e.target.value })}
+                disabled={disabled}
+              />
+            </Flex>
+          )}
+          {!isTor && (
+            <Flex vertical gap={4}>
+              <Flex align="center" gap="small">
+                <Text style={{ width: LABEL_WIDTH, flexShrink: 0 }}>
+                  {t("Transformations")}
+                </Text>
+                <Input
+                  style={{ width: "100%" }}
+                  aria-label={t("Transformations")}
+                  value={row.transformations}
+                  placeholder={t("Transformations")}
+                  onChange={(e) =>
+                    onUpdate(row.uid, { transformations: e.target.value })
+                  }
+                  disabled={disabled}
+                />
+              </Flex>
+              <Flex
+                wrap
+                gap="small"
+                role="group"
+                aria-label={t("Transformations")}
+                style={{ marginLeft: LABEL_WIDTH + 8 }}
+              >
+                {CANONICAL_TRANSFORMATIONS.map((token) => (
+                  <Button
+                    key={token}
+                    size="small"
+                    disabled={disabled}
+                    onClick={() => onInsertTransformation(row.uid, token)}
+                  >
+                    {token}
+                  </Button>
+                ))}
+              </Flex>
+            </Flex>
+          )}
           <Flex align="center" gap="small">
             <Text style={{ width: LABEL_WIDTH, flexShrink: 0 }}>
-              {t("Transformations")}
+              {t("Operator")}
             </Text>
-            <Input
-              style={{ width: "100%" }}
-              aria-label={t("Transformations")}
-              value={row.transformations}
-              placeholder={t("Transformations")}
-              onChange={(e) =>
-                onUpdate(row.uid, { transformations: e.target.value })
-              }
-              disabled={disabled}
-            />
+            <Text>{isTor ? "@truthy" : "@rx"}</Text>
           </Flex>
-          <Flex
-            wrap
-            gap="small"
-            role="group"
-            aria-label={t("Transformations")}
-            style={{ marginLeft: LABEL_WIDTH + 8 }}
+          <Button
+            size="small"
+            disabled={disabled}
+            onClick={() => onRemove(row.uid)}
+            style={{ alignSelf: "flex-end" }}
           >
-            {CANONICAL_TRANSFORMATIONS.map((token) => (
-              <Button
-                key={token}
-                size="small"
-                disabled={disabled}
-                onClick={() => onInsertTransformation(row.uid, token)}
-              >
-                {token}
-              </Button>
-            ))}
-          </Flex>
+            {t("Remove")}
+          </Button>
         </Flex>
-        <Flex align="center" gap="small">
-          <Text style={{ width: LABEL_WIDTH, flexShrink: 0 }}>
-            {t("Operator")}
-          </Text>
-          <Text>@rx</Text>
-        </Flex>
-        <Button
-          size="small"
-          disabled={disabled}
-          onClick={() => onRemove(row.uid)}
-          style={{ alignSelf: "flex-end" }}
-        >
-          {t("Remove")}
-        </Button>
-      </Flex>
-    </div>
-  );
+      </div>
+    );
+  };
 
   const modeSwitcher = (
     <Segmented<ConditionMode>
