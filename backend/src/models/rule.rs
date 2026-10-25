@@ -4,16 +4,17 @@
 //! Las reglas determinan si una petición HTTP debe ser permitida,
 //! denegada y/o almacenada en la base de datos.
 //!
-//! [`CacheRule`] envuelve una [`Rule`] con un [`Regex`] precompilado
-//! para la coincidencia rápida de URIs en memoria.
+//! [`CacheRule`] envuelve una [`Rule`] con su conjunto de condiciones
+//! precompilado —cada una con su patrón y la pipeline de transformaciones— para
+//! el matcheo rápido en memoria.
 
 use crate::constants::DEFAULT_LIMIT;
 use crate::constants::DEFAULT_PAGE;
 use crate::models::NewRequest;
+use crate::models::condition::{self, Condition, Operator};
 use crate::models::error::AppError;
 use crate::models::transformation::TransformationPipeline;
 use chrono::{DateTime, Utc};
-use regex::Regex;
 use serde::{Deserialize, Serialize};
 use sqlx::{Error, Row, SqlitePool, query, sqlite::SqliteRow};
 use std::collections::BTreeMap;
@@ -65,24 +66,11 @@ pub struct RuleInfoCounts {
 pub struct CacheRule {
     pub rule: Rule,
     pub is_tor: Option<bool>,
-    /// La pipeline de transformaciones precompilada desde `rule.transformations`.
-    /// El matcher la aplica al valor de la petición en
-    /// [`CacheRule::check_match`].
-    pub transformations: TransformationPipeline,
-    pub ip_address: Option<Regex>,
-    pub protocol: Option<Regex>,
-    pub fqdn: Option<Regex>,
-    pub path: Option<Regex>,
-    pub query: Option<Regex>,
-    pub city_name: Option<Regex>,
-    pub country_name: Option<Regex>,
-    pub country_code: Option<Regex>,
-    pub user_agent: Option<Regex>,
-    pub method: Option<Regex>,
-    pub referer: Option<Regex>,
-    pub content_type: Option<Regex>,
-    pub accept_language: Option<Regex>,
-    pub x_request_id: Option<Regex>,
+    /// El conjunto ordenado de condiciones proyectadas desde los 14 campos de
+    /// [`Rule`] ([`crate::models::condition::project`]). Un conjunto vacío es una
+    /// regla neutral; [`CacheRule::evaluate`] lo recorre en AND con
+    /// cortocircuito.
+    pub conditions: Vec<Condition>,
 }
 
 /// Resultado de evaluar una regla contra una petición.
@@ -108,81 +96,11 @@ impl CacheRule {
     /// Es el constructor común de [`CacheRule::from_rule`] y
     /// [`CacheRule::read_all_active`]; existe para que la especificación se
     /// parsee **una sola vez** por fila.
-    fn from_rule_and_pipeline(rule: &Rule, transformations: TransformationPipeline) -> Self {
+    fn from_rule_and_pipeline(rule: &Rule, transformations: &TransformationPipeline) -> Self {
         Self {
             rule: rule.clone(),
             is_tor: rule.is_tor,
-            transformations,
-            ip_address: rule
-                .ip_address
-                .as_ref()
-                .filter(|r| !r.is_empty())
-                .and_then(|r| Regex::new(r).ok()),
-            protocol: rule
-                .protocol
-                .as_ref()
-                .filter(|r| !r.is_empty())
-                .and_then(|r| Regex::new(r).ok()),
-            fqdn: rule
-                .fqdn
-                .as_ref()
-                .filter(|r| !r.is_empty())
-                .and_then(|r| Regex::new(r).ok()),
-            path: rule
-                .path
-                .as_ref()
-                .filter(|r| !r.is_empty())
-                .and_then(|r| Regex::new(r).ok()),
-            query: rule
-                .query
-                .as_ref()
-                .filter(|r| !r.is_empty())
-                .and_then(|r| Regex::new(r).ok()),
-            city_name: rule
-                .city_name
-                .as_ref()
-                .filter(|r| !r.is_empty())
-                .and_then(|r| Regex::new(r).ok()),
-            country_name: rule
-                .country_name
-                .as_ref()
-                .filter(|r| !r.is_empty())
-                .and_then(|r| Regex::new(r).ok()),
-            country_code: rule
-                .country_code
-                .as_ref()
-                .filter(|r| !r.is_empty())
-                .and_then(|r| Regex::new(r).ok()),
-            user_agent: rule
-                .user_agent
-                .as_ref()
-                .filter(|r| !r.is_empty())
-                .and_then(|r| Regex::new(r).ok()),
-            method: rule
-                .method
-                .as_ref()
-                .filter(|r| !r.is_empty())
-                .and_then(|r| Regex::new(r).ok()),
-            referer: rule
-                .referer
-                .as_ref()
-                .filter(|r| !r.is_empty())
-                .and_then(|r| Regex::new(r).ok()),
-            content_type: rule
-                .content_type
-                .as_ref()
-                .filter(|r| !r.is_empty())
-                .and_then(|r| Regex::new(r).ok()),
-            accept_language: rule
-                .accept_language
-                .as_ref()
-                .filter(|r| !r.is_empty())
-                .and_then(|r| Regex::new(r).ok()),
-            x_request_id: rule
-                .x_request_id
-                .as_ref()
-                .filter(|r| !r.is_empty())
-                .and_then(|r| Regex::new(r).ok()),
+            conditions: condition::project(rule, transformations),
         }
     }
 
@@ -200,7 +118,7 @@ impl CacheRule {
     pub fn from_rule(rule: &Rule) -> Self {
         Self::from_rule_and_pipeline(
             rule,
-            TransformationPipeline::parse(&rule.transformations).unwrap_or_default(),
+            &TransformationPipeline::parse(&rule.transformations).unwrap_or_default(),
         )
     }
 
@@ -228,7 +146,7 @@ impl CacheRule {
             let rule = Rule::from_row(row);
             match TransformationPipeline::parse(&rule.transformations) {
                 Ok(transformations) => {
-                    rules.push(Self::from_rule_and_pipeline(&rule, transformations));
+                    rules.push(Self::from_rule_and_pipeline(&rule, &transformations));
                 },
                 Err(parse_error) => {
                     error!(
@@ -248,21 +166,23 @@ impl CacheRule {
     /// Evalúa la regla contra una petición y devuelve el resultado **y** su
     /// evidencia.
     ///
-    /// Es el **único** recorrido del matcheo: recorre los 14 filtros —cada uno
-    /// por [`CacheRule::check_match`]— más `check_tor`, y de ese mismo recorrido
-    /// salen tanto `matched` como la evidencia. NO existe un segundo recorrido
-    /// que reevalúe los filtros: dos recorridos divergirían y la evidencia
-    /// dejaría de describir la decisión que de verdad se tomó (lo verifica la
-    /// tarea 5.3 del change).
+    /// Es el **único** recorrido del matcheo: recorre el conjunto ordenado de
+    /// condiciones —cada una por [`CacheRule::condition_matches`]— más
+    /// `check_tor`, y de ese mismo recorrido salen tanto `matched` como la
+    /// evidencia. NO existe un segundo recorrido que reevalúe las condiciones:
+    /// dos recorridos divergirían y la evidencia dejaría de describir la decisión
+    /// que de verdad se tomó (lo verifica la tarea 5.3 del change).
+    ///
+    /// El conjunto se evalúa en AND con **cortocircuito**: la primera condición
+    /// que no casa detiene el recorrido.
     ///
     /// La evidencia es `Some` **solo** cuando la regla **casa**, la pipeline es no
     /// vacía **y** la regla restringe al menos uno de los 14 campos: con la
     /// pipeline vacía nadie inserta nada en el mapa, y con la pipeline no vacía pero
-    /// sin ningún campo de los 14 restringido tampoco, porque el brazo `(None, _)`
-    /// de [`CacheRule::check_match`] es neutral y no inserta. Y una regla que **no**
-    /// casa devuelve `None` aunque algún campo evaluado antes del primero que falló
-    /// haya casado: la cadena `&&` cortocircuita y la evidencia debe describir la
-    /// decisión que de verdad se tomó.
+    /// sin ninguna condición tampoco. Y una regla que **no** casa devuelve `None`
+    /// aunque alguna condición evaluada antes de la primera que falló haya casado:
+    /// el cortocircuito hace que la evidencia describa la decisión que de verdad se
+    /// tomó.
     #[must_use]
     pub fn evaluate(&self, request: &NewRequest) -> MatchOutcome {
         let check_tor = |rule_tor: Option<bool>, request_tor: Option<bool>| -> bool {
@@ -276,86 +196,24 @@ impl CacheRule {
         };
         // La evidencia se acumula en el MISMO recorrido que decide `matched`.
         let mut evidence = BTreeMap::new();
-        // Si CUALQUIERA de las comprobaciones devuelve 'false', el metodo devuelve 'false'.
-        let matched = self.check_match(
-            "ip_address",
-            self.ip_address.as_ref(),
-            request.ip_address.as_ref(),
-            &mut evidence,
-        ) && self.check_match(
-            "protocol",
-            self.protocol.as_ref(),
-            request.protocol.as_ref(),
-            &mut evidence,
-        ) && self.check_match(
-            "fqdn",
-            self.fqdn.as_ref(),
-            request.fqdn.as_ref(),
-            &mut evidence,
-        ) && self.check_match(
-            "path",
-            self.path.as_ref(),
-            request.path.as_ref(),
-            &mut evidence,
-        ) && self.check_match(
-            "query",
-            self.query.as_ref(),
-            request.query.as_ref(),
-            &mut evidence,
-        ) && self.check_match(
-            "city_name",
-            self.city_name.as_ref(),
-            request.city_name.as_ref(),
-            &mut evidence,
-        ) && self.check_match(
-            "country_name",
-            self.country_name.as_ref(),
-            request.country_name.as_ref(),
-            &mut evidence,
-        ) && self.check_match(
-            "country_code",
-            self.country_code.as_ref(),
-            request.country_code.as_ref(),
-            &mut evidence,
-        ) && self.check_match(
-            "user_agent",
-            self.user_agent.as_ref(),
-            request.user_agent.as_ref(),
-            &mut evidence,
-        ) && self.check_match(
-            "method",
-            self.method.as_ref(),
-            request.method.as_ref(),
-            &mut evidence,
-        ) && self.check_match(
-            "referer",
-            self.referer.as_ref(),
-            request.referer.as_ref(),
-            &mut evidence,
-        ) && self.check_match(
-            "content_type",
-            self.content_type.as_ref(),
-            request.content_type.as_ref(),
-            &mut evidence,
-        ) && self.check_match(
-            "accept_language",
-            self.accept_language.as_ref(),
-            request.accept_language.as_ref(),
-            &mut evidence,
-        ) && self.check_match(
-            "x_request_id",
-            self.x_request_id.as_ref(),
-            request.x_request_id.as_ref(),
-            &mut evidence,
-        ) && check_tor(self.is_tor, request.is_tor);
+        // Si CUALQUIERA de las condiciones devuelve 'false', el metodo devuelve
+        // 'false' y se detiene: la cadena `&&` y este recorrido cortocircuitan igual.
+        let mut fields_matched = true;
+        for condition in &self.conditions {
+            if !self.condition_matches(condition, request, &mut evidence) {
+                fields_matched = false;
+                break;
+            }
+        }
+        let matched = fields_matched && check_tor(self.is_tor, request.is_tor);
 
         MatchOutcome {
             matched,
             // La clave solo existe cuando hay algo que decir: un mapa vacío se
             // colapsa a `None` para que el evento no lleve un objeto vacío. Y una
-            // regla que NO casa no emite evidencia aunque algún campo evaluado
-            // antes del primero que falló haya casado: la cadena `&&` cortocircuita
-            // y la evidencia debe describir la decisión que de verdad se tomó.
+            // regla que NO casa no emite evidencia aunque alguna condición evaluada
+            // antes de la primera que falló haya casado: el cortocircuito hace que
+            // la evidencia describa la decisión que de verdad se tomó.
             evidence: if !matched || evidence.is_empty() {
                 None
             } else {
@@ -373,54 +231,51 @@ impl CacheRule {
         self.evaluate(request).matched
     }
 
-    /// Evalúa un filtro de la regla contra el valor de la petición.
+    /// Evalúa **una** condición contra la petición.
     ///
     /// Es el **único** punto de decisión del matcheo: [`CacheRule::evaluate`] lo
-    /// invoca una vez por cada uno de los 14 filtros. El contrato de los tres
-    /// brazos es:
+    /// invoca una vez por cada condición del conjunto. El contrato es:
     ///
-    /// - `(Some(regex), Some(valor))` → la pipeline de transformaciones se aplica
-    ///   **al valor de la petición** —nunca al patrón, que se usa tal como se
-    ///   compiló— y el regex decide sobre el resultado. Si casa y la pipeline no
-    ///   está vacía, el valor **transformado** que se comparó queda en `evidence`
-    ///   bajo el nombre del campo;
-    /// - `(Some(_), None)` → la regla **restringe** el campo y la petición **no** lo
-    ///   trae: la condición NO se cumple (`false`) y se emite un `debug!` que nombra
-    ///   el campo y la regla, de modo que el descarte no sea mudo. La pipeline no se
-    ///   aplica a un valor ausente;
-    /// - `(None, _)` → la regla **no** restringe el campo: es **neutral** y se cumple
-    ///   traiga la petición valor o no, y no añade nada a `evidence`.
+    /// - la colección **está** en la petición → la pipeline de la condición se
+    ///   aplica **al valor de la petición** —nunca al patrón, que se usa tal como
+    ///   se compiló— y el operador decide sobre el resultado. Si casa y la
+    ///   pipeline no está vacía, el valor **transformado** que se comparó queda en
+    ///   `evidence` bajo [`crate::models::condition::Collection::field_name`];
+    /// - la colección **no** está en la petición → la condición NO se cumple
+    ///   (`false`) y se emite un `debug!` que nombra el campo y la regla, de modo
+    ///   que el descarte no sea mudo. La pipeline no se aplica a un valor ausente.
     ///
-    /// Con la pipeline vacía [`TransformationPipeline::apply`] devuelve
-    /// [`std::borrow::Cow::Borrowed`] y `evidence` no se toca: el matcheo queda byte
-    /// a byte como estaba.
-    fn check_match(
+    /// Las colecciones que la regla **no** restringe no generan condición: su
+    /// ausencia del conjunto es el brazo neutral. Con la pipeline vacía
+    /// [`TransformationPipeline::apply`] devuelve
+    /// [`std::borrow::Cow::Borrowed`] y `evidence` no se toca: el matcheo queda
+    /// byte a byte como estaba.
+    fn condition_matches(
         &self,
-        field: &str,
-        filter: Option<&Regex>,
-        value: Option<&String>,
+        condition: &Condition,
+        request: &NewRequest,
         evidence: &mut BTreeMap<String, String>,
     ) -> bool {
-        match (filter, value) {
-            (Some(regex), Some(v)) => {
-                let transformed = self.transformations.apply(v);
-                let matched = regex.is_match(&transformed);
-                if matched && !self.transformations.is_empty() {
-                    evidence.insert(field.to_string(), transformed.into_owned());
-                }
-                matched
-            },
-            (Some(_), None) => {
-                debug!(
-                    field = field,
-                    rule_id = self.rule.id,
-                    rule_name = %self.rule.name,
-                    "regla descartada: la petición no trae el campo restringido"
-                );
-                false
-            },
-            (None, _) => true,
+        let Some(value) = condition.collection.request_value(request) else {
+            debug!(
+                field = condition.collection.field_name(),
+                rule_id = self.rule.id,
+                rule_name = %self.rule.name,
+                "regla descartada: la petición no trae el campo restringido"
+            );
+            return false;
+        };
+        let transformed = condition.pipeline.apply(value);
+        let matched = match &condition.operator {
+            Operator::Rx(regex) => regex.is_match(&transformed),
+        };
+        if matched && !condition.pipeline.is_empty() {
+            evidence.insert(
+                condition.collection.field_name().to_string(),
+                transformed.into_owned(),
+            );
         }
+        matched
     }
 }
 
@@ -1035,6 +890,7 @@ impl Rule {
 mod tests {
     use super::*;
     use crate::models::NewRequest;
+    use crate::models::condition::Collection;
     use crate::models::transformation::TransformationPipeline;
     use chrono::Utc;
     use std::borrow::Cow;
@@ -1162,7 +1018,7 @@ mod tests {
     /// Escenario: Restricted field absent makes the rule not match.
     /// Regla con regex de `user_agent` y petición sin `user_agent` → NO casa.
     ///
-    /// El brazo `(Some(_), None)` de `check_match` devuelve `false`: la regla
+    /// El brazo `(Some(_), None)` de `condition_matches` devuelve `false`: la regla
     /// restringe el campo y la petición no lo trae.
     #[test]
     fn test_matches_restricted_field_absent_does_not_match() {
@@ -1436,7 +1292,10 @@ mod tests {
         // La pipeline vacía es la de la regla sin transformaciones y no copia el
         // valor: `apply` devuelve `Cow::Borrowed`.
         assert!(
-            rule_traversal.transformations.is_empty(),
+            rule_traversal
+                .conditions
+                .iter()
+                .all(|c| c.pipeline.is_empty()),
             "una regla sin `transformations` tiene la pipeline vacía"
         );
         let pipeline =
@@ -1621,6 +1480,188 @@ mod tests {
             evidence.get("path").map(String::as_str),
             Some("/admin"),
             "una regla que casa sí emite la evidencia de `path` con el valor transformado"
+        );
+    }
+
+    // ── waf-condition-ir (F2a): caracterización del contrato que la proyección
+    // a condiciones debe preservar ──
+    //
+    // Estos tests fijan la equivalencia observable de `evaluate()` sobre los 14
+    // campos: mismo `matched` y misma forma de la evidencia. Son caracterización:
+    // pasan ya en RED, porque la implementación de la proyección es GREEN.
+
+    /// Construye una `CacheRule` que restringe **solo** la colección indicada,
+    /// con el patrón `^match-me$` y la pipeline `lowercase`.
+    fn rule_restricting(collection: Collection) -> CacheRule {
+        make_rule_with(|r| {
+            r.transformations = "lowercase".to_string();
+            let pattern = Some("^match-me$".to_string());
+            match collection {
+                Collection::IpAddress => r.ip_address = pattern,
+                Collection::Protocol => r.protocol = pattern,
+                Collection::Fqdn => r.fqdn = pattern,
+                Collection::Path => r.path = pattern,
+                Collection::Query => r.query = pattern,
+                Collection::CityName => r.city_name = pattern,
+                Collection::CountryName => r.country_name = pattern,
+                Collection::CountryCode => r.country_code = pattern,
+                Collection::UserAgent => r.user_agent = pattern,
+                Collection::Method => r.method = pattern,
+                Collection::Referer => r.referer = pattern,
+                Collection::ContentType => r.content_type = pattern,
+                Collection::AcceptLanguage => r.accept_language = pattern,
+                Collection::RequestId => r.x_request_id = pattern,
+            }
+        })
+    }
+
+    /// Construye un `NewRequest` que trae la colección indicada con el valor dado.
+    fn request_carrying(collection: Collection, value: &str) -> NewRequest {
+        make_request_with(|q| {
+            let value = Some(value.to_string());
+            match collection {
+                Collection::IpAddress => q.ip_address = value,
+                Collection::Protocol => q.protocol = value,
+                Collection::Fqdn => q.fqdn = value,
+                Collection::Path => q.path = value,
+                Collection::Query => q.query = value,
+                Collection::CityName => q.city_name = value,
+                Collection::CountryName => q.country_name = value,
+                Collection::CountryCode => q.country_code = value,
+                Collection::UserAgent => q.user_agent = value,
+                Collection::Method => q.method = value,
+                Collection::Referer => q.referer = value,
+                Collection::ContentType => q.content_type = value,
+                Collection::AcceptLanguage => q.accept_language = value,
+                Collection::RequestId => q.x_request_id = value,
+            }
+        })
+    }
+
+    /// caracterización: pasa ya en RED.
+    ///
+    /// Escenario del delta: «La proyección de los 14 campos a condiciones es
+    /// total y equivalente». Para cada uno de los 14 campos, una regla que lo
+    /// restringe casa la petición que lo trae con el valor correcto —y emite su
+    /// evidencia bajo el nombre del campo— y no casa la que lo trae con otro.
+    #[test]
+    fn test_evaluate_is_equivalent_over_the_fourteen_fields() {
+        for collection in Collection::ALL {
+            let rule = rule_restricting(collection);
+
+            let matching = request_carrying(collection, "MATCH-ME");
+            let outcome = rule.evaluate(&matching);
+            assert!(
+                outcome.matched,
+                "la regla que restringe {collection:?} debe casar la petición que la trae"
+            );
+            let evidence = outcome.evidence.expect(
+                "con pipeline no vacía y un campo restringido que casa debe haber evidencia",
+            );
+            assert_eq!(
+                evidence.get(collection.field_name()).map(String::as_str),
+                Some("match-me"),
+                "la evidencia se anota bajo el nombre del campo, con el valor transformado"
+            );
+
+            let non_matching = request_carrying(collection, "otro");
+            let outcome = rule.evaluate(&non_matching);
+            assert!(
+                !outcome.matched,
+                "la regla que restringe {collection:?} no debe casar otro valor"
+            );
+            assert!(
+                outcome.evidence.is_none(),
+                "una regla que no casa no emite evidencia"
+            );
+        }
+    }
+
+    /// caracterización: pasa ya en RED.
+    ///
+    /// Regla que restringe `user_agent` con una petición sin `user_agent` → NO
+    /// casa y no hay evidencia. Es el brazo `(Some(_), None)` del matcheo que la
+    /// condición debe preservar.
+    #[test]
+    fn test_restricted_absent_field_does_not_match_and_has_no_evidence() {
+        let rule = make_rule_with(|r| r.user_agent = Some("curl".to_string()));
+        let request = make_request(None); // user_agent ausente
+
+        let outcome = rule.evaluate(&request);
+
+        assert!(
+            !outcome.matched,
+            "una regla que restringe `user_agent` no casa una petición sin esa cabecera"
+        );
+        assert!(
+            outcome.evidence.is_none(),
+            "sin match no hay evidencia; evidencia: {:?}",
+            outcome.evidence
+        );
+    }
+
+    /// caracterización: pasa ya en RED.
+    ///
+    /// La evidencia se anota bajo el nombre del campo con el valor
+    /// **transformado**; con la pipeline vacía no hay evidencia.
+    #[test]
+    fn test_evidence_key_is_the_field_name_and_value_is_transformed() {
+        let rule = make_rule_with(|r| {
+            r.transformations = "lowercase".to_string();
+            r.path = Some("^/admin$".to_string());
+        });
+        let request = make_request_with(|q| q.path = Some("/ADMIN".to_string()));
+
+        let outcome = rule.evaluate(&request);
+        assert!(
+            outcome.matched,
+            "tras `lowercase`, `/ADMIN` casa `^/admin$`"
+        );
+        let evidence = outcome.evidence.expect("debe haber evidencia");
+        assert_eq!(
+            evidence.get("path").map(String::as_str),
+            Some("/admin"),
+            "la evidencia se anota bajo `path` con el valor transformado"
+        );
+
+        let rule_empty = make_rule_with(|r| r.path = Some("^/admin$".to_string()));
+        let outcome_empty = rule_empty.evaluate(&make_request_with(|q| {
+            q.path = Some("/admin".to_string());
+        }));
+        assert!(outcome_empty.matched, "sin pipeline casa el valor crudo");
+        assert!(
+            outcome_empty.evidence.is_none(),
+            "con la pipeline vacía no se emite evidencia"
+        );
+    }
+
+    /// caracterización: pasa ya en RED.
+    ///
+    /// `is_tor` queda fuera del conjunto de condiciones: es el predicado
+    /// booleano que decide por sí solo, además de las condiciones de campo.
+    #[test]
+    fn test_is_tor_stays_outside_the_condition_set() {
+        let rule = make_rule_with(|r| {
+            r.is_tor = Some(true);
+            r.path = Some("^/admin$".to_string());
+        });
+
+        let non_tor = make_request_with(|q| {
+            q.path = Some("/admin".to_string());
+            q.is_tor = Some(false);
+        });
+        assert!(
+            !rule.matches(&non_tor),
+            "con `is_tor = Some(true)` una petición no-Tor no casa aunque `path` case"
+        );
+
+        let tor = make_request_with(|q| {
+            q.path = Some("/admin".to_string());
+            q.is_tor = Some(true);
+        });
+        assert!(
+            rule.matches(&tor),
+            "la misma petición marcada como Tor sí casa"
         );
     }
 }
