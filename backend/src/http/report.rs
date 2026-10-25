@@ -21,6 +21,7 @@ use crate::models::{
     RateLimiter, ReportPayload,
 };
 use axum::{Json, Router, extract::State, http::StatusCode, response::IntoResponse, routing};
+use std::collections::BTreeMap;
 use std::net::IpAddr;
 use std::sync::Arc;
 use tracing::{error, trace, warn};
@@ -86,7 +87,7 @@ pub async fn run_jail_pipeline(
     let is_tor = app_state.tor_service.is_exit_node(&payload.ip_address);
 
     // ── Step 1: Build NewRequest for matching ──
-    let request = NewRequest {
+    let mut request = NewRequest {
         ip_address: Some(payload.ip_address.clone()),
         protocol: payload.protocol.clone(),
         fqdn: payload.fqdn.clone(),
@@ -113,10 +114,19 @@ pub async fn run_jail_pipeline(
         content_type: payload.content_type.clone(),
         accept_language: payload.accept_language.clone(),
         x_request_id: payload.x_request_id.clone(),
+        // El payload del Jail no trae cookies ni el mapa completo de cabeceras;
+        // de él se derivan los argumentos del query, el basename y la extensión
+        // con `derive_path_collections`.
+        cookies: BTreeMap::new(),
+        headers: BTreeMap::new(),
+        query_args: BTreeMap::new(),
+        basename: None,
+        extension: None,
         is_tor,
         rule_id: None,
         created_at: chrono::Utc::now(),
     };
+    request.derive_path_collections();
 
     // ── Step 2: Match against ALL cached rules (fail2ban-style: múltiples jails) ──
     let matches: Vec<(i32, i32, String)> = {
@@ -579,13 +589,11 @@ mod tests {
         );
     }
 
-    // ── RED tests: status_code missing from audit_log! ──
+    // ── Tests: status_code missing from audit_log! ──
 
-    /// RED TEST: `cleared` audit log (no matches, line 129) should include `status_code`.
+    /// Test: `cleared` audit log (no matches, line 129) should include `status_code`.
     ///
-    /// Currently `audit_log!("cleared", ...)` at line 129 does NOT pass
-    /// `"status_code"`, so this test currently FAILS. After fixing the
-    /// production code, the log should contain `status_code = Some(404)`.
+    /// El log de auditoría de "cleared" debe incluir `status_code`.
     #[tokio::test]
     async fn test_cleared_log_includes_status_code() {
         let _guard = TEST_LOCK.lock().await;
@@ -613,11 +621,10 @@ mod tests {
         );
     }
 
-    /// RED TEST: `pending` audit log (threshold exceeded, line 220) should include `status_code`.
+    /// Test: `pending` audit log (threshold exceeded, line 220) should include `status_code`.
     ///
-    /// Configured with max_retry=1 so the first hit exceeds the threshold.
-    /// Currently `audit_log!("pending", ...)` at line 220 does NOT pass
-    /// `"status_code"`, so this test currently FAILS.
+    /// Configurado con max_retry=1 para que el primer golpe supere el umbral.
+    /// El log de "pending" debe incluir `status_code`.
     #[tokio::test]
     async fn test_pending_log_includes_status_code() {
         let _guard = TEST_LOCK.lock().await;
@@ -648,11 +655,10 @@ mod tests {
         );
     }
 
-    /// RED TEST: `registered` audit log (within threshold, line 257) should include `status_code`.
+    /// Test: `registered` audit log (within threshold, line 257) should include `status_code`.
     ///
-    /// Configured with max_retry=5 so the first hit is within the threshold.
-    /// Currently `audit_log!("registered", ...)` at line 257 does NOT pass
-    /// `"status_code"`, so this test currently FAILS.
+    /// Configurado con max_retry=5 para que el primer golpe esté dentro del umbral.
+    /// El log de "registered" debe incluir `status_code`.
     #[tokio::test]
     async fn test_registered_log_includes_status_code() {
         let _guard = TEST_LOCK.lock().await;
@@ -685,8 +691,8 @@ mod tests {
 
     // ── Task 5 (journald-reader): run_jail_pipeline extraction ──
 
-    /// RED TEST: `run_jail_pipeline` must be callable directly (no HTTP layer)
-    /// and must run the full Jail logic (rate limit recorded + audit log).
+    /// Test: `run_jail_pipeline` debe ser invocable directamente (sin capa HTTP)
+    /// y ejecutar toda la lógica del Jail (registro de rate limit + log de auditoría).
     #[tokio::test]
     async fn test_run_jail_pipeline_direct_records_and_logs() {
         let _guard = TEST_LOCK.lock().await;
@@ -716,8 +722,8 @@ mod tests {
         );
     }
 
-    /// RED TEST: `run_jail_pipeline` must create a PendingBan when the
-    /// threshold is exceeded — proving the ban path runs without HTTP.
+    /// Test: `run_jail_pipeline` debe crear un PendingBan cuando se supera el
+    /// umbral, demostrando que la ruta de baneo funciona sin HTTP.
     #[tokio::test]
     async fn test_run_jail_pipeline_direct_creates_pending_ban() {
         let app_state = build_jail_app_state(1).await; // max_retry=1 → exceeded immediately
@@ -740,8 +746,8 @@ mod tests {
         );
     }
 
-    /// RED TEST: `report_handler` must delegate to `run_jail_pipeline`,
-    /// producing exactly the same side effects as a direct call.
+    /// Test: `report_handler` debe delegar en `run_jail_pipeline`,
+    /// produciendo exactamente los mismos efectos secundarios que una llamada directa.
     #[tokio::test]
     async fn test_report_handler_delegates_to_run_jail_pipeline() {
         let _guard = TEST_LOCK.lock().await;
@@ -766,7 +772,7 @@ mod tests {
         );
     }
 
-    /// RED TEST: a direct call with no matching rules must log `cleared`.
+    /// Test: una llamada directa sin reglas que casen debe loguear `cleared`.
     #[tokio::test]
     async fn test_run_jail_pipeline_direct_no_match_logs_cleared() {
         let _guard = TEST_LOCK.lock().await;
@@ -797,8 +803,8 @@ mod tests {
     /// Escenario: The same semantics apply to both pipelines.
     ///
     /// Una regla Jail que filtra `user_agent` y un payload sin esa cabecera:
-    /// tras el GREEN la regla NO casa y NO se acumula ninguna observación de
-    /// rate limit. Hoy la regla casa (fail-open) y acumula → el test falla.
+    /// La regla NO casa y NO se acumula ninguna observación de rate limit.
+    /// (Comportamiento final esperado).
     ///
     /// Reutiliza el arnés `build_jail_app_state` sustituyendo sólo el filtro de
     /// la regla, para no montar un arnés nuevo.

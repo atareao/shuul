@@ -19,10 +19,17 @@ use regex::Regex;
 
 /// Colección de la petición que una condición restringe.
 ///
-/// Las 14 variantes corresponden, una a una, con los 14 campos de [`Rule`] y de
-/// [`NewRequest`]. El vocabulario es el de los campos actuales: adoptar el de
-/// colecciones de Coraza (`REQUEST_HEADERS`, `ARGS_GET`…) exigiría una
-/// extracción que hoy no existe.
+/// Las 19 variantes se dividen en dos grupos:
+/// - las 14 de campo, que corresponden, una a una, con los 14 campos de [`Rule`]
+///   y de [`NewRequest`];
+/// - las 5 nuevas (`RequestCookies`, `RequestHeaders`, `ArgsGet`,
+///   `RequestBasename`, `RequestExtension`), que se resuelven desde partes
+///   específicas de la petición y no desde los campos del modo simple.
+///
+/// Las colecciones con clave (cookies, cabeceras y argumentos del query)
+/// exigen el nombre del elemento; las demás no admiten clave. La relación con
+/// [`NewRequest`] es directa: cada variante sabe leer su valor de la petición
+/// mediante [`Collection::request_value`].
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Collection {
     IpAddress,
@@ -39,6 +46,16 @@ pub enum Collection {
     ContentType,
     AcceptLanguage,
     RequestId,
+    /// Cookies de la petición; exige clave (el nombre de la cookie).
+    RequestCookies,
+    /// Cabeceras de la petición; exige clave (el nombre en minúsculas).
+    RequestHeaders,
+    /// Argumentos del query string; exige clave (el nombre del parámetro).
+    ArgsGet,
+    /// Último segmento no vacío del path; no admite clave.
+    RequestBasename,
+    /// Extensión del basename; no admite clave.
+    RequestExtension,
 }
 
 impl Collection {
@@ -84,7 +101,22 @@ impl Collection {
             Self::ContentType => "content_type",
             Self::AcceptLanguage => "accept_language",
             Self::RequestId => "x_request_id",
+            Self::RequestCookies => "request_cookies",
+            Self::RequestHeaders => "request_headers",
+            Self::ArgsGet => "args_get",
+            Self::RequestBasename => "request_basename",
+            Self::RequestExtension => "request_extension",
         }
+    }
+
+    /// Indica si la colección exige clave (el nombre de la cookie, cabecera o
+    /// argumento) para resolver su valor.
+    #[must_use]
+    pub const fn requires_key(self) -> bool {
+        matches!(
+            self,
+            Self::RequestCookies | Self::RequestHeaders | Self::ArgsGet
+        )
     }
 
     /// La colección cuyo [`Collection::field_name`] es `name`.
@@ -111,13 +143,29 @@ impl Collection {
             "content_type" => Self::ContentType,
             "accept_language" => Self::AcceptLanguage,
             "x_request_id" => Self::RequestId,
+            "request_cookies" => Self::RequestCookies,
+            "request_headers" => Self::RequestHeaders,
+            "args_get" => Self::ArgsGet,
+            "request_basename" => Self::RequestBasename,
+            "request_extension" => Self::RequestExtension,
             _ => return None,
         })
     }
 
     /// El valor de la petición para esta colección, o `None` si no la trae.
+    ///
+    /// Recibe la clave opcional de la condición. Las colecciones con clave
+    /// (`RequestCookies`, `RequestHeaders`, `ArgsGet`) la usan para resolver
+    /// su valor; las colecciones sin clave ignoran el argumento. El brazo de
+    /// `RequestHeaders` normaliza la clave a minúsculas como defensa: aunque
+    /// `ConditionInput::compile` ya lo hace, una condición construida a mano con
+    /// mayúsculas también debe casar.
     #[must_use]
-    pub const fn request_value(self, request: &NewRequest) -> Option<&String> {
+    pub fn request_value<'a>(
+        self,
+        request: &'a NewRequest,
+        key: Option<&str>,
+    ) -> Option<&'a String> {
         match self {
             Self::IpAddress => request.ip_address.as_ref(),
             Self::Protocol => request.protocol.as_ref(),
@@ -133,6 +181,11 @@ impl Collection {
             Self::ContentType => request.content_type.as_ref(),
             Self::AcceptLanguage => request.accept_language.as_ref(),
             Self::RequestId => request.x_request_id.as_ref(),
+            Self::RequestCookies => key.and_then(|k| request.cookies.get(k)),
+            Self::RequestHeaders => key.and_then(|k| request.headers.get(&k.to_lowercase())),
+            Self::ArgsGet => key.and_then(|k| request.query_args.get(k)),
+            Self::RequestBasename => request.basename.as_ref(),
+            Self::RequestExtension => request.extension.as_ref(),
         }
     }
 
@@ -159,6 +212,13 @@ impl Collection {
             Self::ContentType => rule.content_type.as_ref(),
             Self::AcceptLanguage => rule.accept_language.as_ref(),
             Self::RequestId => rule.x_request_id.as_ref(),
+            // Las cinco colecciones nuevas no se proyectan desde los 14 campos
+            // del modo simple, así que nunca tienen patrón en una `Rule`.
+            Self::RequestCookies
+            | Self::RequestHeaders
+            | Self::ArgsGet
+            | Self::RequestBasename
+            | Self::RequestExtension => None,
         }
     }
 }
@@ -173,11 +233,17 @@ pub enum Operator {
     Rx(Regex),
 }
 
-/// Una condición ya compilada: la colección que restringe, la pipeline que se
-/// aplica a su valor y el operador con el que se compara.
+/// Una condición ya compilada.
+///
+/// Describe la colección que restringe, la clave opcional (obligatoria
+/// exactamente para las colecciones con clave), la pipeline que se aplica a su
+/// valor y el operador con el que se compara.
 #[derive(Debug, Clone)]
 pub struct Condition {
     pub collection: Collection,
+    /// El nombre de la cookie, la cabecera o el argumento para las colecciones
+    /// con clave; `None` para las que no la admiten.
+    pub key: Option<String>,
     pub pipeline: TransformationPipeline,
     pub operator: Operator,
 }
@@ -207,6 +273,7 @@ pub fn project(rule: &Rule, pipeline: &TransformationPipeline) -> Vec<Condition>
             let regex = Regex::new(pattern).ok()?;
             Some(Condition {
                 collection,
+                key: None,
                 pipeline: pipeline.clone(),
                 operator: Operator::Rx(regex),
             })
@@ -218,6 +285,7 @@ pub fn project(rule: &Rule, pipeline: &TransformationPipeline) -> Vec<Condition>
 mod tests {
     use super::*;
     use chrono::Utc;
+    use std::collections::BTreeMap;
 
     /// Una regla base sin ningún campo restringido ni `is_tor`.
     fn base_rule() -> Rule {
@@ -271,6 +339,11 @@ mod tests {
             content_type: Some("content_type".to_string()),
             accept_language: Some("accept_language".to_string()),
             x_request_id: Some("x_request_id".to_string()),
+            cookies: BTreeMap::new(),
+            headers: BTreeMap::new(),
+            query_args: BTreeMap::new(),
+            basename: None,
+            extension: None,
             is_tor: None,
             rule_id: None,
             created_at: Utc::now(),
@@ -294,6 +367,11 @@ mod tests {
             content_type: None,
             accept_language: None,
             x_request_id: None,
+            cookies: BTreeMap::new(),
+            headers: BTreeMap::new(),
+            query_args: BTreeMap::new(),
+            basename: None,
+            extension: None,
             is_tor: None,
             rule_id: None,
             created_at: Utc::now(),
@@ -310,11 +388,12 @@ mod tests {
 
     // ── 1.1 IR ──
 
-    /// infraestructura: pasa ya en RED
+    /// infraestructura: verifica la estructura de la condición
     #[test]
     fn test_condition_holds_collection_pipeline_and_operator() {
         let condition = Condition {
             collection: Collection::Path,
+            key: None,
             pipeline: TransformationPipeline::default(),
             operator: Operator::Rx(Regex::new(r"^/admin/\d+$").unwrap()),
         };
@@ -326,7 +405,7 @@ mod tests {
         );
     }
 
-    /// infraestructura: pasa ya en RED
+    /// infraestructura: verifica el orden de la cadena
     #[test]
     fn test_collection_all_has_fourteen_in_chain_order() {
         use Collection::UserAgent;
@@ -357,7 +436,7 @@ mod tests {
         );
     }
 
-    /// infraestructura: pasa ya en RED
+    /// infraestructura: verifica la clave de la evidencia
     #[test]
     fn test_field_name_is_the_evidence_key() {
         let expected: [(Collection, &str); 14] = [
@@ -386,7 +465,7 @@ mod tests {
         }
     }
 
-    /// infraestructura: pasa ya en RED
+    /// infraestructura: verifica el operador Rx
     #[test]
     fn test_operator_rx_decides_with_the_regex() {
         let operator = Operator::Rx(Regex::new(r"^/admin/\d+$").unwrap());
@@ -407,13 +486,13 @@ mod tests {
 
     // ── 1.1b request_value ──
 
-    /// infraestructura: pasa ya en RED
+    /// infraestructura: verifica la lectura por colección
     #[test]
     fn test_request_value_reads_each_collection() {
         let full = full_request();
         for collection in Collection::ALL {
             assert_eq!(
-                collection.request_value(&full).map(String::as_str),
+                collection.request_value(&full, None).map(String::as_str),
                 Some(collection.field_name()),
                 "la colección {collection:?} debe leer su campo de la petición"
             );
@@ -422,14 +501,14 @@ mod tests {
         let empty = empty_request();
         for collection in Collection::ALL {
             assert_eq!(
-                collection.request_value(&empty),
+                collection.request_value(&empty, None),
                 None,
                 "la colección {collection:?} debe ser `None` si la petición no la trae"
             );
         }
     }
 
-    // ── 1.2 Proyección (RED: falla porque `project` devuelve vacío) ──
+    // ── 1.2 Proyección ──
 
     #[test]
     fn test_project_maps_each_restricted_field_to_a_condition() {
@@ -505,7 +584,7 @@ mod tests {
         );
     }
 
-    /// caracterización: pasa ya en RED — el stub ya devuelve el conjunto vacío.
+    /// caracterización: una regla sin campos restringidos proyecta vacío.
     #[test]
     fn test_project_rule_without_restricted_fields_is_empty() {
         let rule = base_rule();
@@ -518,8 +597,7 @@ mod tests {
         );
     }
 
-    /// caracterización: pasa ya en RED — el stub devuelve vacío y una regex
-    /// inválida no debe proyectar condición.
+    /// caracterización: una regex inválida no proyecta condición.
     #[test]
     fn test_project_invalid_regex_is_not_projected() {
         let mut rule = base_rule();
@@ -533,7 +611,7 @@ mod tests {
         );
     }
 
-    // Verificación: el comportamiento ya existe (F2a GREEN); este test cubre el
+    // Verificación: la proyección es fiel sobre el catálogo completo de plantillas.
     // scenario «La equivalencia se sostiene sobre las plantillas».
     #[test]
     fn test_project_is_faithful_over_the_whole_template_catalog() {
@@ -649,10 +727,157 @@ mod tests {
             );
         }
 
+        // Las colecciones con clave también deben invertirse: sus nombres de
+        // campo viven en la misma tabla `rule_conditions` que las 14 históricas.
+        let keyed = [
+            Collection::RequestCookies,
+            Collection::RequestHeaders,
+            Collection::ArgsGet,
+            Collection::RequestBasename,
+            Collection::RequestExtension,
+        ];
+        for collection in keyed {
+            assert_eq!(
+                Collection::from_field_name(collection.field_name()),
+                Some(collection),
+                "`from_field_name` debe invertir `field_name` para {collection:?}"
+            );
+        }
+
         assert_eq!(
             Collection::from_field_name("REQUEST_URI_PATH"),
             None,
             "un nombre de campo desconocido debe devolver `None`"
+        );
+    }
+
+    // ── F2b-2a: vocabulario y matcheo de las colecciones nuevas ──
+
+    #[test]
+    fn test_new_collections_have_lowercase_field_names() {
+        assert_eq!(Collection::RequestCookies.field_name(), "request_cookies");
+        assert_eq!(Collection::RequestHeaders.field_name(), "request_headers");
+        assert_eq!(Collection::ArgsGet.field_name(), "args_get");
+        assert_eq!(Collection::RequestBasename.field_name(), "request_basename");
+        assert_eq!(
+            Collection::RequestExtension.field_name(),
+            "request_extension"
+        );
+    }
+
+    #[test]
+    fn test_requires_key_is_true_only_for_keyed_collections() {
+        assert!(Collection::RequestCookies.requires_key());
+        assert!(Collection::RequestHeaders.requires_key());
+        assert!(Collection::ArgsGet.requires_key());
+        assert!(!Collection::RequestBasename.requires_key());
+        assert!(!Collection::RequestExtension.requires_key());
+        for c in Collection::ALL {
+            assert!(!c.requires_key(), "las 14 actuales no exigen clave");
+        }
+    }
+
+    /// El regex es el sujeto bajo prueba: se usa `^abc$` de forma deliberada.
+    #[allow(clippy::trivial_regex)]
+    #[test]
+    fn test_cookie_condition_matches_by_name() {
+        use crate::models::CacheRule;
+
+        let condition = Condition {
+            collection: Collection::RequestCookies,
+            key: Some("PHPSESSID".to_string()),
+            pipeline: TransformationPipeline::default(),
+            operator: Operator::Rx(Regex::new("^abc$").unwrap()),
+        };
+        let cache_rule = CacheRule {
+            rule: base_rule(),
+            is_tor: None,
+            conditions: vec![condition],
+        };
+        let mut request = empty_request();
+        request
+            .cookies
+            .insert("PHPSESSID".to_string(), "abc".to_string());
+
+        let outcome = cache_rule.evaluate(&request);
+        assert!(
+            outcome.matched,
+            "la condición de cookie debe casar cuando la petición trae la cookie con la clave"
+        );
+    }
+
+    /// El regex es el sujeto bajo prueba: se usa `^abc$` de forma deliberada.
+    #[allow(clippy::trivial_regex)]
+    #[test]
+    fn test_missing_cookie_does_not_match() {
+        use crate::models::CacheRule;
+
+        let condition = Condition {
+            collection: Collection::RequestCookies,
+            key: Some("PHPSESSID".to_string()),
+            pipeline: TransformationPipeline::default(),
+            operator: Operator::Rx(Regex::new("^abc$").unwrap()),
+        };
+        let cache_rule = CacheRule {
+            rule: base_rule(),
+            is_tor: None,
+            conditions: vec![condition],
+        };
+        let request = empty_request();
+
+        let outcome = cache_rule.evaluate(&request);
+        assert!(
+            !outcome.matched,
+            "una cookie ausente no debe casar la condición"
+        );
+    }
+
+    /// El regex es el sujeto bajo prueba: se usan `^bearer x$` y `^secret$` de forma deliberada.
+    #[allow(clippy::trivial_regex)]
+    #[test]
+    fn test_evidence_uses_composite_key() {
+        use crate::models::CacheRule;
+
+        let pipeline = TransformationPipeline::parse("lowercase").unwrap_or_default();
+        let conditions = vec![
+            Condition {
+                collection: Collection::RequestHeaders,
+                key: Some("authorization".to_string()),
+                pipeline: pipeline.clone(),
+                operator: Operator::Rx(Regex::new("^bearer x$").unwrap()),
+            },
+            Condition {
+                collection: Collection::RequestHeaders,
+                key: Some("x-api-key".to_string()),
+                pipeline,
+                operator: Operator::Rx(Regex::new("^secret$").unwrap()),
+            },
+        ];
+        let cache_rule = CacheRule {
+            rule: base_rule(),
+            is_tor: None,
+            conditions,
+        };
+        let mut request = empty_request();
+        request
+            .headers
+            .insert("authorization".to_string(), "Bearer X".to_string());
+        request
+            .headers
+            .insert("x-api-key".to_string(), "SECRET".to_string());
+
+        let outcome = cache_rule.evaluate(&request);
+        assert!(outcome.matched, "las dos cabeceras deben casar");
+        let evidence = outcome
+            .evidence
+            .expect("con pipeline no vacía debe haber evidencia");
+        assert!(
+            evidence.contains_key("request_headers[authorization]"),
+            "la evidencia debe usar la clave compuesta para authorization"
+        );
+        assert!(
+            evidence.contains_key("request_headers[x-api-key]"),
+            "la evidencia debe usar la clave compuesta para x-api-key"
         );
     }
 }

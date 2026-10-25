@@ -43,8 +43,9 @@ pub use report::ReportPayload;
 pub use response::{ApiResponse, EmptyResponse, PagedResponse, Pagination};
 #[allow(unused_imports)]
 pub use rule::{
-    CacheRule, JAIL_PIPELINE, MatchOutcome, NewRule, ReadRuleParams, Rule, UpdateRule,
-    WAF_PIPELINE, normalized_transformations, normalized_weight, validate_pipeline,
+    CacheRule, ConditionInput, JAIL_PIPELINE, MatchOutcome, NewRule, ReadRuleParams, Rule,
+    UpdateRule, WAF_PIPELINE, compile_conditions, normalized_transformations, normalized_weight,
+    validate_pipeline,
 };
 pub use settings::Settings;
 pub use stats::StatsCollector;

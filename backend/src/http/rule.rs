@@ -5,10 +5,12 @@
 
 use crate::constants::DEFAULT_LIMIT;
 use crate::constants::DEFAULT_PAGE;
+use crate::models::condition::Condition;
 use crate::models::error::AppError;
 use crate::models::{
-    ApiResponse, AppState, Data, NewRule, PagedResponse, Pagination, ReadRuleParams, Rule,
-    UpdateRule, WAF_PIPELINE, normalized_transformations, normalized_weight, validate_pipeline,
+    ApiResponse, AppState, ConditionInput, Data, NewRule, PagedResponse, Pagination,
+    ReadRuleParams, Rule, UpdateRule, WAF_PIPELINE, compile_conditions, normalized_transformations,
+    normalized_weight, validate_pipeline,
 };
 use axum::{
     Json, Router,
@@ -17,9 +19,52 @@ use axum::{
     response::IntoResponse,
     routing,
 };
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
+use sqlx::SqlitePool;
 use std::sync::Arc;
 use tracing::debug;
+
+/// Representación de una regla en las respuestas de la API.
+///
+/// Aplana todos los campos de [`Rule`] en el nivel superior —la forma que ya
+/// consumían los clientes— y añade `conditions`, el conjunto persistido de
+/// condiciones. Es aditivo: los clientes actuales ignoran el campo nuevo.
+#[derive(Debug, Serialize)]
+struct RuleResponse {
+    #[serde(flatten)]
+    rule: Rule,
+    conditions: Vec<ConditionInput>,
+}
+
+/// Construye la representación de cada regla con sus condiciones.
+///
+/// Carga las condiciones de **todas** las reglas con **una sola** consulta por
+/// lote ([`Rule::read_conditions_batch`]), nunca una por regla. Es el camino
+/// común del listado y la exportación, y también de la creación y la edición,
+/// que recargan así el conjunto recién escrito.
+///
+/// # Errors
+///
+/// Devuelve un error de base de datos si la consulta por lote falla.
+async fn responses_for_rules(
+    pool: &SqlitePool,
+    rules: Vec<Rule>,
+) -> Result<Vec<RuleResponse>, AppError> {
+    let ids: Vec<i32> = rules.iter().map(|rule| rule.id).collect();
+    let mut conditions_by_rule = Rule::read_conditions_batch(pool, &ids).await?;
+    Ok(rules
+        .into_iter()
+        .map(|rule| {
+            let conditions = conditions_by_rule
+                .remove(&rule.id)
+                .unwrap_or_default()
+                .iter()
+                .map(ConditionInput::from)
+                .collect();
+            RuleResponse { rule, conditions }
+        })
+        .collect())
+}
 
 pub fn rule_router() -> Router<Arc<AppState>> {
     Router::new()
@@ -49,11 +94,17 @@ pub async fn create_handler(
     debug!("Rule created: {:?}", &rule);
     app_state.reload_rules().await?;
     debug!("Rules cache reloaded after create");
+    // La respuesta incluye el conjunto de condiciones recién persistido: se
+    // recarga con el helper por lote, igual que la lectura y la exportación.
+    let response = responses_for_rules(&app_state.pool, vec![rule])
+        .await?
+        .pop()
+        .ok_or_else(|| AppError::Other("regla creada sin representación".to_string()))?;
     // Propagar error de serialización con `?`
     Ok(ApiResponse::new(
         StatusCode::CREATED,
         "Rule created",
-        Data::Some(serde_json::to_value(rule)?),
+        Data::Some(serde_json::to_value(response)?),
     ))
 }
 
@@ -77,10 +128,14 @@ pub async fn read_handler(
     if let Some(id) = params.id {
         let rule = Rule::read(&app_state.pool, id).await?;
         debug!("Rule: {:?}", rule);
+        let response = responses_for_rules(&app_state.pool, vec![rule])
+            .await?
+            .pop()
+            .ok_or_else(|| AppError::Other("regla leída sin representación".to_string()))?;
         Ok(ApiResponse::new(
             StatusCode::OK,
             "Rule",
-            Data::Some(serde_json::to_value(rule)?),
+            Data::Some(serde_json::to_value(response)?),
         )
         .into_response())
     } else {
@@ -105,10 +160,12 @@ pub async fn read_handler(
                 None
             },
         };
+        // Una sola carga por lote para todas las reglas de la página.
+        let responses = responses_for_rules(&app_state.pool, records).await?;
         Ok(PagedResponse::new(
             StatusCode::OK,
             "Records",
-            Data::Some(serde_json::to_value(records)?),
+            Data::Some(serde_json::to_value(responses)?),
             pagination,
         )
         .into_response())
@@ -186,10 +243,15 @@ pub async fn update_handler(
     let rule = Rule::update(&app_state.pool, rule).await?;
     app_state.reload_rules().await?;
     debug!("Rules cache reloaded after update");
+    // La respuesta incluye el conjunto de condiciones recién reemplazado.
+    let response = responses_for_rules(&app_state.pool, vec![rule])
+        .await?
+        .pop()
+        .ok_or_else(|| AppError::Other("regla actualizada sin representación".to_string()))?;
     Ok(ApiResponse::new(
         StatusCode::OK,
         "Rule updated",
-        Data::Some(serde_json::to_value(rule)?),
+        Data::Some(serde_json::to_value(response)?),
     ))
 }
 
@@ -237,10 +299,12 @@ pub async fn export_handler(
     debug!("Exporting all rules");
     let rules = Rule::read_all(&app_state.pool).await?;
     debug!("Exporting {} rules", rules.len());
+    // Una sola carga por lote de las condiciones de todas las reglas exportadas.
+    let responses = responses_for_rules(&app_state.pool, rules).await?;
     Ok(ApiResponse::new(
         StatusCode::OK,
         "Rules exported",
-        Data::Some(serde_json::to_value(rules)?),
+        Data::Some(serde_json::to_value(responses)?),
     ))
 }
 
@@ -248,6 +312,82 @@ pub async fn export_handler(
 #[derive(Debug, Deserialize)]
 pub struct ImportPayload {
     pub rules: Vec<NewRule>,
+}
+
+/// Sentencia de UPSERT por `name` que usa la importación.
+///
+/// Vive fuera de [`import_handler`] para no alargar la función: el `INSERT`
+/// inserta o, en conflicto por `name`, actualiza todos los campos de la versión
+/// importada. `RETURNING id` da el id real en ambas ramas.
+const IMPORT_RULE_SQL: &str = r"INSERT INTO rules (
+            name, description, weight, mode, pipeline, allow, is_tor,
+            ip_address, protocol, fqdn, path, query,
+            city_name, country_name, country_code,
+            user_agent, method, referer, content_type, accept_language, x_request_id,
+            rate_limit_profile_id, active, created_at, updated_at, transformations
+        ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10,
+                  $11, $12, $13, $14, $15, $16, $17, $18, $19, $20,
+                  $21, $22, $23, $24, $25, $26)
+        ON CONFLICT (name) DO UPDATE SET
+            description = EXCLUDED.description,
+            weight = EXCLUDED.weight,
+            mode = EXCLUDED.mode,
+            pipeline = EXCLUDED.pipeline,
+            transformations = EXCLUDED.transformations,
+            allow = EXCLUDED.allow,
+            is_tor = EXCLUDED.is_tor,
+            ip_address = EXCLUDED.ip_address,
+            protocol = EXCLUDED.protocol,
+            fqdn = EXCLUDED.fqdn,
+            path = EXCLUDED.path,
+            query = EXCLUDED.query,
+            city_name = EXCLUDED.city_name,
+            country_name = EXCLUDED.country_name,
+            country_code = EXCLUDED.country_code,
+            user_agent = EXCLUDED.user_agent,
+            method = EXCLUDED.method,
+            referer = EXCLUDED.referer,
+            content_type = EXCLUDED.content_type,
+            accept_language = EXCLUDED.accept_language,
+            x_request_id = EXCLUDED.x_request_id,
+            rate_limit_profile_id = EXCLUDED.rate_limit_profile_id,
+            active = EXCLUDED.active,
+            updated_at = EXCLUDED.updated_at
+        RETURNING id";
+
+/// Una entrada de importación ya validada y compilada, lista para el UPSERT.
+struct ValidatedImportRule {
+    pipeline: String,
+    transformations: String,
+    weight: i32,
+    /// El conjunto compilado de condiciones; `None` = modo simple.
+    compiled: Option<Vec<Condition>>,
+}
+
+/// Valida y compila una entrada de importación **antes** de tocar la base de datos.
+///
+/// Valida el pipeline, canoniza la especificación de transformaciones, coerciona
+/// el peso y compila las condiciones. Es el punto común de rechazo de la
+/// importación: si algo falla, la entrada no se almacena y no aborta el resto.
+///
+/// # Errors
+///
+/// Devuelve [`AppError::InvalidInput`] si el pipeline no se admite, si la
+/// especificación de transformaciones no se resuelve o si alguna condición no
+/// compila.
+fn validate_import_rule(rule: &NewRule) -> Result<ValidatedImportRule, AppError> {
+    let pipeline = rule.pipeline.as_deref().unwrap_or(WAF_PIPELINE);
+    validate_pipeline(pipeline)?;
+    let transformations =
+        normalized_transformations(rule.transformations.as_deref().unwrap_or_default())?;
+    let weight = normalized_weight(pipeline, rule.weight.unwrap_or(100));
+    let compiled = compile_conditions(rule.conditions.as_deref())?;
+    Ok(ValidatedImportRule {
+        pipeline: pipeline.to_string(),
+        transformations,
+        weight,
+        compiled,
+    })
 }
 
 /// Registra en `rejected` una entrada de la importación que no se almacenó.
@@ -299,72 +439,32 @@ pub async fn import_handler(
 
     for rule in &payload.rules {
         let now = chrono::Utc::now();
-        // El pipeline se valida antes de tocar la base de datos y el peso pasa por
-        // el único punto de coerción: una regla de Jail se importa siempre con peso
-        // 0, traiga lo que traiga el JSON.
-        let pipeline = rule.pipeline.as_deref().unwrap_or(WAF_PIPELINE);
-        if let Err(error) = validate_pipeline(pipeline) {
-            reject_import(&mut rejected, &rule.name, &error);
-            continue;
-        }
-        // La especificación de transformaciones se valida y se canoniza también antes
-        // de tocar la base de datos.
-        let transformations =
-            match normalized_transformations(rule.transformations.as_deref().unwrap_or_default()) {
-                Ok(transformations) => transformations,
-                Err(error) => {
-                    reject_import(&mut rejected, &rule.name, &error);
-                    continue;
-                },
-            };
-        let weight = normalized_weight(pipeline, rule.weight.unwrap_or(100));
-        let sql = r"INSERT INTO rules (
-            name, description, weight, mode, pipeline, allow,
-            ip_address, protocol, fqdn, path, query,
-            city_name, country_name, country_code,
-            user_agent, method, referer, content_type, accept_language, x_request_id,
-            rate_limit_profile_id, active, created_at, updated_at, transformations
-        ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10,
-                  $11, $12, $13, $14, $15, $16, $17, $18, $19, $20,
-                  $21, $22, $23, $24, $25)
-        ON CONFLICT (name) DO UPDATE SET
-            description = EXCLUDED.description,
-            weight = EXCLUDED.weight,
-            mode = EXCLUDED.mode,
-            pipeline = EXCLUDED.pipeline,
-            transformations = EXCLUDED.transformations,
-            allow = EXCLUDED.allow,
-            ip_address = EXCLUDED.ip_address,
-            protocol = EXCLUDED.protocol,
-            fqdn = EXCLUDED.fqdn,
-            path = EXCLUDED.path,
-            query = EXCLUDED.query,
-            city_name = EXCLUDED.city_name,
-            country_name = EXCLUDED.country_name,
-            country_code = EXCLUDED.country_code,
-            user_agent = EXCLUDED.user_agent,
-            method = EXCLUDED.method,
-            referer = EXCLUDED.referer,
-            content_type = EXCLUDED.content_type,
-            accept_language = EXCLUDED.accept_language,
-            x_request_id = EXCLUDED.x_request_id,
-            rate_limit_profile_id = EXCLUDED.rate_limit_profile_id,
-            active = EXCLUDED.active,
-            updated_at = EXCLUDED.updated_at
-        RETURNING id";
+        // Valida pipeline, transformaciones, peso y condiciones ANTES de tocar la
+        // base de datos. Una entrada inválida se rechaza sin abortar el resto.
+        let ValidatedImportRule {
+            pipeline,
+            transformations,
+            weight,
+            compiled,
+        } = match validate_import_rule(rule) {
+            Ok(validated) => validated,
+            Err(error) => {
+                reject_import(&mut rejected, &rule.name, &error);
+                continue;
+            },
+        };
 
-        // El UPSERT de la fila y el **reemplazo** de sus condiciones comparten
-        // transacción. `RETURNING id` da el id real tanto en el INSERT como en la
-        // rama `DO UPDATE` del `ON CONFLICT`, y con él se reemplaza el conjunto
-        // persistido de condiciones de la versión importada.
+        // El UPSERT de la fila y el reemplazo de sus condiciones comparten
+        // transacción: `RETURNING id` da el id real en INSERT y en DO UPDATE.
         let mut tx = app_state.pool.begin().await?;
-        let rule_id: i32 = sqlx::query_scalar(sql)
+        let rule_id: i32 = sqlx::query_scalar(IMPORT_RULE_SQL)
             .bind(&rule.name)
             .bind(rule.description.as_deref().unwrap_or(""))
             .bind(weight)
             .bind(rule.mode.as_deref().unwrap_or("log_only"))
-            .bind(pipeline)
+            .bind(&pipeline)
             .bind(rule.allow.unwrap_or(true))
+            .bind(rule.is_tor.unwrap_or(false))
             .bind(&rule.ip_address)
             .bind(&rule.protocol)
             .bind(&rule.fqdn)
@@ -383,10 +483,10 @@ pub async fn import_handler(
             .bind(rule.active.unwrap_or(true))
             .bind(now)
             .bind(now)
-            .bind(transformations)
+            .bind(&transformations)
             .fetch_one(&mut *tx)
             .await?;
-        Rule::replace_conditions_for_id(&mut tx, rule_id).await?;
+        Rule::replace_conditions_for_id(&mut tx, rule_id, compiled.as_deref()).await?;
         tx.commit().await?;
         imported += 1;
     }
