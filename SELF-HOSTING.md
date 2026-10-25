@@ -959,12 +959,20 @@ That `traefik.yml` **lives outside this repository**: it belongs to the operator
 **What happens if you do not declare them.** A rule that filters on one of those fields **will not match** — this is not "matching too much": since the `missing-header-fields` change, a restricted field whose value is missing makes the rule **not** match. Matching without evidence is the dangerous failure — in the WAF a deny rule would reject every request lacking the header, and in the Jail it would pile up rate-limit observations against legitimate traffic — so the matcher simply does not apply a rule to a request that cannot satisfy it. The matcher reports it, naming the field and the rule, when debug logging is on (`RUST_LOG=backend=debug`):
 
 ```
-DEBUG backend::models::rule: regla descartada: la petición no trae el campo restringido field="user_agent" rule_id=<id> rule_name="<name>"
+DEBUG backend::models::rule: condición no cumplida: la petición no trae el valor field="user_agent" key=None rule_id=<id> rule_name="<name>"
 ```
 
 The same holds for `country_code` when GeoIP cannot resolve the IP: a geographic rule stops matching instead of matching by absence. That sibling case has **real effect today** — with the previous semantics the `4 Geo blocking` rule denied IPs the GeoIP could not classify, which is exactly what this change corrects.
 
 > The exact key format was verified against `traefik:v3.7.5`; see `openspec/changes/archive/2026-10-22-missing-header-fields/design.md` §Open Questions. Re-verified on `traefik:v3.7.16` — the version in production on 2026-10-24: the access log JSON schema is unchanged between 3.7.5 and 3.7.16, so the parser needs no change.
+
+### 2.16 Keyed collections are WAF-only
+
+The `waf-collections` change adds five collections: `request_cookies`, `request_headers` and `args_get` (each keyed by a name), plus `request_basename` and `request_extension` (keyless). The first three are resolved from the request's header map — the `Cookie` header and the request headers — which the **WAF** middleware (Traefik's `forwardAuth`) receives in full.
+
+The **Jail** pipeline does not. Its transport is the Traefik access log, and that payload carries no header map, so `cookies` and `headers` stay empty: a Jail rule that restricts `request_cookies`, `request_headers` or `args_get` **never matches** — the same safe failure as a missing header-derived field in §2.15, never a match by absence. `request_basename` and `request_extension` are derived from the path, and the query arguments from the query string, both of which the access log does carry, so those three work in **both** pipelines.
+
+This is a deliberate limit, not a fallback to fix: it is the same asymmetry as §2.15 — the WAF, synchronous and per-request, is where the header map is available. Declaring `request_*` header keys in `traefik.yml` (see §2.15) does not change it, because the access log maps only those five fixed fields and not an arbitrary header map.
 
 ---
 

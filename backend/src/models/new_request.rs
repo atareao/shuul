@@ -6,6 +6,7 @@
 use chrono::{DateTime, Utc};
 use http::Uri;
 use serde::{Deserialize, Serialize};
+use std::collections::BTreeMap;
 use tracing::debug;
 
 use super::GeoIpService;
@@ -27,12 +28,74 @@ pub struct NewRequest {
     pub content_type: Option<String>,
     pub accept_language: Option<String>,
     pub x_request_id: Option<String>,
+    /// Cookies de la petición, con el nombre como clave. Vacío en el pipeline
+    /// Jail, cuyo payload no las trae.
+    #[serde(default)]
+    pub cookies: BTreeMap<String, String>,
+    /// Cabeceras de la petición con el nombre en minúsculas como clave. Vacío en
+    /// el pipeline Jail, cuyo payload no trae el mapa completo de cabeceras.
+    #[serde(default)]
+    pub headers: BTreeMap<String, String>,
+    /// Argumentos del query string, uno a uno y con el valor **crudo** (sin
+    /// decodificar), igual que el campo `query`.
+    #[serde(default)]
+    pub query_args: BTreeMap<String, String>,
+    /// Último segmento no vacío del path, si existe.
+    pub basename: Option<String>,
+    /// Subcadena tras el último punto del basename, si ese punto no es el primer
+    /// carácter.
+    pub extension: Option<String>,
     pub is_tor: Option<bool>,
     pub rule_id: Option<i32>,
     pub created_at: DateTime<Utc>,
 }
 
 impl NewRequest {
+    /// Deriva las colecciones dependientes del path y el query.
+    ///
+    /// Recalcula `query_args`, `basename` y `extension` a partir de `self.query`
+    /// y `self.path`. Es público para que el pipeline Jail pueda invocarlo sobre
+    /// el `NewRequest` que construye desde su payload, sin duplicar la lógica de
+    /// extracción que usa [`NewRequest::from_request`].
+    pub fn derive_path_collections(&mut self) {
+        // Argumentos del query string, crudos (sin decodificar).
+        self.query_args = self
+            .query
+            .as_deref()
+            .map(|query| {
+                let mut args = BTreeMap::new();
+                for part in query.split('&') {
+                    if let Some((name, value)) = part.split_once('=') {
+                        let name = name.trim();
+                        let value = value.trim();
+                        if !name.is_empty() && !value.is_empty() {
+                            args.insert(name.to_string(), value.to_string());
+                        }
+                    }
+                }
+                args
+            })
+            .unwrap_or_default();
+
+        // Último segmento no vacío del path.
+        self.basename = self
+            .path
+            .as_deref()
+            .and_then(|path| path.rsplit('/').find(|s| !s.is_empty()))
+            .map(str::to_string);
+
+        // Subcadena tras el último punto del basename, siempre que ese punto no
+        // sea el primer carácter y la subcadena no esté vacía.
+        self.extension = self.basename.as_deref().and_then(|basename| {
+            basename
+                .rfind('.')
+                .filter(|&index| index > 0)
+                .map(|index| &basename[index + 1..])
+                .filter(|ext| !ext.is_empty())
+                .map(str::to_string)
+        });
+    }
+
     /// Construye un `NewRequest` a partir de los encabezados HTTP y la DB `GeoIP`.
     ///
     /// Los encabezados `x-forwarded-*` son la fuente principal de datos.
@@ -192,7 +255,36 @@ impl NewRequest {
             .filter(|s| !s.is_empty())
             .map(std::string::ToString::to_string);
 
-        Self {
+        // Extracción de las colecciones nuevas. Las cookies salen del encabezado
+        // `cookie` (repetido si lo hay); las cabeceras se guardan con el nombre en
+        // minúsculas y el último valor gana; el resto de colecciones derivadas del
+        // path/query se calculan en `derive_path_collections`, para no duplicar la
+        // lógica con el Jail.
+        let mut cookies = BTreeMap::new();
+        for value in headers.get_all("cookie") {
+            if let Ok(raw) = value.to_str() {
+                for part in raw.split(';') {
+                    if let Some((name, value)) = part.trim().split_once('=') {
+                        let name = name.trim();
+                        let value = value.trim();
+                        if !name.is_empty() && !value.is_empty() {
+                            cookies.insert(name.to_string(), value.to_string());
+                        }
+                    }
+                }
+            }
+        }
+
+        let mut headers_map = BTreeMap::new();
+        for (name, value) in headers {
+            if let Ok(value) = value.to_str()
+                && !value.is_empty()
+            {
+                headers_map.insert(name.as_str().to_lowercase(), value.to_string());
+            }
+        }
+
+        let mut request = Self {
             ip_address,
             protocol,
             fqdn,
@@ -207,10 +299,17 @@ impl NewRequest {
             content_type,
             accept_language,
             x_request_id,
+            cookies,
+            headers: headers_map,
+            query_args: BTreeMap::new(),
+            basename: None,
+            extension: None,
             is_tor,
             rule_id: None,
             created_at: Utc::now(),
-        }
+        };
+        request.derive_path_collections();
+        request
     }
 }
 
@@ -703,6 +802,195 @@ mod tests {
             "con GeoIP disponible `country_code` debe rellenarse para 8.8.8.8; \
              obtenido: {:?}",
             request.country_code
+        );
+    }
+}
+
+// ── F2b-2a: extracción de las colecciones nuevas ──
+//
+// Cubre la extracción real de cookies, cabeceras, argumentos del query,
+// basename y extensión que implementa `from_request` y `derive_path_collections`.
+#[cfg(test)]
+mod collection_extraction_tests {
+    use super::*;
+
+    /// Escenario: Las cookies se extraen del encabezado `Cookie`.
+    #[test]
+    fn test_cookies_are_extracted_from_cookie_header() {
+        let mut headers = http::HeaderMap::new();
+        headers.insert("cookie", "a=1; b=2".parse().unwrap());
+
+        let request = NewRequest::from_request(&headers, None, None);
+
+        assert_eq!(
+            request.cookies.get("a").map(String::as_str),
+            Some("1"),
+            "la cookie `a` debe valer `1`"
+        );
+        assert_eq!(
+            request.cookies.get("b").map(String::as_str),
+            Some("2"),
+            "la cookie `b` debe valer `2`"
+        );
+    }
+
+    /// Escenario: Las cabeceras se extraen con el nombre en minúsculas.
+    #[test]
+    fn test_headers_are_extracted_with_lowercase_name() {
+        let mut headers = http::HeaderMap::new();
+        headers.insert("authorization", "Bearer x".parse().unwrap());
+
+        let request = NewRequest::from_request(&headers, None, None);
+
+        assert_eq!(
+            request.headers.get("authorization").map(String::as_str),
+            Some("Bearer x"),
+            "la cabecera `authorization` debe estar en minúsculas"
+        );
+    }
+
+    /// Escenario: Los argumentos del query se extraen uno a uno y crudos.
+    #[test]
+    fn test_query_args_are_extracted_raw() {
+        let mut headers = http::HeaderMap::new();
+        headers.insert("x-forwarded-uri", "/?id=1%20union&x=2".parse().unwrap());
+
+        let request = NewRequest::from_request(&headers, None, None);
+
+        assert_eq!(
+            request.query_args.get("id").map(String::as_str),
+            Some("1%20union"),
+            "el valor de `id` debe conservar el `%20` sin decodificar"
+        );
+        assert_eq!(
+            request.query_args.get("x").map(String::as_str),
+            Some("2"),
+            "el argumento `x` debe valer `2`"
+        );
+    }
+
+    /// Escenario: El basename y la extensión se derivan del path.
+    #[test]
+    fn test_basename_and_extension_are_derived_from_path() {
+        let mut headers = http::HeaderMap::new();
+        headers.insert("x-forwarded-uri", "/a/b/index.php".parse().unwrap());
+
+        let request = NewRequest::from_request(&headers, None, None);
+
+        assert_eq!(
+            request.basename.as_deref(),
+            Some("index.php"),
+            "el basename debe ser el último segmento no vacío"
+        );
+        assert_eq!(
+            request.extension.as_deref(),
+            Some("php"),
+            "la extensión debe ser la subcadena tras el último punto"
+        );
+    }
+
+    /// Escenario: No hay basename ni extensión sin último segmento.
+    #[test]
+    fn test_no_basename_or_extension_without_last_segment() {
+        let mut headers = http::HeaderMap::new();
+        headers.insert("x-forwarded-uri", "/".parse().unwrap());
+
+        let request = NewRequest::from_request(&headers, None, None);
+
+        assert!(request.basename.is_none(), "el path `/` no tiene basename");
+        assert!(
+            request.extension.is_none(),
+            "el path `/` no tiene extensión"
+        );
+    }
+
+    /// Escenario: La extracción del Jail conserva lo derivable de su payload.
+    ///
+    /// El payload del Jail trae `path` y `query`; se derivan argumentos del
+    /// query, basename y extensión. Las cookies y las cabeceras quedan ausentes.
+    #[test]
+    fn test_jail_extraction_derives_what_it_can_from_payload() {
+        // Simula la construcción del `NewRequest` en el pipeline Jail.
+        let mut request = NewRequest::from_request(&http::HeaderMap::new(), None, None);
+        request.path = Some("/a/b/index.php".to_string());
+        request.query = Some("id=1%20union&x=2".to_string());
+        // La derivación es explícita: el Jail la invoca tras construir el literal.
+        request.derive_path_collections();
+        assert_eq!(
+            request.query_args.get("id").map(String::as_str),
+            Some("1%20union"),
+            "el Jail debe derivar los argumentos del query de su payload"
+        );
+        assert_eq!(
+            request.basename.as_deref(),
+            Some("index.php"),
+            "el Jail debe derivar el basename de su payload"
+        );
+        assert_eq!(
+            request.extension.as_deref(),
+            Some("php"),
+            "el Jail debe derivar la extensión de su payload"
+        );
+        assert!(
+            request.cookies.is_empty(),
+            "el Jail no trae cookies y deben quedar ausentes"
+        );
+        assert!(
+            request.headers.is_empty(),
+            "el Jail no trae el mapa completo de cabeceras"
+        );
+    }
+
+    /// Semántica fijada: con argumentos duplicados en el query, el último valor
+    /// gana.
+    ///
+    /// // NOTA: en un WAF, la ambigüedad de parámetros duplicados (HTTP
+    /// parameter pollution) puede permitir evadir reglas si el backend elige un
+    /// valor distinto del que inspecciona el WAF. Hoy se fija el comportamiento
+    /// actual —el último gana—; revisar en otra sub-entrega.
+    #[test]
+    fn test_query_args_duplicate_last_wins() {
+        let mut headers = http::HeaderMap::new();
+        headers.insert("x-forwarded-uri", "/?id=1&id=2".parse().unwrap());
+
+        let request = NewRequest::from_request(&headers, None, None);
+
+        assert_eq!(
+            request.query_args.get("id").map(String::as_str),
+            Some("2"),
+            "con argumentos duplicados en el query, el último valor debe ganar"
+        );
+    }
+
+    /// Semántica fijada: dos cabeceras `cookie` mezclan sus cookies y el último
+    /// valor de una misma clave gana.
+    ///
+    /// // NOTA: en un WAF, la ambigüedad de cabeceras repetidas puede permitir
+    /// evadir reglas si el backend elige un valor distinto del que inspecciona el
+    /// WAF. Hoy se fija el comportamiento actual —mezcla y último valor gana—;
+    /// revisar en otra sub-entrega.
+    #[test]
+    fn test_duplicate_cookie_headers_mix_and_last_wins() {
+        let mut headers = http::HeaderMap::new();
+        headers.append("cookie", "a=1; b=2".parse().unwrap());
+        headers.append("cookie", "c=3; a=4".parse().unwrap());
+
+        let request = NewRequest::from_request(&headers, None, None);
+
+        assert_eq!(
+            request.cookies.get("a").map(String::as_str),
+            Some("4"),
+            "el último valor de una misma cookie debe ganar"
+        );
+        assert_eq!(
+            request.cookies.get("b").map(String::as_str),
+            Some("2"),
+            "las cookies de la primera cabecera deben conservarse"
+        );
+        assert_eq!(
+            request.cookies.get("c").map(String::as_str),
+            Some("3"),
+            "las cookies de la segunda cabecera deben añadirse"
         );
     }
 }

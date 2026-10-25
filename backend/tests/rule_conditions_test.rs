@@ -21,8 +21,8 @@ use backend::http::rule_router;
 use backend::models::condition::{Collection, Operator, project};
 use backend::models::transformation::TransformationPipeline;
 use backend::models::{
-    AppState, BanManager, CacheRule, GeoIpService, NewRule, RateLimiter, Rule, Settings,
-    StatsCollector, TorService, UpdateRule,
+    AppState, BanManager, CacheRule, ConditionInput, GeoIpService, NewRule, RateLimiter, Rule,
+    Settings, StatsCollector, TorService, UpdateRule,
 };
 use backend::templates::{RuleTemplate, all_rule_templates};
 use serde_json::{Value, json};
@@ -197,6 +197,7 @@ fn blank_new_rule(name: &str) -> NewRule {
         x_request_id: None,
         rate_limit_profile_id: None,
         active: Some(true),
+        conditions: None,
     }
 }
 
@@ -231,6 +232,7 @@ fn blank_update_rule(id: i32, name: &str) -> UpdateRule {
         x_request_id: None,
         rate_limit_profile_id: None,
         active: true,
+        conditions: None,
     }
 }
 
@@ -832,4 +834,659 @@ async fn test_projection_from_table_is_equivalent_over_the_catalog() {
     // Control explícito del vocabulario: el nombre `path` de la tabla es el de
     // `Collection::Path`.
     assert_eq!(Collection::Path.field_name(), "path");
+}
+
+// ---------------------------------------------------------------------------
+// waf-collections (F2b-2a) — persistencia con clave y autoría avanzada
+// ---------------------------------------------------------------------------
+//
+// Contrato verificado:
+// - Las condiciones con clave se persisten en `rule_conditions` con su `key`.
+// - Las condiciones sin clave se persisten con `key` nula.
+// - Las condiciones inválidas se rechazan o se descartan al leer: colección
+//   desconocida, patrón no compilable, transformaciones no legibles y clave
+//   ausente en una colección que la exige.
+// - La importación rechaza por entradas las condiciones inválidas sin abortar
+//   el resto de la importación.
+//
+// La persistencia se verifica aquí —y no en `#[cfg(test)]` de `rule.rs`— porque
+// el harness de base de datos migrada en memoria ya vive en este fichero de
+// integración; moverla evita duplicar helpers.
+
+/// Construye una condición serializable para los cuerpos JSON de la API.
+fn condition_input_json(collection: &str, key: Option<&str>, pattern: &str) -> Value {
+    json!({
+        "collection": collection,
+        "key": key,
+        "transformations": "",
+        "operator": null,
+        "pattern": pattern,
+    })
+}
+
+/// Escenario 1: «Una condición con clave se conserva en el ciclo
+/// escritura-lectura» (`specs/rules/spec.md`).
+///
+/// GIVEN una regla con una condición de `request_cookies` y clave `session`
+/// WHEN se crea y se relee por la ruta de producción (`read_all_active`)
+/// THEN la condición leída SHALL tener clave `session`.
+#[tokio::test]
+async fn test_condition_with_key_survives_write_read() {
+    let pool = create_migrated_pool().await;
+
+    let mut rule = blank_new_rule("wc-key-survives");
+    rule.conditions = Some(vec![ConditionInput {
+        collection: "request_cookies".to_string(),
+        key: Some("session".to_string()),
+        transformations: String::new(),
+        operator: None,
+        pattern: "^abc$".to_string(),
+    }]);
+
+    let created = Rule::create(&pool, rule)
+        .await
+        .expect("crear la regla con condición con clave");
+
+    let cache = CacheRule::read_all_active(&pool)
+        .await
+        .expect("leer las reglas activas");
+    let cached = cache
+        .iter()
+        .find(|cache_rule| cache_rule.rule.id == created.id)
+        .expect("la regla creada debe estar en la caché");
+
+    assert_eq!(
+        cached.conditions.len(),
+        1,
+        "la condición con clave debe persistirse y releerse; obtenidas: {:?}",
+        cached.conditions
+    );
+    assert_eq!(cached.conditions[0].collection, Collection::RequestCookies);
+    assert_eq!(
+        cached.conditions[0].key.as_deref(),
+        Some("session"),
+        "la clave debe sobrevivir al ciclo escritura-lectura"
+    );
+}
+
+/// Escenario 2: «Una condición sin clave la conserva nula».
+///
+/// GIVEN una regla con una condición de `path`
+/// WHEN se crea y se relee
+/// THEN su clave SHALL ser nula.
+#[tokio::test]
+async fn test_condition_without_key_stays_null() {
+    let pool = create_migrated_pool().await;
+
+    let mut rule = blank_new_rule("wc-key-null");
+    rule.conditions = Some(vec![ConditionInput {
+        collection: "path".to_string(),
+        key: None,
+        transformations: String::new(),
+        operator: None,
+        pattern: "^/admin$".to_string(),
+    }]);
+
+    let created = Rule::create(&pool, rule)
+        .await
+        .expect("crear la regla con condición sin clave");
+
+    let cache = CacheRule::read_all_active(&pool)
+        .await
+        .expect("leer las reglas activas");
+    let cached = cache
+        .iter()
+        .find(|cache_rule| cache_rule.rule.id == created.id)
+        .expect("la regla creada debe estar en la caché");
+
+    assert_eq!(
+        cached.conditions.len(),
+        1,
+        "la condición sin clave debe persistirse y releerse; obtenidas: {:?}",
+        cached.conditions
+    );
+    assert_eq!(cached.conditions[0].collection, Collection::Path);
+    assert_eq!(cached.conditions[0].key, None, "la clave debe quedar nula");
+}
+
+/// Escenario 3: «El modo simple se conserva» (proyección de los 14 campos).
+///
+/// Guardián: en RED el modo simple ya funciona. Fija que una regla creada sin
+/// `conditions` siga proyectando sus 14 campos y se relea desde la tabla.
+#[tokio::test]
+async fn test_simple_mode_conditions_are_projected() {
+    let pool = create_migrated_pool().await;
+
+    let mut rule = blank_new_rule("wc-simple-projection");
+    rule.path = Some("^/admin$".to_string());
+    // `conditions` sigue en `None`: modo simple.
+
+    let created = Rule::create(&pool, rule)
+        .await
+        .expect("crear la regla en modo simple");
+
+    let cache = CacheRule::read_all_active(&pool)
+        .await
+        .expect("leer las reglas activas");
+    let cached = cache
+        .iter()
+        .find(|cache_rule| cache_rule.rule.id == created.id)
+        .expect("la regla creada debe estar en la caché");
+
+    assert_eq!(
+        cached.conditions.len(),
+        1,
+        "el modo simple debe proyectar la condición de `path`; obtenidas: {:?}",
+        cached.conditions
+    );
+    assert_eq!(cached.conditions[0].collection, Collection::Path);
+    assert_eq!(cached.conditions[0].key, None);
+}
+
+/// Escenario 4: «Una regla avanzada persiste su lista tal cual».
+///
+/// GIVEN una petición de creación con dos condiciones
+/// WHEN se almacena
+/// THEN el conjunto persistido SHALL contener esas dos condiciones, en orden,
+///      con sus claves.
+#[tokio::test]
+async fn test_create_advanced_rule_persists_conditions_in_order() {
+    let pool = create_migrated_pool().await;
+    let state = build_app_state(pool.clone());
+
+    let payload = json!({
+        "name": "wc-advanced-order",
+        "description": "",
+        "weight": 100,
+        "mode": "enforce",
+        "pipeline": "waf",
+        "allow": false,
+        "active": true,
+        "conditions": [
+            condition_input_json("request_cookies", Some("PHPSESSID"), "^abc$"),
+            condition_input_json("path", None, "^/admin$"),
+        ],
+    });
+
+    let (status, response) = call_rules_api(&state, Method::POST, "/", Some(payload)).await;
+    assert_eq!(
+        status,
+        StatusCode::CREATED,
+        "la creación debe aceptarse; respuesta: {response}"
+    );
+
+    let rule_id: i32 = sqlx::query_scalar("SELECT id FROM rules WHERE name = ?")
+        .bind("wc-advanced-order")
+        .fetch_one(&pool)
+        .await
+        .expect("id de wc-advanced-order");
+
+    let rows = stored_conditions(&pool, rule_id).await;
+    assert_eq!(
+        rows.len(),
+        2,
+        "deben persistirse las dos condiciones de la lista; almacenadas: {rows:?}"
+    );
+    assert_eq!(rows[0].collection, "request_cookies");
+    assert_eq!(rows[0].key.as_deref(), Some("PHPSESSID"));
+    assert_eq!(rows[1].collection, "path");
+    assert_eq!(rows[1].key, None);
+}
+
+/// Escenario 5: «Una colección con clave sin clave se rechaza».
+#[tokio::test]
+async fn test_advanced_rule_rejects_missing_key_for_keyed_collection() {
+    let pool = create_migrated_pool().await;
+    let state = build_app_state(pool.clone());
+
+    let payload = json!({
+        "name": "wc-missing-key",
+        "conditions": [condition_input_json("request_cookies", None, "^abc$")],
+    });
+
+    let (status, response) = call_rules_api(&state, Method::POST, "/", Some(payload)).await;
+    assert_eq!(
+        status,
+        StatusCode::BAD_REQUEST,
+        "una colección con clave sin clave debe rechazarse con 400; respuesta: {response}"
+    );
+
+    let count: i64 = sqlx::query_scalar("SELECT count(*) FROM rules WHERE name = ?")
+        .bind("wc-missing-key")
+        .fetch_one(&pool)
+        .await
+        .expect("contar reglas");
+    assert_eq!(count, 0, "la regla rechazada NO debe almacenarse");
+}
+
+/// Escenario 6: «Una clave en una colección que no la admite se rechaza».
+#[tokio::test]
+async fn test_advanced_rule_rejects_key_for_non_keyed_collection() {
+    let pool = create_migrated_pool().await;
+    let state = build_app_state(pool.clone());
+
+    let payload = json!({
+        "name": "wc-extra-key",
+        "conditions": [condition_input_json("path", Some("sobra"), "^/admin$")],
+    });
+
+    let (status, response) = call_rules_api(&state, Method::POST, "/", Some(payload)).await;
+    assert_eq!(
+        status,
+        StatusCode::BAD_REQUEST,
+        "una clave en una colección que no la admite debe rechazarse con 400; respuesta: {response}"
+    );
+
+    let count: i64 = sqlx::query_scalar("SELECT count(*) FROM rules WHERE name = ?")
+        .bind("wc-extra-key")
+        .fetch_one(&pool)
+        .await
+        .expect("contar reglas");
+    assert_eq!(count, 0, "la regla rechazada NO debe almacenarse");
+}
+
+/// Escenario 7: «Una colección desconocida se rechaza».
+#[tokio::test]
+async fn test_advanced_rule_rejects_unknown_collection() {
+    let pool = create_migrated_pool().await;
+    let state = build_app_state(pool.clone());
+
+    let payload = json!({
+        "name": "wc-unknown-collection",
+        "conditions": [condition_input_json("nope", None, "^abc$")],
+    });
+
+    let (status, response) = call_rules_api(&state, Method::POST, "/", Some(payload)).await;
+    assert_eq!(
+        status,
+        StatusCode::BAD_REQUEST,
+        "una colección desconocida debe rechazarse con 400; respuesta: {response}"
+    );
+
+    let count: i64 = sqlx::query_scalar("SELECT count(*) FROM rules WHERE name = ?")
+        .bind("wc-unknown-collection")
+        .fetch_one(&pool)
+        .await
+        .expect("contar reglas");
+    assert_eq!(count, 0, "la regla rechazada NO debe almacenarse");
+}
+
+/// Escenario 8: «Un patrón que no compila se rechaza».
+#[tokio::test]
+async fn test_advanced_rule_rejects_non_compiling_pattern() {
+    let pool = create_migrated_pool().await;
+    let state = build_app_state(pool.clone());
+
+    let payload = json!({
+        "name": "wc-bad-pattern",
+        "conditions": [condition_input_json("path", None, "[")],
+    });
+
+    let (status, response) = call_rules_api(&state, Method::POST, "/", Some(payload)).await;
+    assert_eq!(
+        status,
+        StatusCode::BAD_REQUEST,
+        "un patrón que no compila debe rechazarse con 400; respuesta: {response}"
+    );
+
+    let count: i64 = sqlx::query_scalar("SELECT count(*) FROM rules WHERE name = ?")
+        .bind("wc-bad-pattern")
+        .fetch_one(&pool)
+        .await
+        .expect("contar reglas");
+    assert_eq!(count, 0, "la regla rechazada NO debe almacenarse");
+}
+
+/// Escenario 9: «El ciclo de una regla avanzada es estable».
+///
+/// GIVEN una regla avanzada creada por la API
+/// WHEN se lee y se reenvían sus condiciones por `PATCH`
+/// THEN la regla SHALL quedar descrita igual.
+#[tokio::test]
+async fn test_advanced_rule_round_trip_is_stable() {
+    let pool = create_migrated_pool().await;
+    let state = build_app_state(pool.clone());
+
+    let payload = json!({
+        "name": "wc-roundtrip",
+        "conditions": [
+            condition_input_json("request_cookies", Some("session"), "^abc$"),
+            condition_input_json("path", None, "^/admin$"),
+        ],
+    });
+    let (status, response) = call_rules_api(&state, Method::POST, "/", Some(payload)).await;
+    assert_eq!(status, StatusCode::CREATED, "creación: {response}");
+
+    let rule_id: i32 = sqlx::query_scalar("SELECT id FROM rules WHERE name = ?")
+        .bind("wc-roundtrip")
+        .fetch_one(&pool)
+        .await
+        .expect("id de wc-roundtrip");
+
+    // Primera lectura: la representación debe incluir las condiciones.
+    let (status, read) =
+        call_rules_api(&state, Method::GET, &format!("/?id={rule_id}"), None).await;
+    assert_eq!(status, StatusCode::OK, "lectura: {read}");
+    let read_conditions = read["data"]["conditions"]
+        .as_array()
+        .unwrap_or_else(|| {
+            panic!("la representación de la regla debe incluir `conditions`: {read}")
+        })
+        .clone();
+    assert_eq!(read_conditions.len(), 2);
+
+    // Reenvío por PATCH con las mismas condiciones.
+    let mut update = serde_json::to_value(blank_update_rule(rule_id, "wc-roundtrip"))
+        .expect("serializar la actualización");
+    update["conditions"] = Value::Array(read_conditions.clone());
+    let (status, patched) = call_rules_api(&state, Method::PATCH, "/", Some(update)).await;
+    assert_eq!(status, StatusCode::OK, "edición: {patched}");
+
+    // Segunda lectura: debe coincidir con la primera.
+    let (status, read_again) =
+        call_rules_api(&state, Method::GET, &format!("/?id={rule_id}"), None).await;
+    assert_eq!(status, StatusCode::OK, "segunda lectura: {read_again}");
+    let again = read_again["data"]["conditions"]
+        .as_array()
+        .unwrap_or_else(|| panic!("la segunda lectura debe incluir `conditions`: {read_again}"));
+    assert_eq!(again, &read_conditions, "el ciclo debe ser estable");
+}
+
+/// Escenario 10: «La exportación e importación conservan una regla avanzada».
+#[tokio::test]
+async fn test_export_import_preserves_advanced_rule() {
+    let pool = create_migrated_pool().await;
+    let state = build_app_state(pool.clone());
+
+    let payload = json!({
+        "name": "wc-export-import",
+        "is_tor": true,
+        "conditions": [
+            condition_input_json("request_cookies", Some("session"), "^abc$"),
+            condition_input_json("path", None, "^/admin$"),
+        ],
+    });
+    let (status, response) = call_rules_api(&state, Method::POST, "/", Some(payload)).await;
+    assert_eq!(status, StatusCode::CREATED, "creación: {response}");
+
+    let rule_id: i32 = sqlx::query_scalar("SELECT id FROM rules WHERE name = ?")
+        .bind("wc-export-import")
+        .fetch_one(&pool)
+        .await
+        .expect("id de wc-export-import");
+
+    let (status, exported) = call_rules_api(&state, Method::GET, "/export", None).await;
+    assert_eq!(status, StatusCode::OK, "exportación: {exported}");
+    let exported_rules = exported["data"]
+        .as_array()
+        .expect("la exportación debe traer el array de reglas");
+    let exported_rule = exported_rules
+        .iter()
+        .find(|rule| rule["name"] == "wc-export-import")
+        .expect("la regla avanzada debe estar en la exportación");
+    let exported_conditions = exported_rule["conditions"]
+        .as_array()
+        .unwrap_or_else(|| panic!("la exportación debe incluir `conditions`: {exported_rule}"));
+    assert_eq!(exported_conditions.len(), 2);
+
+    // Se borra la regla y se reimporta el JSON exportado.
+    Rule::delete(&pool, rule_id)
+        .await
+        .expect("borrar la regla avanzada");
+    let (status, imported) = call_rules_api(
+        &state,
+        Method::POST,
+        "/import",
+        Some(json!({ "rules": [exported_rule] })),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "importación: {imported}");
+
+    let new_id: i32 = sqlx::query_scalar("SELECT id FROM rules WHERE name = ?")
+        .bind("wc-export-import")
+        .fetch_one(&pool)
+        .await
+        .expect("id de la regla reimportada");
+    let stored_is_tor: bool = sqlx::query_scalar("SELECT is_tor FROM rules WHERE id = ?")
+        .bind(new_id)
+        .fetch_one(&pool)
+        .await
+        .expect("is_tor de la regla reimportada");
+    assert!(
+        stored_is_tor,
+        "la importación debe conservar el predicado `is_tor = true`"
+    );
+    let rows = stored_conditions(&pool, new_id).await;
+    assert_eq!(
+        rows.len(),
+        2,
+        "la importación debe conservar las dos condiciones; almacenadas: {rows:?}"
+    );
+    assert_eq!(rows[0].key.as_deref(), Some("session"));
+}
+
+/// Escenario 11: «La importación sin condiciones proyecta los 14 campos».
+#[tokio::test]
+async fn test_import_without_conditions_projects_14_fields() {
+    let pool = create_migrated_pool().await;
+    let state = build_app_state(pool.clone());
+
+    let (status, imported) = call_rules_api(
+        &state,
+        Method::POST,
+        "/import",
+        Some(json!({
+            "rules": [{
+                "name": "wc-import-simple",
+                "description": "",
+                "weight": 100,
+                "mode": "enforce",
+                "pipeline": "waf",
+                "allow": false,
+                "path": "^/admin$",
+            }]
+        })),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "importación: {imported}");
+
+    let rule_id: i32 = sqlx::query_scalar("SELECT id FROM rules WHERE name = ?")
+        .bind("wc-import-simple")
+        .fetch_one(&pool)
+        .await
+        .expect("id de wc-import-simple");
+
+    // La tabla debe tener la condición proyectada desde los 14 campos.
+    let rows = stored_conditions(&pool, rule_id).await;
+    assert_eq!(
+        rows.len(),
+        1,
+        "la proyección debe persistir `path`; almacenadas: {rows:?}"
+    );
+    assert_eq!(rows[0].collection, "path");
+
+    // La representación devuelta por la API debe incluir las condiciones.
+    let (status, read) =
+        call_rules_api(&state, Method::GET, &format!("/?id={rule_id}"), None).await;
+    assert_eq!(status, StatusCode::OK, "lectura: {read}");
+    let conditions = read["data"]["conditions"].as_array().unwrap_or_else(|| {
+        panic!("la representación de la regla debe incluir las condiciones proyectadas: {read}")
+    });
+    assert_eq!(conditions.len(), 1);
+    assert_eq!(conditions[0]["collection"], "path");
+}
+
+/// Escenario: Una condición con colección con clave y `key` nula se descarta al
+/// leer. La regla queda con las demás condiciones.
+#[tokio::test]
+async fn test_invalid_condition_missing_key_is_discarded() {
+    let pool = create_migrated_pool().await;
+
+    // Crear una regla válida con una condición de `path`.
+    let mut rule = blank_new_rule("wc-invalid-key");
+    rule.conditions = Some(vec![ConditionInput {
+        collection: "path".to_string(),
+        key: None,
+        transformations: String::new(),
+        operator: None,
+        pattern: "^/admin$".to_string(),
+    }]);
+
+    let created = Rule::create(&pool, rule)
+        .await
+        .expect("crear la regla con condición válida");
+
+    // Insertar a mano una fila inválida: request_cookies sin key.
+    sqlx::query(
+        "INSERT INTO rule_conditions (rule_id, position, collection, key, transformations, operator, pattern, negate)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+    )
+    .bind(created.id)
+    .bind(1)
+    .bind("request_cookies")
+    .bind(None::<String>)
+    .bind("")
+    .bind("@rx")
+    .bind("^abc$")
+    .bind(0)
+    .execute(&pool)
+    .await
+    .expect("insertar condición inválida");
+
+    // La tabla debe tener las dos condiciones (la válida y la inválida).
+    let rows = stored_conditions(&pool, created.id).await;
+    assert_eq!(
+        rows.len(),
+        2,
+        "la tabla debe tener las dos condiciones; almacenadas: {rows:?}"
+    );
+
+    // Al leer, la condición inválida debe descartarse.
+    let cache = CacheRule::read_all_active(&pool)
+        .await
+        .expect("leer las reglas activas");
+    let cached = cache
+        .iter()
+        .find(|cache_rule| cache_rule.rule.id == created.id)
+        .expect("la regla creada debe estar en la caché");
+    assert_eq!(
+        cached.conditions.len(),
+        1,
+        "la condición inválida debe descartarse; obtenidas: {:?}",
+        cached.conditions
+    );
+    assert_eq!(cached.conditions[0].collection, Collection::Path);
+}
+
+/// Escenario: Un `PATCH` con una condición inválida se rechaza y la regla
+/// conserva sus condiciones originales.
+#[tokio::test]
+async fn test_advanced_rule_reject_invalid_condition_on_update() {
+    let pool = create_migrated_pool().await;
+    let state = build_app_state(pool.clone());
+
+    // Crear una regla válida con una condición de `path`.
+    let mut rule = blank_new_rule("wc-invalid-update");
+    rule.conditions = Some(vec![ConditionInput {
+        collection: "path".to_string(),
+        key: None,
+        transformations: String::new(),
+        operator: None,
+        pattern: "^/admin$".to_string(),
+    }]);
+
+    let created = Rule::create(&pool, rule)
+        .await
+        .expect("crear la regla válida");
+
+    // Preparar una actualización con una condición inválida: request_cookies sin key.
+    let mut update = blank_update_rule(created.id, "wc-invalid-update");
+    update.conditions = Some(vec![ConditionInput {
+        collection: "request_cookies".to_string(),
+        key: None,
+        transformations: String::new(),
+        operator: None,
+        pattern: "^abc$".to_string(),
+    }]);
+
+    let (status, response) = call_rules_api(
+        &state,
+        Method::PATCH,
+        "/",
+        Some(serde_json::to_value(update).expect("serializar UpdateRule")),
+    )
+    .await;
+    assert_eq!(
+        status,
+        StatusCode::BAD_REQUEST,
+        "un `PATCH` con condición inválida debe rechazarse: {response}"
+    );
+
+    // La regla debe conservar sus condiciones originales.
+    let rows = stored_conditions(&pool, created.id).await;
+    assert_eq!(
+        rows.len(),
+        1,
+        "la regla debe conservar su condición original; almacenadas: {rows:?}"
+    );
+    assert_eq!(rows[0].collection, "path");
+}
+
+/// Escenario: La importación rechaza por entradas las condiciones inválidas y
+/// conserva las válidas.
+#[tokio::test]
+async fn test_import_reject_invalid_conditions() {
+    let pool = create_migrated_pool().await;
+    let state = build_app_state(pool.clone());
+
+    let payload = json!({
+        "rules": [
+            {
+                "name": "wc-import-invalid",
+                "conditions": [
+                    condition_input_json("request_cookies", None, "^abc$"),
+                ],
+            },
+            {
+                "name": "wc-import-valid",
+                "conditions": [
+                    condition_input_json("path", None, "^/admin$"),
+                ],
+            }
+        ]
+    });
+
+    let (status, response) = call_rules_api(&state, Method::POST, "/import", Some(payload)).await;
+    assert_eq!(
+        status,
+        StatusCode::OK,
+        "la importación debe devolver 200: {response}"
+    );
+
+    let imported = response["imported"].as_u64().unwrap_or(0);
+    let rejected = response["rejected"].as_array().map_or(0, Vec::len);
+    assert_eq!(imported, 1, "solo la regla válida debe importarse");
+    assert_eq!(rejected, 1, "la regla inválida debe rechazarse");
+
+    // La regla inválida no debe existir.
+    let count_invalid: i64 = sqlx::query_scalar("SELECT count(*) FROM rules WHERE name = ?")
+        .bind("wc-import-invalid")
+        .fetch_one(&pool)
+        .await
+        .expect("contar la regla inválida");
+    assert_eq!(count_invalid, 0, "la regla inválida no debe persistirse");
+
+    // La regla válida debe existir con su condición.
+    let valid_id: i32 = sqlx::query_scalar("SELECT id FROM rules WHERE name = ?")
+        .bind("wc-import-valid")
+        .fetch_one(&pool)
+        .await
+        .expect("id de la regla válida");
+    let rows = stored_conditions(&pool, valid_id).await;
+    assert_eq!(
+        rows.len(),
+        1,
+        "la regla válida debe tener su condición; almacenadas: {rows:?}"
+    );
+    assert_eq!(rows[0].collection, "path");
 }

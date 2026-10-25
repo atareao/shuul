@@ -20,7 +20,7 @@ use serde::{Deserialize, Serialize};
 use sqlx::{Error, Row, SqliteConnection, SqlitePool, query, sqlite::SqliteRow};
 use std::collections::BTreeMap;
 use std::fmt::Write;
-use tracing::{debug, error};
+use tracing::{debug, error, warn};
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
 pub struct Rule {
@@ -274,12 +274,16 @@ impl CacheRule {
         request: &NewRequest,
         evidence: &mut BTreeMap<String, String>,
     ) -> bool {
-        let Some(value) = condition.collection.request_value(request) else {
+        let Some(value) = condition
+            .collection
+            .request_value(request, condition.key.as_deref())
+        else {
             debug!(
                 field = condition.collection.field_name(),
+                key = ?condition.key,
                 rule_id = self.rule.id,
                 rule_name = %self.rule.name,
-                "regla descartada: la petición no trae el campo restringido"
+                "condición no cumplida: la petición no trae el valor"
             );
             return false;
         };
@@ -288,10 +292,18 @@ impl CacheRule {
             Operator::Rx(regex) => regex.is_match(&transformed),
         };
         if matched && !condition.pipeline.is_empty() {
-            evidence.insert(
-                condition.collection.field_name().to_string(),
-                transformed.into_owned(),
-            );
+            // La evidencia usa la clave compuesta `campo[clave]` para las
+            // colecciones con clave y el nombre del campo en cualquier otro caso.
+            let key = match (
+                condition.collection.requires_key(),
+                condition.key.as_deref(),
+            ) {
+                (true, Some(k)) => {
+                    format!("{}[{}]", condition.collection.field_name(), k)
+                },
+                _ => condition.collection.field_name().to_string(),
+            };
+            evidence.insert(key, transformed.into_owned());
         }
         matched
     }
@@ -325,6 +337,158 @@ pub struct NewRule {
     pub x_request_id: Option<String>,
     pub rate_limit_profile_id: Option<i32>,
     pub active: Option<bool>,
+    /// Lista ordenada de condiciones de la autoría avanzada. Ausente o nula
+    /// significa **modo simple**: el conjunto se proyecta desde los 14 campos.
+    /// Presente significa **modo avanzado**: la lista es el conjunto persistido.
+    /// Este campo se valida y se persiste en la tabla `rule_conditions` cuando
+    /// está presente.
+    #[serde(default)]
+    pub conditions: Option<Vec<ConditionInput>>,
+}
+
+/// Representación de entrada de una condición de la autoría avanzada.
+///
+/// Es la forma serializable/deserializable de una condición: la colección por
+/// nombre, la clave opcional, la pipeline, el operador y el patrón. El validador
+/// la convierte en una [`Condition`] compilada y se persiste en la tabla
+/// `rule_conditions` cuando está presente.
+#[derive(Debug, Serialize, Deserialize, Clone)]
+pub struct ConditionInput {
+    pub collection: String,
+    #[serde(default)]
+    pub key: Option<String>,
+    #[serde(default)]
+    pub transformations: String,
+    #[serde(default)]
+    pub operator: Option<String>,
+    pub pattern: String,
+}
+
+impl From<&Condition> for ConditionInput {
+    /// Proyecta una condición compilada a su forma serializable.
+    ///
+    /// La representación es la misma que la de entrada —`collection`, `key`,
+    /// `transformations`, `operator` y `pattern`—, de modo que el ciclo
+    /// lectura→edición es estable: lo que se lee se puede reenviar tal cual.
+    /// La pipeline viaja en su especificación canónica
+    /// ([`TransformationPipeline::spec`]) y el operador como `@rx`, que es el
+    /// único que admite esta fase.
+    fn from(condition: &Condition) -> Self {
+        let pattern = match &condition.operator {
+            Operator::Rx(regex) => regex.as_str(),
+        };
+        Self {
+            collection: condition.collection.field_name().to_string(),
+            key: condition.key.clone(),
+            transformations: condition.pipeline.spec().to_string(),
+            operator: Some("@rx".to_string()),
+            pattern: pattern.to_string(),
+        }
+    }
+}
+
+impl ConditionInput {
+    /// Compila y valida una condición de la autoría avanzada.
+    ///
+    /// Convierte la forma serializable ([`ConditionInput`]) en la IR compilada
+    /// ([`Condition`]) que el matcheo consume. Es el **único punto de
+    /// validación** de una condición avanzada: lo invocan las tres vías de
+    /// escritura —crear, editar e importar—, de modo que lo almacenado es
+    /// siempre una condición bien formada.
+    ///
+    /// Reglas de validación:
+    ///
+    /// - la colección debe ser conocida ([`Collection::from_field_name`]);
+    /// - la clave es obligatoria exactamente cuando la colección la exige
+    ///   ([`Collection::requires_key`]) y no debe venir en caso contrario;
+    /// - el operador debe ser ausente o `@rx` (F2b-2a no admite otros);
+    /// - el patrón debe compilar con [`Regex::new`];
+    /// - las transformaciones deben resolverse con
+    ///   [`TransformationPipeline::parse`];
+    /// - para `request_headers` la clave se normaliza a minúsculas, igual que
+    ///   la extracción guarda los nombres de cabecera.
+    ///
+    /// # Errors
+    ///
+    /// Devuelve [`AppError::InvalidInput`] —que la API traduce a
+    /// `400 Bad Request`— si la condición incumple cualquiera de las reglas
+    /// anteriores.
+    pub fn compile(&self) -> Result<Condition, AppError> {
+        let Some(collection) = Collection::from_field_name(&self.collection) else {
+            return Err(AppError::InvalidInput(format!(
+                "colección desconocida: «{}»",
+                self.collection
+            )));
+        };
+
+        let key = if collection.requires_key() {
+            match self.key.as_deref() {
+                Some(key) if !key.is_empty() => Some(if collection == Collection::RequestHeaders {
+                    key.to_ascii_lowercase()
+                } else {
+                    key.to_string()
+                }),
+                _ => {
+                    return Err(AppError::InvalidInput(format!(
+                        "la colección «{}» exige una clave no vacía",
+                        collection.field_name()
+                    )));
+                },
+            }
+        } else {
+            if self.key.is_some() {
+                return Err(AppError::InvalidInput(format!(
+                    "la colección «{}» no admite clave",
+                    collection.field_name()
+                )));
+            }
+            None
+        };
+
+        match self.operator.as_deref() {
+            None | Some("@rx") => {},
+            Some(other) => {
+                return Err(AppError::InvalidInput(format!(
+                    "operador no admitido: «{other}»; en esta fase solo se admite «@rx»"
+                )));
+            },
+        }
+
+        let regex = Regex::new(&self.pattern).map_err(|error| {
+            AppError::InvalidInput(format!(
+                "el patrón de la condición «{}» no compila: {error}",
+                collection.field_name()
+            ))
+        })?;
+
+        let pipeline = TransformationPipeline::parse(&self.transformations)
+            .map_err(|error| AppError::InvalidInput(error.to_string()))?;
+
+        Ok(Condition {
+            collection,
+            key,
+            pipeline,
+            operator: Operator::Rx(regex),
+        })
+    }
+}
+
+/// Compila la lista opcional de condiciones de la autoría avanzada.
+///
+/// Devuelve `None` cuando la lista está ausente o es nula —modo simple: la
+/// proyección se hará desde los 14 campos al escribir— y la lista compilada
+/// cuando viene. Un fallo en cualquier condición aborta la compilación entera:
+/// la regla no se almacena a medias.
+///
+/// # Errors
+///
+/// Propaga el [`AppError::InvalidInput`] de la primera condición que no compile.
+pub fn compile_conditions(
+    conditions: Option<&[ConditionInput]>,
+) -> Result<Option<Vec<Condition>>, AppError> {
+    conditions
+        .map(|list| list.iter().map(ConditionInput::compile).collect())
+        .transpose()
 }
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
@@ -358,6 +522,12 @@ pub struct UpdateRule {
     pub x_request_id: Option<String>,
     pub rate_limit_profile_id: Option<i32>,
     pub active: bool,
+    /// Lista ordenada de condiciones de la autoría avanzada. Mismo contrato que
+    /// en [`NewRule`]: ausente o nula = modo simple; presente = modo avanzado.
+    /// Este campo se valida y se persiste en la tabla `rule_conditions` cuando
+    /// está presente.
+    #[serde(default)]
+    pub conditions: Option<Vec<ConditionInput>>,
 }
 
 /// Nombre del pipeline del WAF: `first match wins` por `weight ASC`, que es el
@@ -464,12 +634,13 @@ impl From<Rule> for CacheRule {
 impl Rule {
     /// Reemplaza el conjunto persistido de condiciones de `rule`.
     ///
-    /// Proyecta los 14 campos de la regla con [`condition::project`] —la MISMA
-    /// proyección que alimentaba la caché en memoria, de modo que escritura y
-    /// lectura son inversas exactas— y **borra** las filas previas de la regla
-    /// antes de insertar una fila por condición, con `position` = índice en el
-    /// vector (contigua 0-based). El reemplazo, no el apéndice, es lo que hace que
-    /// editar una regla deje exactamente el conjunto de la nueva versión.
+    /// Si `conditions` es `Some(lista)`, persiste **esa** lista —el conjunto de la
+    /// autoría avanzada, en su orden—; si es `None`, proyecta los 14 campos de la
+    /// regla con [`condition::project`] —el modo simple—. En ambos casos **borra**
+    /// las filas previas de la regla antes de insertar una fila por condición, con
+    /// `position` = índice en el vector (contigua 0-based). El reemplazo, no el
+    /// apéndice, es lo que hace que editar una regla deje exactamente el conjunto
+    /// de la nueva versión.
     ///
     /// Escribe sobre `conn`, que puede ser un `&mut SqliteConnection` de pool o el
     /// de una transacción: la escritura de la fila de `rules` y la de sus
@@ -480,7 +651,11 @@ impl Rule {
     /// Devuelve un error de base de datos si el `DELETE` o algún `INSERT` fallan,
     /// y `AppError::Other` si el índice de una condición no cabe en el `position`
     /// `INTEGER` («demasiadas condiciones»).
-    async fn write_conditions(conn: &mut SqliteConnection, rule: &Self) -> Result<(), AppError> {
+    async fn write_conditions(
+        conn: &mut SqliteConnection,
+        rule: &Self,
+        conditions: Option<&[Condition]>,
+    ) -> Result<(), AppError> {
         // Las tres vías de escritura (creación, edición e importación) normalizan
         // la especificación de transformaciones **antes** de llegar aquí, así que
         // hoy este `unwrap_or_default` no degrada nada en la práctica. Es, no
@@ -489,7 +664,16 @@ impl Rule {
         // contrato de entrada cambiara, esta escritura persistiría en silencio una
         // pipeline distinta de la que la carga usaría.
         let pipeline = TransformationPipeline::parse(&rule.transformations).unwrap_or_default();
-        let conditions = condition::project(rule, &pipeline);
+        // El préstamo de la proyección necesita un dueño local; el conjunto
+        // explícito de la autoría avanzada se usa tal cual.
+        let mut projected = Vec::new();
+        let conditions: &[Condition] = conditions.map_or_else(
+            || {
+                projected = condition::project(rule, &pipeline);
+                projected.as_slice()
+            },
+            |list| list,
+        );
 
         query("DELETE FROM rule_conditions WHERE rule_id = ?")
             .bind(rule.id)
@@ -505,11 +689,12 @@ impl Rule {
             query(
                 "INSERT INTO rule_conditions
                     (rule_id, position, collection, key, transformations, operator, pattern, negate)
-                 VALUES (?, ?, ?, NULL, ?, '@rx', ?, 0)",
+                 VALUES (?, ?, ?, ?, ?, '@rx', ?, 0)",
             )
             .bind(rule.id)
             .bind(position)
             .bind(condition.collection.field_name())
+            .bind(condition.key.as_deref())
             .bind(condition.pipeline.spec())
             .bind(pattern)
             .execute(&mut *conn)
@@ -523,9 +708,10 @@ impl Rule {
     /// fila actual.
     ///
     /// Es la vía de la importación, que tras el UPSERT solo conoce el `id`: relee
-    /// la fila y delega en [`Rule::write_conditions`]. La creación y la edición,
-    /// que ya tienen la fila en memoria, llaman directamente a
-    /// `write_conditions`.
+    /// la fila y delega en [`Rule::write_conditions`]. Si `conditions` es `None`,
+    /// proyecta desde los 14 campos releídos; si viene la lista compilada, la
+    /// persiste tal cual. La creación y la edición, que ya tienen la fila en
+    /// memoria, llaman directamente a `write_conditions`.
     ///
     /// # Errors
     ///
@@ -533,13 +719,71 @@ impl Rule {
     pub(crate) async fn replace_conditions_for_id(
         conn: &mut SqliteConnection,
         rule_id: i32,
+        conditions: Option<&[Condition]>,
     ) -> Result<(), AppError> {
         let row = query("SELECT * FROM rules WHERE id = ?")
             .bind(rule_id)
             .fetch_one(&mut *conn)
             .await?;
         let rule = Self::from_row(&row);
-        Self::write_conditions(conn, &rule).await
+        Self::write_conditions(conn, &rule, conditions).await
+    }
+
+    /// Parsea una fila de `rule_conditions` en una [`Condition`], o `None` si la
+    /// fila debe descartarse (colección desconocida, patrón no compilable,
+    /// especificación de transformaciones no legible o clave ausente en una
+    /// colección que la exige).
+    ///
+    /// Es el criterio compartido por [`Rule::read_conditions`] y
+    /// [`Rule::read_conditions_batch`]: una fila irresoluble se descarta con un
+    /// `warn!` que la nombra en vez de tumbar la carga. Reutilizarlo evita que
+    /// los dos caminos de lectura diverjan.
+    fn condition_from_row(rule_id: i32, row: &SqliteRow) -> Option<Condition> {
+        let collection_name: String = row.get("collection");
+        let Some(collection) = Collection::from_field_name(&collection_name) else {
+            debug!(
+                rule_id,
+                collection = %collection_name,
+                "condición descartada: colección desconocida"
+            );
+            return None;
+        };
+        let pattern: String = row.get("pattern");
+        let Ok(regex) = Regex::new(&pattern) else {
+            debug!(
+                rule_id,
+                collection = %collection_name,
+                "condición descartada: el patrón no compila"
+            );
+            return None;
+        };
+        let transformations: String = row.get("transformations");
+        let pipeline = match TransformationPipeline::parse(&transformations) {
+            Ok(pipeline) => pipeline,
+            Err(error) => {
+                warn!(
+                    rule_id,
+                    collection = %collection_name,
+                    "condición descartada: la especificación de transformaciones no se puede leer: {error}"
+                );
+                return None;
+            },
+        };
+        let key: Option<String> = row.try_get("key").ok().flatten();
+        if collection.requires_key() && key.is_none() {
+            warn!(
+                rule_id,
+                collection = %collection_name,
+                "condición descartada: la colección exige clave y la fila no la trae"
+            );
+            return None;
+        }
+        Some(Condition {
+            collection,
+            key,
+            pipeline,
+            operator: Operator::Rx(regex),
+        })
     }
 
     /// Lee el conjunto ordenado de condiciones de `rule_id` desde
@@ -548,54 +792,73 @@ impl Rule {
     /// Es la inversa de [`Rule::write_conditions`]: parsea `collection` con
     /// [`Collection::from_field_name`], compila el `pattern` con `Regex::new` y
     /// parsea la `transformations` de la fila. Una fila con una colección
-    /// desconocida o con un patrón que no compila se **descarta** —con un `debug!`
-    /// que la nombra— en vez de tumbar la carga: es el mismo criterio con el que
-    /// [`condition::project`] no proyecta un patrón no compilable.
+    /// desconocida, con un patrón que no compila, con una especificación de
+    /// transformaciones no legible o con una clave ausente en una colección que
+    /// la exige se **descarta** —con un `warn!` que la nombra— en vez de tumbar
+    /// la carga: es el mismo criterio con el que [`condition::project`] no
+    /// proyecta un patrón no compilable.
     ///
     /// # Errors
     ///
     /// Devuelve un error de base de datos si la consulta falla. Una fila
     /// descartada no es un error.
-    async fn read_conditions(pool: &SqlitePool, rule_id: i32) -> Result<Vec<Condition>, Error> {
-        // Contrato de F2b-1: las columnas `key`, `operator` y `negate` de la fila
-        // se **ignoran** deliberadamente —no es un olvido— y toda condición se
-        // reconstruye como `Operator::Rx`. Son constantes en esta fase
-        // (`key` NULL, `operator` `'@rx'`, `negate` 0); F2c/F2d serán quienes las
-        // lean. Por eso el `SELECT` ni siquiera las pide.
-        let sql = "SELECT collection, transformations, pattern
+    pub(crate) async fn read_conditions(
+        pool: &SqlitePool,
+        rule_id: i32,
+    ) -> Result<Vec<Condition>, Error> {
+        let sql = "SELECT collection, key, transformations, pattern
                    FROM rule_conditions WHERE rule_id = ? ORDER BY position ASC";
         let rows = query(sql).bind(rule_id).fetch_all(pool).await?;
 
-        let mut conditions = Vec::with_capacity(rows.len());
-        for row in &rows {
-            let collection_name: String = row.get("collection");
-            let Some(collection) = Collection::from_field_name(&collection_name) else {
-                debug!(
-                    rule_id,
-                    collection = %collection_name,
-                    "condición descartada: colección desconocida"
-                );
-                continue;
-            };
-            let pattern: String = row.get("pattern");
-            let Ok(regex) = Regex::new(&pattern) else {
-                debug!(
-                    rule_id,
-                    collection = %collection_name,
-                    "condición descartada: el patrón no compila"
-                );
-                continue;
-            };
-            let transformations: String = row.get("transformations");
-            let pipeline = TransformationPipeline::parse(&transformations).unwrap_or_default();
-            conditions.push(Condition {
-                collection,
-                pipeline,
-                operator: Operator::Rx(regex),
-            });
+        Ok(rows
+            .iter()
+            .filter_map(|row| Self::condition_from_row(rule_id, row))
+            .collect())
+    }
+
+    /// Lee en **una sola consulta** las condiciones de todas las reglas de
+    /// `rule_ids`, agrupadas por `rule_id` y ordenadas por `position ASC`.
+    ///
+    /// Es la vía del listado y la exportación: cargar las condiciones de cada
+    /// regla con una consulta por regla sería un N+1. Una lista vacía devuelve un
+    /// mapa vacío sin tocar la base de datos. El criterio de descarte de filas es
+    /// el mismo que el de [`Rule::read_conditions`].
+    ///
+    /// # Errors
+    ///
+    /// Devuelve un error de base de datos si la consulta falla. Una fila
+    /// descartada no es un error.
+    pub(crate) async fn read_conditions_batch(
+        pool: &SqlitePool,
+        rule_ids: &[i32],
+    ) -> Result<BTreeMap<i32, Vec<Condition>>, Error> {
+        let mut grouped: BTreeMap<i32, Vec<Condition>> = BTreeMap::new();
+        if rule_ids.is_empty() {
+            return Ok(grouped);
         }
 
-        Ok(conditions)
+        // Los placeholders son dinámicos: una sola consulta con un `IN` del tamaño
+        // del lote, nunca una consulta por regla.
+        let placeholders = vec!["?"; rule_ids.len()].join(", ");
+        let sql = format!(
+            "SELECT rule_id, collection, key, transformations, pattern
+             FROM rule_conditions WHERE rule_id IN ({placeholders})
+             ORDER BY rule_id, position ASC"
+        );
+        let mut query = query(&sql);
+        for rule_id in rule_ids {
+            query = query.bind(rule_id);
+        }
+        let rows = query.fetch_all(pool).await?;
+
+        for row in &rows {
+            let rule_id: i32 = row.get("rule_id");
+            if let Some(condition) = Self::condition_from_row(rule_id, row) {
+                grouped.entry(rule_id).or_default().push(condition);
+            }
+        }
+
+        Ok(grouped)
     }
 
     fn from_row(row: &SqliteRow) -> Self {
@@ -660,6 +923,10 @@ impl Rule {
         let transformations =
             normalized_transformations(rule.transformations.as_deref().unwrap_or_default())?;
         let weight = normalized_weight(&pipeline, rule.weight.unwrap_or(100));
+        // Las condiciones se compilan y validan **antes** de abrir la transacción y
+        // de insertar la fila: una regla con una condición inválida no debe
+        // almacenarse (ni su fila ni sus condiciones). `None` significa modo simple.
+        let compiled = compile_conditions(rule.conditions.as_deref())?;
         // La fila de `rules` y sus condiciones se escriben en la MISMA
         // transacción: una regla nunca queda almacenada sin el conjunto que
         // describe su matcheo.
@@ -694,7 +961,7 @@ impl Rule {
             .map(|row| Self::from_row(&row))
             .fetch_one(&mut *tx)
             .await?;
-        Self::write_conditions(&mut tx, &created).await?;
+        Self::write_conditions(&mut tx, &created, compiled.as_deref()).await?;
         tx.commit().await?;
         Ok(created)
     }
@@ -750,7 +1017,7 @@ impl Rule {
     /// Devuelve [`AppError::InvalidInput`] si el pipeline no es un pipeline
     /// admitido o si la especificación de transformaciones contiene un token que no
     /// se reconoce, y un error de base de datos si la consulta falla.
-    pub async fn update(pool: &SqlitePool, rule: UpdateRule) -> Result<Self, AppError> {
+    pub async fn update(pool: &SqlitePool, mut rule: UpdateRule) -> Result<Self, AppError> {
         let sql = "UPDATE rules SET
                 name = ?,
                 description = ?,
@@ -784,6 +1051,10 @@ impl Rule {
         validate_pipeline(&pipeline)?;
         let transformations = normalized_transformations(&rule.transformations)?;
         let weight = normalized_weight(&pipeline, rule.weight);
+        // Se compilan y validan **antes** del `UPDATE`: una edición con una
+        // condición inválida no debe modificar la fila ni su conjunto. El `take`
+        // evita el movimiento parcial del resto de campos de `rule`.
+        let compiled = compile_conditions(rule.conditions.take().as_deref())?;
         // El `UPDATE` de la fila y el **reemplazo** de su conjunto de condiciones
         // comparten transacción: editar una regla deja la tabla de condiciones
         // con exactamente el conjunto de la nueva versión.
@@ -818,7 +1089,7 @@ impl Rule {
             .map(|row| Self::from_row(&row))
             .fetch_one(&mut *tx)
             .await?;
-        Self::write_conditions(&mut tx, &updated).await?;
+        Self::write_conditions(&mut tx, &updated, compiled.as_deref()).await?;
         tx.commit().await?;
         Ok(updated)
     }
@@ -1078,6 +1349,11 @@ mod tests {
             content_type: None,
             accept_language: None,
             x_request_id: None,
+            cookies: BTreeMap::new(),
+            headers: BTreeMap::new(),
+            query_args: BTreeMap::new(),
+            basename: None,
+            extension: None,
             is_tor,
             rule_id: None,
             created_at: Utc::now(),
@@ -1198,7 +1474,7 @@ mod tests {
     }
 
     /// Escenario: Restricted field present and matching.
-    /// Guardián: decide el regex; pasa ya y debe seguir pasando tras el GREEN.
+    /// Guardián: decide el regex; debe seguir pasando tras el refactor.
     #[test]
     fn test_matches_restricted_field_present_and_matching() {
         let rule = make_rule_with(|r| r.user_agent = Some(r"curl/8\.5".to_string()));
@@ -1211,8 +1487,8 @@ mod tests {
     }
 
     /// Escenario: Restricted field present and not matching.
-    /// Guardián: con el valor presente decide el regex; pasa ya y debe seguir
-    /// pasando tras el GREEN.
+    /// Guardián: con el valor presente decide el regex; debe seguir pasando tras
+    /// el refactor.
     #[test]
     fn test_matches_restricted_field_present_and_not_matching() {
         let rule = make_rule_with(|r| r.user_agent = Some(r"curl/8\.5".to_string()));
@@ -1246,7 +1522,7 @@ mod tests {
     /// Escenario: An unrestricted field is neutral.
     /// Guardián: la regla sólo restringe `path`; los campos que no restringe
     /// (`user_agent`, `referer`, `x_request_id`, ausentes) son neutrales → casa.
-    /// Pasa ya y vigila que el GREEN no toque la neutralidad de `(None, _)`.
+    /// Vigila que el refactor no toque la neutralidad de `(None, _)`.
     #[test]
     fn test_matches_unrestricted_fields_are_neutral() {
         let rule = make_rule_with(|r| r.path = Some(r"^/admin$".to_string()));
@@ -1356,7 +1632,7 @@ mod tests {
     /// campo ausente.
     ///
     /// Guardián: hoy pasa trivialmente (no hay diagnóstico alguno) y debe
-    /// seguir pasando tras el GREEN.
+    /// seguir pasando tras el refactor.
     #[test]
     fn test_matches_legitimate_regex_no_match_emits_no_diagnostic() {
         let rule = make_rule_with(|r| {
@@ -1653,8 +1929,8 @@ mod tests {
     // a condiciones debe preservar ──
     //
     // Estos tests fijan la equivalencia observable de `evaluate()` sobre los 14
-    // campos: mismo `matched` y misma forma de la evidencia. Son caracterización:
-    // pasan ya en RED, porque la implementación de la proyección es GREEN.
+    // campos: mismo `matched` y misma forma de la evidencia. Verifican el contrato
+    // de la proyección.
 
     /// Construye una `CacheRule` que restringe **solo** la colección indicada,
     /// con el patrón `^match-me$` y la pipeline `lowercase`.
@@ -1677,6 +1953,14 @@ mod tests {
                 Collection::ContentType => r.content_type = pattern,
                 Collection::AcceptLanguage => r.accept_language = pattern,
                 Collection::RequestId => r.x_request_id = pattern,
+                // Las cinco colecciones nuevas no se proyectan desde los 14
+                // campos del modo simple; este helper de caracterización solo
+                // recorre `Collection::ALL`, así que no las toca.
+                Collection::RequestCookies
+                | Collection::RequestHeaders
+                | Collection::ArgsGet
+                | Collection::RequestBasename
+                | Collection::RequestExtension => {},
             }
         })
     }
@@ -1700,11 +1984,25 @@ mod tests {
                 Collection::ContentType => q.content_type = value,
                 Collection::AcceptLanguage => q.accept_language = value,
                 Collection::RequestId => q.x_request_id = value,
+                // Las colecciones nuevas se dejan con una entrada fija de
+                // clave-valor para que la resolución real por clave funcione.
+                Collection::RequestCookies => {
+                    q.cookies.insert("clave".to_string(), "valor".to_string());
+                },
+                Collection::RequestHeaders => {
+                    q.headers.insert("clave".to_string(), "valor".to_string());
+                },
+                Collection::ArgsGet => {
+                    q.query_args
+                        .insert("clave".to_string(), "valor".to_string());
+                },
+                Collection::RequestBasename => q.basename = value,
+                Collection::RequestExtension => q.extension = value,
             }
         })
     }
 
-    /// caracterización: pasa ya en RED.
+    /// caracterización: verifica el comportamiento final.
     ///
     /// Escenario del delta: «La proyección de los 14 campos a condiciones es
     /// total y equivalente». Para cada uno de los 14 campos, una regla que lo
@@ -1743,7 +2041,7 @@ mod tests {
         }
     }
 
-    /// caracterización: pasa ya en RED.
+    /// caracterización: verifica el comportamiento final.
     ///
     /// Regla que restringe `user_agent` con una petición sin `user_agent` → NO
     /// casa y no hay evidencia. Es el brazo `(Some(_), None)` del matcheo que la
@@ -1766,7 +2064,7 @@ mod tests {
         );
     }
 
-    /// caracterización: pasa ya en RED.
+    /// caracterización: verifica el comportamiento final.
     ///
     /// La evidencia se anota bajo el nombre del campo con el valor
     /// **transformado**; con la pipeline vacía no hay evidencia.
@@ -1801,7 +2099,7 @@ mod tests {
         );
     }
 
-    /// caracterización: pasa ya en RED.
+    /// caracterización: verifica el comportamiento final.
     ///
     /// `is_tor` queda fuera del conjunto de condiciones: es el predicado
     /// booleano que decide por sí solo, además de las condiciones de campo.
