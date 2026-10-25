@@ -167,6 +167,48 @@ Two warnings. The pipeline is applied **once**, not until the value stops changi
 
 When a rule declares a pipeline and restricts at least one field, the audit log records under the `"matched"` key the **transformed** value that matched, which lets you tune a rule without guessing why it matched.
 
+### Advanced conditions (API)
+
+The rule dialog authors the **simple** form: the 14 fields. The API also accepts an **advanced** form that authors the matching set condition by condition. It is additive and opt-in: the client picks the form by whether it sends the `conditions` field.
+
+- **`conditions` absent or null → simple mode.** The set is projected from the 14 fields, exactly as the dialog does.
+- **`conditions` present (even an empty list) → advanced mode.** The list **is** the persisted set; the 14 fields are stored as they come and take no part in matching.
+
+Each condition is `{collection, key, transformations, operator, pattern}`. On top of the 14 fields, the vocabulary adds five collections:
+
+| Collection | Key | What it reads |
+|---|---|---|
+| `request_cookies` | **required** — the cookie name | that cookie's value, from the `Cookie` header |
+| `request_headers` | **required** — the header name | that header's value; the name is matched case-insensitively and stored lowercase |
+| `args_get` | **required** — the query argument name | that argument's value, one by one and **raw** (still percent-encoded, like `query`) |
+| `request_basename` | forbidden | the last non-empty segment of the path |
+| `request_extension` | forbidden | the substring after the last dot of the basename, when the dot is not the first character |
+
+`key` is mandatory exactly when the collection requires it and rejected otherwise. Any other rejection — unknown collection, a pattern that does not compile, `transformations` that do not resolve, or an `operator` other than `@rx` — is a `400` and the rule is **not** stored. `operator` is optional, and `@rx` is the only operator this phase accepts.
+
+A keyed collection is resolved **by name**: `request_cookies[PHPSESSID]` is the evidence key a cookie condition logs, so two conditions over the same collection with different keys are told apart in the audit log.
+
+Two things to know:
+
+- **Keyed collections are WAF-only for now.** Cookies and headers come from the request's header map, which the WAF (Traefik `forwardAuth`) receives in full but the Jail pipeline's access-log payload does not carry. A Jail rule that restricts `request_cookies`, `request_headers` or `args_get` sees no value and never matches. `request_basename`, `request_extension` and the query arguments are derived from the path and the query — which the access log does carry — so they work in **both** pipelines. See the Self-Hosting guide, §2.16.
+- **Duplicate names: the last one wins.** If a query string repeats a name (`?id=1&id=2`), the argument holds `2`; if the same header name appears twice, its last value wins; cookies from several `Cookie` headers are merged with the same last-wins rule for a repeated name.
+
+Example — deny any request carrying a `PHPSESSID` cookie whose value is exactly `deadbeef`:
+
+```json
+{
+  "name": "killed-session",
+  "pipeline": "waf",
+  "mode": "enforce",
+  "allow": false,
+  "conditions": [
+    { "collection": "request_cookies", "key": "PHPSESSID", "pattern": "^deadbeef$" }
+  ]
+}
+```
+
+Read a rule back and you get the same `conditions` array — each entry with `"operator": "@rx"` and the canonicalised `transformations` — so a read–edit–PATCH round trip is stable. The rule dialog does not edit this form yet, so a rule authored this way keeps its simple fields untouched; editing conditions from the UI is a later change.
+
 ### Rule Modes
 
 | Mode | Behaviour |

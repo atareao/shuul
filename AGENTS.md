@@ -318,29 +318,47 @@ de los otros como transporte.
 
 #### La IR de condiciones (`models/condition.rs`)
 
-- `Collection` — las 14 colecciones de la petición (`ip_address` … `x_request_id`), con `Collection::ALL` en el orden de la cadena histórica, `field_name()` (que es la clave de la evidencia) y `request_value()`.
+- `Collection` — **19 variantes**: las 14 colecciones de campo (`ip_address` … `x_request_id`) más las cinco de F2b-2a — `RequestCookies`, `RequestHeaders` y `ArgsGet` (con clave) y `RequestBasename` y `RequestExtension` (sin clave). `Collection::ALL` sigue siendo **las 14**: es la lista de la representación simple y del orden histórico, no el catálogo completo. Cada variante tiene `field_name()` (la clave de la evidencia), `from_field_name()` (el inverso, que usa la lectura), `requires_key()` (verdadero solo para las tres con clave) y `request_value(request, key)`.
 - `Operator` — nace con una sola variante: `Rx(Regex)`.
-- `Condition { collection, pipeline, operator }` — una condición ya compilada.
-- `project(rule, pipeline) -> Vec<Condition>` — proyecta a condiciones los campos que la regla restringe. Un patrón **ausente**, **vacío** o **no compilable** **no** proyecta ninguna condición; `is_tor` **nunca** proyecta. Lo usan la **escritura** (`Rule::write_conditions`) para poblar `rule_conditions` y el constructor en memoria (`CacheRule::from_rule`); la **lectura** de producción (`Rule::read_conditions`) reconstruye la IR desde la tabla.
+- `Condition { collection, key, pipeline, operator }` — una condición ya compilada. `key` es `Option<String>`: el nombre de la cookie, la cabecera o el argumento para las tres colecciones con clave, y `None` para el resto. **No** vive en `Collection`, que es `Copy`.
+- `ConditionInput { collection, key, transformations, operator, pattern }` — la forma serializable de una condición para la API; `NewRule` y `UpdateRule` la aceptan en su campo `conditions`. `ConditionInput::compile()` la valida y la compila a `Condition`: colección conocida, clave obligatoria exactamente cuando la colección la exige y prohibida cuando no, `operator` ausente o `@rx`, patrón compilable y transformaciones resolubles. Todo rechazo es `AppError::InvalidInput` (400) y la regla no se almacena.
+- `project(rule, pipeline) -> Vec<Condition>` — proyecta a condiciones los campos que la regla restringe. Un patrón **ausente**, **vacío** o **no compilable** **no** proyecta ninguna condición; `is_tor` **nunca** proyecta. Lo usan la **escritura** (`Rule::write_conditions`) para poblar `rule_conditions` en **modo simple** y el constructor en memoria (`CacheRule::from_rule`); la **lectura** de producción (`Rule::read_conditions`) reconstruye la IR desde la tabla.
 
-#### Filtros disponibles (14)
+#### Filtros disponibles (19)
 
 ```rust
+// 14 de campo (Collection::ALL)
 ip_address, protocol, fqdn, path, query,
 city_name, country_name, country_code,
 user_agent, method, referer, content_type,
 accept_language, x_request_id
+// 5 de F2b-2a (las tres primeras, con clave entre corchetes)
+request_cookies[clave], request_headers[clave], args_get[clave],
+request_basename, request_extension
 ```
+
+#### Modo simple frente a modo avanzado
+
+El **modo** lo decide la presencia del campo `conditions` en la escritura, sin columna que lo marque:
+
+- `conditions` **ausente o nula** → **modo simple**: el conjunto se proyecta desde los 14 campos con `project()`, como hasta ahora.
+- `conditions` **presente** (aunque sea la lista vacía) → **modo avanzado**: la lista **es** el conjunto persistido, y los 14 campos se almacenan tal cual vengan sin participar del matcheo.
+
+La lectura siempre devuelve las condiciones: el cliente reconstruye el modo a partir de su presencia. La representación de una regla (crear, editar, leer, listar y exportar) **incluye** `conditions`; en el listado y la exportación se cargan **por lote** con una sola consulta `WHERE rule_id IN (…)` (`Rule::read_conditions_batch`), nunca una por regla.
 
 #### Lógica de `evaluate()`
 
 `evaluate()` recorre el conjunto de condiciones **en orden y en AND con cortocircuito**: la primera que no casa detiene la evaluación y `matched` es `false`. Una regla **sin** condiciones es **neutral**: casa. El contrato de cada condición es el de los tres brazos históricos:
 
-- colección restringida y **presente** → la pipeline se aplica **al valor de la petición** —nunca al patrón, que se usa tal como se compiló— y el operador decide sobre el resultado; si casa y la pipeline no está vacía, el valor **transformado** queda en la evidencia bajo `Collection::field_name()`;
-- colección restringida y **ausente** → la condición **no** se cumple y se emite un `debug!` que nombra el campo y la regla;
+- colección restringida y **presente** → la pipeline se aplica **al valor de la petición** —nunca al patrón, que se usa tal como se compiló— y el operador decide sobre el resultado; si casa y la pipeline no está vacía, el valor **transformado** queda en la evidencia bajo la clave de la colección;
+- colección restringida y **ausente** → la condición **no** se cumple y se emite un `debug!` que nombra la colección, la clave y la regla;
 - colección que la regla **no** restringe → **no** genera condición: es neutral.
 
-`is_tor` **no** forma parte del conjunto: sigue siendo el predicado booleano `check_tor` que se combina al final, con el mismo cortocircuito —solo se evalúa si todas las condiciones casaron—. La clave de la evidencia sigue siendo el **nombre del campo** (`path`, `user_agent`…), no un nombre de colección.
+Para las tres colecciones con clave, el valor se resuelve por el nombre: `request_value(request, key)` busca la cookie, la cabecera (el nombre normalizado a minúsculas) o el argumento del query. La clave de la evidencia es entonces la **clave compuesta** `colección[clave]` (`request_cookies[PHPSESSID]`), que distingue dos condiciones de la misma colección con claves distintas; las 14 de campo y `request_basename`/`request_extension` conservan su nombre simple.
+
+Una fila de `rule_conditions` **irresoluble** en la lectura se **descarta** con un diagnóstico que la nombra: colección desconocida, patrón que no compila, transformaciones que no se pueden leer, o colección con clave sin clave. Descartar en vez de aplicar mal es el **fallo seguro** del rollback a una imagen anterior (`openspec/changes/waf-collections/design.md`).
+
+`is_tor` **no** forma parte del conjunto: sigue siendo el predicado booleano `check_tor` que se combina al final, con el mismo cortocircuito —solo se evalúa si todas las condiciones casaron—.
 
 ### Base de datos — SQLite
 
