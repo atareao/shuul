@@ -5,10 +5,13 @@
 //! la petición que restringe, la pipeline de transformaciones que se aplica a su
 //! valor antes de compararlo y el operador con el que se compara.
 //!
-//! La fuente de verdad sigue siendo los 14 campos de [`Rule`]; este módulo los
-//! **proyecta** a la IR. La proyección (`project`) es el único punto donde los
-//! campos de la regla se traducen a condiciones; en F2a es una proyección en
-//! memoria y en F2b pasará a ser una tabla persistida.
+//! Desde F2b-1 la fuente persistida del matcheo es la tabla `rule_conditions`:
+//! el matcher **lee** de ella el conjunto ordenado de condiciones. Los 14 campos
+//! de [`Rule`] siguen siendo el origen del que `project` deriva ese conjunto, pero
+//! solo al **escribir** ([`crate::models::Rule::write_conditions`]), que proyecta
+//! los campos a condiciones y las persiste; la lectura
+//! ([`crate::models::Rule::read_conditions`]) reconstruye la IR desde la tabla.
+//! `project` es, pues, la proyección que alimenta la tabla, no la que la sustituye.
 
 use crate::models::transformation::TransformationPipeline;
 use crate::models::{NewRequest, Rule};
@@ -82,6 +85,34 @@ impl Collection {
             Self::AcceptLanguage => "accept_language",
             Self::RequestId => "x_request_id",
         }
+    }
+
+    /// La colección cuyo [`Collection::field_name`] es `name`.
+    ///
+    /// Es el inverso exacto de [`Collection::field_name`]: la proyección desde la
+    /// tabla `rule_conditions` guarda el nombre del campo, y esta función lo
+    /// traduce de vuelta a la variante. Un nombre desconocido —una fila escrita
+    /// por una versión con más colecciones— devuelve `None`, de modo que quien lee
+    /// puede descartar la fila en vez de inventar una colección que no existe.
+    #[must_use]
+    pub fn from_field_name(name: &str) -> Option<Self> {
+        Some(match name {
+            "ip_address" => Self::IpAddress,
+            "protocol" => Self::Protocol,
+            "fqdn" => Self::Fqdn,
+            "path" => Self::Path,
+            "query" => Self::Query,
+            "city_name" => Self::CityName,
+            "country_name" => Self::CountryName,
+            "country_code" => Self::CountryCode,
+            "user_agent" => Self::UserAgent,
+            "method" => Self::Method,
+            "referer" => Self::Referer,
+            "content_type" => Self::ContentType,
+            "accept_language" => Self::AcceptLanguage,
+            "x_request_id" => Self::RequestId,
+            _ => return None,
+        })
     }
 
     /// El valor de la petición para esta colección, o `None` si no la trae.
@@ -604,6 +635,24 @@ mod tests {
         assert!(
             project(&rule_from_template(tor), &TransformationPipeline::default()).is_empty(),
             "«Tor exit nodes» no restringe ningún campo y no debe proyectar condición"
+        );
+    }
+
+    #[test]
+    fn test_from_field_name_is_the_inverse_of_field_name() {
+        // Verificación: cubre el hallazgo de cobertura de la auditoría de F2b-1.
+        for collection in Collection::ALL {
+            assert_eq!(
+                Collection::from_field_name(collection.field_name()),
+                Some(collection),
+                "`from_field_name` debe invertir `field_name` para {collection:?}"
+            );
+        }
+
+        assert_eq!(
+            Collection::from_field_name("REQUEST_URI_PATH"),
+            None,
+            "un nombre de campo desconocido debe devolver `None`"
         );
     }
 }

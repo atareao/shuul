@@ -11,12 +11,13 @@
 use crate::constants::DEFAULT_LIMIT;
 use crate::constants::DEFAULT_PAGE;
 use crate::models::NewRequest;
-use crate::models::condition::{self, Condition, Operator};
+use crate::models::condition::{self, Collection, Condition, Operator};
 use crate::models::error::AppError;
 use crate::models::transformation::TransformationPipeline;
 use chrono::{DateTime, Utc};
+use regex::Regex;
 use serde::{Deserialize, Serialize};
-use sqlx::{Error, Row, SqlitePool, query, sqlite::SqliteRow};
+use sqlx::{Error, Row, SqliteConnection, SqlitePool, query, sqlite::SqliteRow};
 use std::collections::BTreeMap;
 use std::fmt::Write;
 use tracing::{debug, error};
@@ -66,10 +67,14 @@ pub struct RuleInfoCounts {
 pub struct CacheRule {
     pub rule: Rule,
     pub is_tor: Option<bool>,
-    /// El conjunto ordenado de condiciones proyectadas desde los 14 campos de
-    /// [`Rule`] ([`crate::models::condition::project`]). Un conjunto vacío es una
-    /// regla neutral; [`CacheRule::evaluate`] lo recorre en AND con
-    /// cortocircuito.
+    /// El conjunto ordenado de condiciones de la regla. En **producción**
+    /// ([`CacheRule::read_all_active`]) se **lee** de la tabla `rule_conditions`
+    /// ([`Rule::read_conditions`]), que es la fuente persistida del matcheo; la
+    /// proyección desde los 14 campos de [`Rule`]
+    /// ([`crate::models::condition::project`]) es la que usa la **escritura**
+    /// ([`Rule::write_conditions`]) para poblar esa tabla, y el constructor en
+    /// memoria [`CacheRule::from_rule`]. Un conjunto vacío es una regla neutral;
+    /// [`CacheRule::evaluate`] lo recorre en AND con cortocircuito.
     pub conditions: Vec<Condition>,
 }
 
@@ -131,6 +136,14 @@ impl CacheRule {
     /// distinto de lo que su autor escribió, que es el fallo silencioso que se
     /// evita.
     ///
+    /// El conjunto de condiciones de cada regla se construye **leyendo
+    /// `rule_conditions`** ordenado por `position` ([`Rule::read_conditions`]), no
+    /// proyectando los 14 campos en memoria: la tabla es la fuente persistida del
+    /// matcheo. La proyección desde esas filas es equivalente a la de los 14
+    /// campos —la escritura usa la misma proyección—, de modo que la decisión y la
+    /// evidencia no cambian. `is_tor` sigue fuera del conjunto: es el predicado
+    /// booleano que [`CacheRule::evaluate`] combina al final.
+    ///
     /// Una fila irresoluble **no** hace que la función devuelva `Err`: se excluye
     /// y el resto de reglas se carga con normalidad.
     ///
@@ -145,8 +158,13 @@ impl CacheRule {
         for row in &rows {
             let rule = Rule::from_row(row);
             match TransformationPipeline::parse(&rule.transformations) {
-                Ok(transformations) => {
-                    rules.push(Self::from_rule_and_pipeline(&rule, &transformations));
+                Ok(_) => {
+                    let conditions = Rule::read_conditions(pool, rule.id).await?;
+                    rules.push(Self {
+                        is_tor: rule.is_tor,
+                        rule,
+                        conditions,
+                    });
                 },
                 Err(parse_error) => {
                     error!(
@@ -444,6 +462,142 @@ impl From<Rule> for CacheRule {
 }
 
 impl Rule {
+    /// Reemplaza el conjunto persistido de condiciones de `rule`.
+    ///
+    /// Proyecta los 14 campos de la regla con [`condition::project`] —la MISMA
+    /// proyección que alimentaba la caché en memoria, de modo que escritura y
+    /// lectura son inversas exactas— y **borra** las filas previas de la regla
+    /// antes de insertar una fila por condición, con `position` = índice en el
+    /// vector (contigua 0-based). El reemplazo, no el apéndice, es lo que hace que
+    /// editar una regla deje exactamente el conjunto de la nueva versión.
+    ///
+    /// Escribe sobre `conn`, que puede ser un `&mut SqliteConnection` de pool o el
+    /// de una transacción: la escritura de la fila de `rules` y la de sus
+    /// condiciones comparten transacción en las tres vías de escritura.
+    ///
+    /// # Errors
+    ///
+    /// Devuelve un error de base de datos si el `DELETE` o algún `INSERT` fallan,
+    /// y `AppError::Other` si el índice de una condición no cabe en el `position`
+    /// `INTEGER` («demasiadas condiciones»).
+    async fn write_conditions(conn: &mut SqliteConnection, rule: &Self) -> Result<(), AppError> {
+        // Las tres vías de escritura (creación, edición e importación) normalizan
+        // la especificación de transformaciones **antes** de llegar aquí, así que
+        // hoy este `unwrap_or_default` no degrada nada en la práctica. Es, no
+        // obstante, una asimetría latente frente a `read_all_active`, que
+        // **excluye** la regla cuando la especificación no se puede leer; si ese
+        // contrato de entrada cambiara, esta escritura persistiría en silencio una
+        // pipeline distinta de la que la carga usaría.
+        let pipeline = TransformationPipeline::parse(&rule.transformations).unwrap_or_default();
+        let conditions = condition::project(rule, &pipeline);
+
+        query("DELETE FROM rule_conditions WHERE rule_id = ?")
+            .bind(rule.id)
+            .execute(&mut *conn)
+            .await?;
+
+        for (index, condition) in conditions.iter().enumerate() {
+            let position = i32::try_from(index)
+                .map_err(|error| AppError::Other(format!("demasiadas condiciones: {error}")))?;
+            let pattern = match &condition.operator {
+                Operator::Rx(regex) => regex.as_str(),
+            };
+            query(
+                "INSERT INTO rule_conditions
+                    (rule_id, position, collection, key, transformations, operator, pattern, negate)
+                 VALUES (?, ?, ?, NULL, ?, '@rx', ?, 0)",
+            )
+            .bind(rule.id)
+            .bind(position)
+            .bind(condition.collection.field_name())
+            .bind(condition.pipeline.spec())
+            .bind(pattern)
+            .execute(&mut *conn)
+            .await?;
+        }
+
+        Ok(())
+    }
+
+    /// Reemplaza las condiciones persistidas de la regla `rule_id`, leyendo su
+    /// fila actual.
+    ///
+    /// Es la vía de la importación, que tras el UPSERT solo conoce el `id`: relee
+    /// la fila y delega en [`Rule::write_conditions`]. La creación y la edición,
+    /// que ya tienen la fila en memoria, llaman directamente a
+    /// `write_conditions`.
+    ///
+    /// # Errors
+    ///
+    /// Devuelve un error de base de datos si la lectura o la escritura fallan.
+    pub(crate) async fn replace_conditions_for_id(
+        conn: &mut SqliteConnection,
+        rule_id: i32,
+    ) -> Result<(), AppError> {
+        let row = query("SELECT * FROM rules WHERE id = ?")
+            .bind(rule_id)
+            .fetch_one(&mut *conn)
+            .await?;
+        let rule = Self::from_row(&row);
+        Self::write_conditions(conn, &rule).await
+    }
+
+    /// Lee el conjunto ordenado de condiciones de `rule_id` desde
+    /// `rule_conditions`, ordenado por `position ASC`.
+    ///
+    /// Es la inversa de [`Rule::write_conditions`]: parsea `collection` con
+    /// [`Collection::from_field_name`], compila el `pattern` con `Regex::new` y
+    /// parsea la `transformations` de la fila. Una fila con una colección
+    /// desconocida o con un patrón que no compila se **descarta** —con un `debug!`
+    /// que la nombra— en vez de tumbar la carga: es el mismo criterio con el que
+    /// [`condition::project`] no proyecta un patrón no compilable.
+    ///
+    /// # Errors
+    ///
+    /// Devuelve un error de base de datos si la consulta falla. Una fila
+    /// descartada no es un error.
+    async fn read_conditions(pool: &SqlitePool, rule_id: i32) -> Result<Vec<Condition>, Error> {
+        // Contrato de F2b-1: las columnas `key`, `operator` y `negate` de la fila
+        // se **ignoran** deliberadamente —no es un olvido— y toda condición se
+        // reconstruye como `Operator::Rx`. Son constantes en esta fase
+        // (`key` NULL, `operator` `'@rx'`, `negate` 0); F2c/F2d serán quienes las
+        // lean. Por eso el `SELECT` ni siquiera las pide.
+        let sql = "SELECT collection, transformations, pattern
+                   FROM rule_conditions WHERE rule_id = ? ORDER BY position ASC";
+        let rows = query(sql).bind(rule_id).fetch_all(pool).await?;
+
+        let mut conditions = Vec::with_capacity(rows.len());
+        for row in &rows {
+            let collection_name: String = row.get("collection");
+            let Some(collection) = Collection::from_field_name(&collection_name) else {
+                debug!(
+                    rule_id,
+                    collection = %collection_name,
+                    "condición descartada: colección desconocida"
+                );
+                continue;
+            };
+            let pattern: String = row.get("pattern");
+            let Ok(regex) = Regex::new(&pattern) else {
+                debug!(
+                    rule_id,
+                    collection = %collection_name,
+                    "condición descartada: el patrón no compila"
+                );
+                continue;
+            };
+            let transformations: String = row.get("transformations");
+            let pipeline = TransformationPipeline::parse(&transformations).unwrap_or_default();
+            conditions.push(Condition {
+                collection,
+                pipeline,
+                operator: Operator::Rx(regex),
+            });
+        }
+
+        Ok(conditions)
+    }
+
     fn from_row(row: &SqliteRow) -> Self {
         Self {
             id: row.get("id"),
@@ -506,7 +660,11 @@ impl Rule {
         let transformations =
             normalized_transformations(rule.transformations.as_deref().unwrap_or_default())?;
         let weight = normalized_weight(&pipeline, rule.weight.unwrap_or(100));
-        query(sql)
+        // La fila de `rules` y sus condiciones se escriben en la MISMA
+        // transacción: una regla nunca queda almacenada sin el conjunto que
+        // describe su matcheo.
+        let mut tx = pool.begin().await?;
+        let created = query(sql)
             .bind(&rule.name)
             .bind(rule.description.unwrap_or_default())
             .bind(weight)
@@ -534,9 +692,11 @@ impl Rule {
             .bind(now)
             .bind(now)
             .map(|row| Self::from_row(&row))
-            .fetch_one(pool)
-            .await
-            .map_err(AppError::from)
+            .fetch_one(&mut *tx)
+            .await?;
+        Self::write_conditions(&mut tx, &created).await?;
+        tx.commit().await?;
+        Ok(created)
     }
 
     /// Reads rule info (total or active count).
@@ -624,7 +784,11 @@ impl Rule {
         validate_pipeline(&pipeline)?;
         let transformations = normalized_transformations(&rule.transformations)?;
         let weight = normalized_weight(&pipeline, rule.weight);
-        query(sql)
+        // El `UPDATE` de la fila y el **reemplazo** de su conjunto de condiciones
+        // comparten transacción: editar una regla deja la tabla de condiciones
+        // con exactamente el conjunto de la nueva versión.
+        let mut tx = pool.begin().await?;
+        let updated = query(sql)
             .bind(&rule.name)
             .bind(&rule.description)
             .bind(weight)
@@ -652,9 +816,11 @@ impl Rule {
             .bind(now)
             .bind(rule.id)
             .map(|row| Self::from_row(&row))
-            .fetch_one(pool)
-            .await
-            .map_err(AppError::from)
+            .fetch_one(&mut *tx)
+            .await?;
+        Self::write_conditions(&mut tx, &updated).await?;
+        tx.commit().await?;
+        Ok(updated)
     }
 
     /// Counts rules with the given filters.

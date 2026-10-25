@@ -291,7 +291,10 @@ Mientras `IS_TOR` no haya entrado, el chequeo booleano se queda donde está: al 
 **Sub-entregas, cada una publicable:**
 
 - **F2a** — IR `Condition` y proyección de compatibilidad desde los 14 campos, **en memoria**. **Sin tabla y sin migración**: la fuente de verdad siguen siendo las 14 columnas y la tabla llega en F2b. Sin cambio funcional visible. **✅ Entregada.** `Collection`, `Operator::Rx` y `Condition` con `project()` viven en `backend/src/models/condition.rs`; `CacheRule` pasa de 14 `Option<Regex>` más una pipeline propia a un `Vec<Condition>`; `evaluate()` recorre el conjunto en AND con cortocircuito y `check_tor` sigue **fuera** del conjunto. Resultado real de los gates: backend **535** verdes / **0** rojos / 1 ignorado; `cargo clippy --lib --bins` en **0** y `--all-targets` en **83** (la base, sin añadidos); `cargo fmt --check` limpio. Cero migración, cero cambio de oferta de API y cero cambio en la forma del evento.
-- **F2b** — la tabla `rule_conditions` con su backfill desde los 14 campos, las colecciones nuevas (cookies, cabeceras con nombre, argumentos del query uno a uno, basename/extensión) y la integración de `IS_TOR`.
+- **F2b** — se subdivide en tres entregas publicables:
+  - **F2b-1** — la tabla `rule_conditions` con su backfill desde los 14 campos; la tabla pasa a ser la **fuente persistida** del conjunto de condiciones y las 14 columnas de `rules` se conservan como representación simple. Sin cambio observable. **✅ Entregada.**
+  - **F2b-2** — las colecciones nuevas (cookies, cabeceras con nombre, argumentos del query uno a uno, basename/extensión) y su extracción del request.
+  - **F2b-3** — la representación de `IS_TOR` como colección.
 - **F2c** — operadores nuevos: `@ipMatch` con CIDR, `@pm` con Aho-Corasick, los de cadena y los de validación, y el operador booleano que le da sentido a `IS_TOR`.
 - **F2d** — lógica booleana: `condition_operator` (`and` | `or`) en la regla y `negate` por condición. El encadenado completo de Coraza con `capture` y variables `TX` **queda fuera** de esta fase.
 
@@ -378,7 +381,7 @@ Merece la pena aunque F1 llegue después: son capas distintas y se complementan.
 ```mermaid
 flowchart LR
   F1["F1 · Transformaciones<br/>(mayor valor/esfuerzo)"] --> F2a["F2a · Condiciones 1:N<br/>sin cambio funcional"]
-  F2a --> F2b["F2b · Colecciones + tabla<br/>rule_conditions · cookies, cabeceras, args · IS_TOR"]
+  F2a --> F2b["F2b · Tabla + colecciones + IS_TOR<br/>F2b-1 ✅ · F2b-2 · F2b-3"]
   F2b --> F2c["F2c · Operadores<br/>CIDR, @pm, validación"]
   F2c --> F2d["F2d · Lógica<br/>AND/OR/NOT"]
   F2d --> F3["F3 · Severidad y scoring<br/>+ niveles de paranoia"]
