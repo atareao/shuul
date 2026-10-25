@@ -22,58 +22,20 @@ import type { DialogMode } from "@/common/types";
 import { DialogModes } from "@/common/types";
 import type { DialogMessages } from "@/components/dialogs/custom_dialog";
 import type Item from "@/models/rule";
-import { isJailPipeline } from "@/models/rule";
+import { isJailPipeline, collectionRequiresKey } from "@/models/rule";
 import type RateLimitProfile from "@/models/rate_limit_profile";
+import { CANONICAL_TRANSFORMATIONS } from "./rule_transformations";
+import ConditionEditor from "./condition_editor";
+import {
+  LABEL_WIDTH,
+  inferConditionMode,
+  newDraftCondition,
+  seedConditions,
+  serializeCondition,
+} from "./condition_editor_model";
+import type { ConditionMode, DraftCondition } from "./condition_editor_model";
 
 const { Text } = Typography;
-
-/**
- * Los dieciocho nombres canónicos de transformación, **en el orden de la
- * especificación** (`urlDecode`, `urlDecodeUni`, `lowercase`…) —el mismo que
- * sirve el backend—.
- *
- * El orden importa: la pipeline se aplica de izquierda a derecha y no es
- * conmutativa (`urlDecodeUni,lowercase` no es `lowercase,urlDecodeUni`), así que
- * esta lista es sólo el orden en que se ofrecen los chips, no el orden en que se
- * aplican: el que manda es el orden en que se pulsan.
- *
- * El backend **rechaza** cualquier token que no sea exactamente uno de estos,
- * literal y sensible a mayúsculas (`urldecodeuni` no vale), con un `400` que
- * nombra el token. Por eso se ofrecen como chips en vez de dejar que se escriban
- * a mano: el camino común —pulsar— no puede producir un token no canónico, y el
- * parser estricto sólo lo ve quien escribe contra la API.
- */
-const CANONICAL_TRANSFORMATIONS = [
-  "urlDecode",
-  "urlDecodeUni",
-  "lowercase",
-  "uppercase",
-  "removeNulls",
-  "replaceNulls",
-  "compressWhitespace",
-  "removeWhitespace",
-  "normalizePath",
-  "normalizePathWin",
-  "htmlEntityDecode",
-  "jsDecode",
-  "cssDecode",
-  "escapeSeqDecode",
-  "base64Decode",
-  "cmdLine",
-  "trim",
-  "length",
-] as const;
-
-/**
- * Ancho en píxeles de la columna de etiquetas de cada fila del formulario.
- *
- * Todas las filas (`renderInputRow`, `renderSelectRow` y las escritas a mano en
- * las pestañas) reservan esta anchura fija a la etiqueta para que los campos
- * queden alineados en vertical. El bloque de chips de transformaciones se alinea
- * bajo el campo —no bajo la etiqueta—, así que se desplaza a la derecha esta
- * misma anchura más el hueco (`gap`) del `Flex` de antd.
- */
-const LABEL_WIDTH = 120;
 
 // Props del RuleDialog
 interface RuleDialogProps {
@@ -149,6 +111,8 @@ function initializeFromItem(item?: Item): Record<string, unknown> {
 // Convierte los valores del formulario al formato esperado por la API
 function formatForApi(
   values: Record<string, unknown>,
+  conditionMode: ConditionMode,
+  conditions: DraftCondition[],
 ): Record<string, unknown> {
   const body: Record<string, unknown> = {
     active: values.active,
@@ -188,6 +152,13 @@ function formatForApi(
         ? Number(values.rate_limit_profile_id)
         : null,
   };
+  // El contrato de modo: en simple `conditions` se **omite** por completo —el
+  // backend proyecta los 14 campos—, y en avanzado viaja siempre, aunque sea la
+  // lista vacía. La diferencia entre omitir y enviar `[]` es la que decide el
+  // modo en el backend, así que no puede depender de si hay filas.
+  if (conditionMode === "advanced") {
+    body.conditions = conditions.map(serializeCondition);
+  }
   return body;
 }
 
@@ -206,6 +177,24 @@ export default function RuleDialog({
   const [error, setError] = useState<string | null>(null);
   const [profiles, setProfiles] = useState<RateLimitProfile[]>([]);
   const [profilesLoading, setProfilesLoading] = useState(false);
+  // El modo se infiere al inicializar: una regla nueva abre en simple y una
+  // cargada compara sus condiciones con la proyección de sus 14 campos. La
+  // inferencia se calcula **una sola vez** y alimenta ambos estados.
+  const [initialConditionState] = useState(() => inferConditionMode(selectedItem));
+  const [conditionMode, setConditionMode] = useState<ConditionMode>(
+    initialConditionState.mode,
+  );
+  const [conditions, setConditions] = useState<DraftCondition[]>(
+    initialConditionState.conditions,
+  );
+  // Identificadores de las filas cuya colección exige clave y la tienen vacía.
+  // Sólo se puebla al intentar guardar: el error se señala al confirmar, no
+  // mientras se escribe.
+  const [invalidKeyUids, setInvalidKeyUids] = useState<number[]>([]);
+  // Visibilidad del `Popconfirm` que pide confirmación al volver a modo simple.
+  // Controlado y en árbol, para que se desmonte con el diálogo y no se filtre
+  // entre tests (a diferencia del `Modal.confirm` estático de antd).
+  const [confirmSimpleOpen, setConfirmSimpleOpen] = useState(false);
 
   // Load rate limit profiles for the selector
   useEffect(() => {
@@ -239,11 +228,21 @@ export default function RuleDialog({
 
   // Actualizar formValues cuando cambia selectedItem o dialogMode
   useEffect(() => {
+    // El modo y las filas se reinician con el item: la inferencia depende de las
+    // condiciones recibidas, así que reutilizarlas entre diálogos arrastraría el
+    // modo de la regla anterior.
+    const initial =
+      dialogMode === DialogModes.CREATE
+        ? inferConditionMode(undefined)
+        : inferConditionMode(selectedItem);
     if (dialogMode === DialogModes.CREATE) {
       setFormValues(initializeFromItem(undefined));
     } else if (selectedItem) {
       setFormValues(initializeFromItem(selectedItem));
     }
+    setConditionMode(initial.mode);
+    setConditions(initial.conditions);
+    setInvalidKeyUids([]);
     setError(null);
   }, [selectedItem, dialogMode]);
 
@@ -284,6 +283,92 @@ export default function RuleDialog({
     });
   }, []);
 
+  /** Añade una fila vacía al final de la lista. */
+  const addCondition = useCallback(() => {
+    setConditions((prev) => [...prev, newDraftCondition()]);
+  }, []);
+
+  /** Retira la fila con el `uid` dado. */
+  const removeCondition = useCallback((uid: number) => {
+    setConditions((prev) => prev.filter((row) => row.uid !== uid));
+  }, []);
+
+  /** Aplica un cambio parcial a una fila. */
+  const updateCondition = useCallback(
+    (uid: number, patch: Partial<DraftCondition>) => {
+      setConditions((prev) =>
+        prev.map((row) => (row.uid === uid ? { ...row, ...patch } : row)),
+      );
+    },
+    [],
+  );
+
+  /**
+   * Inserta un token al final de la pipeline de una fila, con el mismo saneo del
+   * borde derecho que el campo de transformaciones de la pestaña «Request»: una
+   * coma o un espacio de sobra no pueden producir un separador vacío.
+   */
+  const insertConditionTransformation = useCallback(
+    (uid: number, token: string) => {
+      setConditions((prev) =>
+        prev.map((row) => {
+          if (row.uid !== uid) {
+            return row;
+          }
+          const trimmed = row.transformations.replace(/[,\s]+$/, "");
+          return {
+            ...row,
+            transformations: trimmed === "" ? token : `${trimmed},${token}`,
+          };
+        }),
+      );
+    },
+    [],
+  );
+
+  /**
+   * Cambia de modo.
+   *
+   * Pasar a avanzado **siembra** la lista con la proyección de los 14 campos
+   * rellenos, en orden canónico: así el paso no pierde ninguna restricción y el
+   * punto de partida es el conjunto que el backend ya venía evaluando.
+   *
+   * Volver a simple **descarta** la lista, y por eso pide confirmación: es
+   * destructivo y el usuario puede haber escrito condiciones a mano.
+   */
+  const handleConditionModeChange = (value: ConditionMode) => {
+    if (value === conditionMode) {
+      return;
+    }
+    if (value === "advanced") {
+      setConditions(seedConditions(formValues));
+      setInvalidKeyUids([]);
+      setConditionMode("advanced");
+      return;
+    }
+    setConfirmSimpleOpen(true);
+  };
+
+  /** Confirmación aceptada del conmutador: descarta la lista y vuelve a simple. */
+  const confirmSwitchToSimple = () => {
+    setConditions([]);
+    setInvalidKeyUids([]);
+    setConditionMode("simple");
+    setConfirmSimpleOpen(false);
+  };
+
+  /**
+   * Sólo se atiende el cierre. El `Popconfirm` usa `click` como disparador por
+   * defecto y sus hijos son los radios del conmutador, así que pulsar un radio
+   * pediría abrir el aviso por su cuenta —el `Ok` de éste conviviría con el del
+   * diálogo—; la apertura la gobierna `handleConditionModeChange`.
+   */
+  const handleSimpleConfirmOpenChange = (nextOpen: boolean) => {
+    if (!nextOpen) {
+      setConfirmSimpleOpen(false);
+    }
+  };
+
   const handleApiCall = async () => {
     setLoading(true);
     setError(null);
@@ -302,11 +387,11 @@ export default function RuleDialog({
     } else if (dialogMode === DialogModes.CREATE) {
       method = "POST";
       url = basePath;
-      body = JSON.stringify(formatForApi(formValues));
+      body = JSON.stringify(formatForApi(formValues, conditionMode, conditions));
     } else if (dialogMode === DialogModes.UPDATE) {
       method = "PATCH";
       url = basePath;
-      const apiBody = formatForApi(formValues);
+      const apiBody = formatForApi(formValues, conditionMode, conditions);
       apiBody.id = selectedItem?.id;
       body = JSON.stringify(apiBody);
     } else if (dialogMode === DialogModes.READ) {
@@ -357,11 +442,24 @@ export default function RuleDialog({
   };
 
   const handleOk = async () => {
-    if (dialogMode === DialogModes.DELETE) {
-      await handleApiCall();
-    } else {
-      await handleApiCall();
+    // Validación del editor: una colección que exige clave no puede guardarse sin
+    // ella. Se señalan las filas pendientes por su `uid` y no se emite ninguna
+    // petición de escritura —el backend también lo rechazaría, pero es mejor no
+    // enviar un cuerpo inválido—.
+    if (conditionMode === "advanced") {
+      const pending = conditions
+        .filter(
+          (row) =>
+            collectionRequiresKey(row.collection) && row.key.trim() === "",
+        )
+        .map((row) => row.uid);
+      if (pending.length > 0) {
+        setInvalidKeyUids(pending);
+        return;
+      }
     }
+    setInvalidKeyUids([]);
+    await handleApiCall();
   };
 
   const handleCancel = () => {
@@ -627,6 +725,27 @@ export default function RuleDialog({
     </Flex>
   );
 
+  // El editor de condiciones es presentacional: el diálogo le pasa el modo, las
+  // filas, los `uid` pendientes de clave y los callbacks; el DOM —conmutador,
+  // nota, lista y chips— lo rinde `ConditionEditor`.
+  const conditionsTab = (
+    <ConditionEditor
+      mode={conditionMode}
+      conditions={conditions}
+      invalidKeyUids={invalidKeyUids}
+      disabled={disabled}
+      confirmOpen={confirmSimpleOpen}
+      t={t}
+      onModeChange={handleConditionModeChange}
+      onConfirmOpenChange={handleSimpleConfirmOpenChange}
+      onConfirmSwitchToSimple={confirmSwitchToSimple}
+      onAdd={addCondition}
+      onRemove={removeCondition}
+      onUpdate={updateCondition}
+      onInsertTransformation={insertConditionTransformation}
+    />
+  );
+
   const tabItems: TabsProps["items"] = [
     {
       key: "general",
@@ -641,6 +760,10 @@ export default function RuleDialog({
         </span>
       ),
       children: networkTab,
+      // En avanzado los 14 campos se siguen almacenando pero no matchean: el
+      // conjunto persistido es la lista de condiciones. Se deshabilitan —en vez
+      // de ocultarse— para que se vea que siguen ahí, con su nota explicativa.
+      disabled: conditionMode === "advanced",
     },
     {
       key: "location",
@@ -650,6 +773,7 @@ export default function RuleDialog({
         </span>
       ),
       children: locationTab,
+      disabled: conditionMode === "advanced",
     },
     {
       key: "request",
@@ -659,6 +783,12 @@ export default function RuleDialog({
         </span>
       ),
       children: requestTab,
+      disabled: conditionMode === "advanced",
+    },
+    {
+      key: "conditions",
+      label: t("Conditions"),
+      children: conditionsTab,
     },
   ];
 

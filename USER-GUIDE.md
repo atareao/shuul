@@ -169,7 +169,7 @@ When a rule declares a pipeline and restricts at least one field, the audit log 
 
 ### Advanced conditions (API)
 
-The rule dialog authors the **simple** form: the 14 fields. The API also accepts an **advanced** form that authors the matching set condition by condition. It is additive and opt-in: the client picks the form by whether it sends the `conditions` field.
+The rule dialog authors the matching set in either of two forms, and the API accepts both. The **simple** form is the 14 fields; the **advanced** form authors the set condition by condition, from the dialog's **Conditions** tab. The API is additive and opt-in: the client picks the form by whether it sends the `conditions` field.
 
 - **`conditions` absent or null → simple mode.** The set is projected from the 14 fields, exactly as the dialog does.
 - **`conditions` present (even an empty list) → advanced mode.** The list **is** the persisted set; the 14 fields are stored as they come and take no part in matching.
@@ -207,7 +207,23 @@ Example — deny any request carrying a `PHPSESSID` cookie whose value is exactl
 }
 ```
 
-Read a rule back and you get the same `conditions` array — each entry with `"operator": "@rx"` and the canonicalised `transformations` — so a read–edit–PATCH round trip is stable. The rule dialog does not edit this form yet, so a rule authored this way keeps its simple fields untouched; editing conditions from the UI is a later change.
+Read a rule back and you get the same `conditions` array — each entry with `"operator": "@rx"` and the canonicalised `transformations` — so a read–edit–PATCH round trip is stable.
+
+#### The Conditions tab
+
+The rule dialog authors both forms from its **Conditions** tab, through a Simple / Advanced switch:
+
+- **Simple** is the historical form: the 14 fields, and `conditions` is left out of the request (the backend projects the 14 fields).
+- **Advanced** authors an ordered list of conditions. Each row offers the collection, the key — only when the collection requires it —, the transformation chips, the pattern, and the operator shown as a fixed `@rx`. `Add condition` appends an empty row and `Remove` drops one. The list travels as `conditions`, **even when it is empty**. The tabs of the 14 fields (Network, Location, Request) are disabled, with a note that those fields are stored but take no part in matching; they still travel in the request.
+
+Two transitions:
+
+- **Simple → Advanced** seeds the list by projecting the filled 14 fields, in canonical order: one condition per field with a non-empty pattern, carrying the rule's transformations. `is_tor` is not projected.
+- **Advanced → Simple** asks for confirmation and, once confirmed, discards the list; the rule is then sent without `conditions`.
+
+A condition in a keyed collection (`request_cookies`, `request_headers`, `args_get`) with no key blocks saving and flags the row — red border and an inline message — instead of sending an invalid body.
+
+When editing an existing rule the dialog infers the form: if the received `conditions` are exactly the projection of its 14 fields it opens in **simple**, otherwise in **advanced**, seeded with the received conditions. The inference is lossless — whichever form it opens in, saving sends back the same set that was loaded.
 
 ### Rule Modes
 
