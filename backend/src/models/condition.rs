@@ -16,6 +16,7 @@
 use crate::models::transformation::TransformationPipeline;
 use crate::models::{NewRequest, Rule};
 use regex::Regex;
+use std::borrow::Cow;
 
 /// Colección de la petición que una condición restringe.
 ///
@@ -244,7 +245,9 @@ impl Collection {
 ///
 /// `Rx` compara el valor transformado con un regex. `Truthy` es el operador
 /// booleano: se cumple **si y solo si** el booleano de la petición es
-/// exactamente `true`.
+/// exactamente `true`. Desde F2c-1 el vocabulario se abre con los **seis
+/// operadores de cadena** de Coraza, que guardan su patrón como un dato (no como
+/// un regex compilado) y comparan el valor **ya transformado** por la pipeline.
 #[derive(Debug, Clone)]
 pub enum Operator {
     /// Compara el valor transformado con un regex.
@@ -252,12 +255,48 @@ pub enum Operator {
     /// El operador booleano de la colección `is_tor`: cumple si y solo si el
     /// booleano de la petición es `true`.
     Truthy,
+    /// El valor transformado **contiene** el patrón (sensible a mayúsculas).
+    Contains(String),
+    /// El valor transformado es **exactamente igual** al patrón (sensible a
+    /// mayúsculas).
+    Streq(String),
+    /// El valor transformado **empieza por** el patrón.
+    BeginsWith(String),
+    /// El valor transformado **termina por** el patrón.
+    EndsWith(String),
+    /// El **valor** (aguja) es igual a alguno de los elementos del patrón
+    /// (pajar: lista separada por comas, con espacios recortados). Es el inverso
+    /// de [`Operator::Contains`].
+    ///
+    /// **Un elemento vacío anula la condición entera.** Si algún elemento del
+    /// patrón queda vacío tras recortarlo —una coma suelta, `GET,,POST`— la
+    /// condición **no** casa, sea cual sea el valor: el elemento vacío **no** es
+    /// un comodín. Es la regla conservadora del escenario normativo de la spec
+    /// de `rule-matching` («Un elemento vacío de `@within` no actúa como
+    /// comodín») y la lectura es **deliberada**: la alternativa —decidir «por
+    /// elemento», ignorando el vacío y comparando contra los no vacíos— también
+    /// casaría `GET` con `GET,,POST`. No es un descuido; no la «arregles» sin
+    /// cambiar antes la spec.
+    Within(Vec<String>),
+    /// Casa siempre que la colección esté **presente**, sea cual sea su valor;
+    /// exige patrón vacío.
+    ///
+    /// **No casa con la colección ausente** (fail-open, D2): el brazo de la
+    /// colección ausente precede al operador —una condición no puede decidir
+    /// sobre un dato que la petición no trae—, de modo que esta variante nunca
+    /// llega a evaluarse sin valor y el `debug!` que lo acompaña nombra la
+    /// colección y la regla. Es una divergencia **deliberada** con Coraza, y su
+    /// evidencia sigue el **contrato común**: solo cuando la condición casa
+    /// **y** su pipeline no está vacía, con el valor transformado.
+    UnconditionalMatch,
 }
 
 impl Operator {
     /// El nombre canónico con el que el operador se persiste en la columna
     /// `operator` de `rule_conditions` y se serializa en la API: `@rx` para
-    /// [`Operator::Rx`] y `@truthy` para [`Operator::Truthy`].
+    /// [`Operator::Rx`], `@truthy` para [`Operator::Truthy`] y la grafía de
+    /// Coraza para los seis operadores de cadena —`@contains`, `@streq`,
+    /// `@beginsWith`, `@endsWith`, `@within` y `@unconditionalMatch`—.
     ///
     /// Es la representación que la escritura guarda y la lectura reconoce, de
     /// modo que el round-trip de la condición es estable.
@@ -266,6 +305,52 @@ impl Operator {
         match self {
             Self::Rx(_) => "@rx",
             Self::Truthy => "@truthy",
+            Self::Contains(_) => "@contains",
+            Self::Streq(_) => "@streq",
+            Self::BeginsWith(_) => "@beginsWith",
+            Self::EndsWith(_) => "@endsWith",
+            Self::Within(_) => "@within",
+            Self::UnconditionalMatch => "@unconditionalMatch",
+        }
+    }
+
+    /// El **patrón canónico** del operador.
+    ///
+    /// Es la representación única del patrón de una condición (D1): la que la
+    /// persistencia escribe en la columna `pattern` de `rule_conditions` y la que
+    /// la representación devuelve a la API. Su contrato es:
+    ///
+    /// - [`Operator::Rx`] → el patrón fuente del regex, **prestado**;
+    /// - [`Operator::Contains`], [`Operator::Streq`], [`Operator::BeginsWith`] y
+    ///   [`Operator::EndsWith`] → su patrón, **prestado** tal cual se guardó;
+    /// - [`Operator::Within`] → **construido**: los elementos de la lista **ya
+    ///   recortados** de espacios, unidos por coma **sin espacios**
+    ///   (`"GET, POST"` → `"GET,POST"`);
+    /// - [`Operator::Truthy`] y [`Operator::UnconditionalMatch`] → la cadena
+    ///   vacía: ninguno de los dos lleva patrón.
+    ///
+    /// El round-trip es **estable** —persistir lo leído y releerlo da lo mismo—,
+    /// no necesariamente byte-idéntico al original: `@within` canoniza su lista.
+    #[must_use]
+    pub fn pattern(&self) -> Cow<'_, str> {
+        match self {
+            Self::Rx(regex) => Cow::Borrowed(regex.as_str()),
+            Self::Contains(pattern)
+            | Self::Streq(pattern)
+            | Self::BeginsWith(pattern)
+            | Self::EndsWith(pattern) => Cow::Borrowed(pattern),
+            // `@within` guarda su patrón ya partido en elementos: la forma
+            // canónica los **recorta** de espacios y los une por coma **sin
+            // espacios**, de modo que `"GET, POST"` y `"GET ,POST"` se persisten
+            // ambos como `"GET,POST"`.
+            Self::Within(items) => Cow::Owned(
+                items
+                    .iter()
+                    .map(|item| item.trim())
+                    .collect::<Vec<_>>()
+                    .join(","),
+            ),
+            Self::Truthy | Self::UnconditionalMatch => Cow::Borrowed(""),
         }
     }
 }
@@ -434,15 +519,6 @@ mod tests {
         }
     }
 
-    /// El patrón fuente del operador, para poder compararlo sin exponer el
-    /// `Regex`.
-    fn operator_pattern(operator: &Operator) -> &str {
-        match operator {
-            Operator::Rx(regex) => regex.as_str(),
-            Operator::Truthy => "@truthy",
-        }
-    }
-
     // ── 1.1 IR ──
 
     /// infraestructura: verifica la estructura de la condición
@@ -538,7 +614,17 @@ mod tests {
                     "el patrón no debe casar `/admin/x`"
                 );
             },
-            Operator::Truthy => unreachable!("el sujeto de este test es `Operator::Rx`"),
+            // El sujeto de este test es `Operator::Rx`: ninguna otra variante
+            // puede aparecer aquí.
+            Operator::Truthy
+            | Operator::Contains(_)
+            | Operator::Streq(_)
+            | Operator::BeginsWith(_)
+            | Operator::EndsWith(_)
+            | Operator::Within(_)
+            | Operator::UnconditionalMatch => {
+                unreachable!("el sujeto de este test es `Operator::Rx`")
+            },
         }
     }
 
@@ -597,7 +683,7 @@ mod tests {
         );
         assert_eq!(conditions[0].collection, Collection::Path);
         assert_eq!(
-            operator_pattern(&conditions[0].operator),
+            &*conditions[0].operator.pattern(),
             "^/admin$",
             "la condición debe llevar el patrón que la regla tenía en ese campo"
         );
@@ -809,36 +895,36 @@ mod tests {
         );
     }
 
+    /// Proyecta una plantilla del catálogo a la regla equivalente.
+    fn rule_from_template(t: &crate::templates::RuleTemplate) -> Rule {
+        let mut rule = base_rule();
+        rule.name = t.name.clone();
+        rule.ip_address = t.ip_address.clone();
+        rule.protocol = t.protocol.clone();
+        rule.fqdn = t.fqdn.clone();
+        rule.path = t.path.clone();
+        rule.query = t.query.clone();
+        rule.city_name = t.city_name.clone();
+        rule.country_name = t.country_name.clone();
+        rule.country_code = t.country_code.clone();
+        rule.user_agent = t.user_agent.clone();
+        rule.method = t.method.clone();
+        rule.referer = t.referer.clone();
+        rule.content_type = t.content_type.clone();
+        rule.accept_language = t.accept_language.clone();
+        rule.x_request_id = t.x_request_id.clone();
+        rule.is_tor = t.is_tor;
+        rule.transformations = t.transformations.clone();
+        rule.pipeline = t.pipeline.clone();
+        rule.allow = t.allow;
+        rule
+    }
+
     // Verificación: la proyección es fiel sobre el catálogo completo de plantillas.
     // scenario «La equivalencia se sostiene sobre las plantillas».
     #[test]
     fn test_project_is_faithful_over_the_whole_template_catalog() {
-        use crate::templates::{RuleTemplate, all_rule_templates};
-
-        /// Proyecta una plantilla del catálogo a la regla equivalente.
-        fn rule_from_template(t: &RuleTemplate) -> Rule {
-            let mut rule = base_rule();
-            rule.name = t.name.clone();
-            rule.ip_address = t.ip_address.clone();
-            rule.protocol = t.protocol.clone();
-            rule.fqdn = t.fqdn.clone();
-            rule.path = t.path.clone();
-            rule.query = t.query.clone();
-            rule.city_name = t.city_name.clone();
-            rule.country_name = t.country_name.clone();
-            rule.country_code = t.country_code.clone();
-            rule.user_agent = t.user_agent.clone();
-            rule.method = t.method.clone();
-            rule.referer = t.referer.clone();
-            rule.content_type = t.content_type.clone();
-            rule.accept_language = t.accept_language.clone();
-            rule.x_request_id = t.x_request_id.clone();
-            rule.is_tor = t.is_tor;
-            rule.transformations = t.transformations.clone();
-            rule.pipeline = t.pipeline.clone();
-            rule.allow = t.allow;
-            rule
-        }
+        use crate::templates::all_rule_templates;
 
         let templates = all_rule_templates();
         assert_eq!(
@@ -893,7 +979,7 @@ mod tests {
                     template.name, index, collection
                 );
                 assert_eq!(
-                    operator_pattern(&conditions[index].operator),
+                    &*conditions[index].operator.pattern(),
                     pattern.as_str(),
                     "«{}»: la condición {} debe llevar el patrón de {:?}",
                     template.name,
@@ -1104,5 +1190,100 @@ mod tests {
             evidence.contains_key("request_headers[x-api-key]"),
             "la evidencia debe usar la clave compuesta para x-api-key"
         );
+    }
+
+    // ── F2c-1: vocabulario y patrón canónico de los operadores de cadena ──
+
+    /// 1.1 las seis variantes nuevas y su nombre canónico de Coraza.
+    #[test]
+    fn test_string_operators_vocabulary_and_names() {
+        let cases: [(Operator, &str); 6] = [
+            (Operator::Contains("abc".to_string()), "@contains"),
+            (Operator::Streq("POST".to_string()), "@streq"),
+            (Operator::BeginsWith("x".to_string()), "@beginsWith"),
+            (Operator::EndsWith("x".to_string()), "@endsWith"),
+            (
+                Operator::Within(vec!["GET".to_string(), "POST".to_string()]),
+                "@within",
+            ),
+            (Operator::UnconditionalMatch, "@unconditionalMatch"),
+        ];
+
+        for (operator, expected) in cases {
+            assert_eq!(
+                operator.name(),
+                expected,
+                "el operador {operator:?} debe exponer su nombre canónico de Coraza"
+            );
+        }
+
+        assert_eq!(
+            Operator::Rx(Regex::new(r"^/admin/\d+$").unwrap()).name(),
+            "@rx",
+            "el nombre del operador histórico no cambia"
+        );
+        assert_eq!(
+            Operator::Truthy.name(),
+            "@truthy",
+            "el nombre del operador booleano no cambia"
+        );
+    }
+
+    /// 1.1 el patrón canónico de cada operador.
+    #[test]
+    fn test_string_operators_canonical_pattern() {
+        let cases: [(Operator, &str); 6] = [
+            (Operator::Contains("abc".to_string()), "abc"),
+            (Operator::Streq("POST".to_string()), "POST"),
+            (Operator::BeginsWith("x".to_string()), "x"),
+            (Operator::EndsWith("x".to_string()), "x"),
+            (
+                Operator::Within(vec!["GET".to_string(), "POST".to_string()]),
+                "GET,POST",
+            ),
+            (Operator::UnconditionalMatch, ""),
+        ];
+
+        for (operator, expected) in cases {
+            assert_eq!(
+                &*operator.pattern(),
+                expected,
+                "el patrón canónico de {operator:?} debe ser «{expected}»"
+            );
+        }
+
+        assert_eq!(
+            &*Operator::Truthy.pattern(),
+            "",
+            "el operador booleano no lleva patrón"
+        );
+        assert_eq!(
+            &*Operator::Rx(Regex::new(r"^/admin/\d+$").unwrap()).pattern(),
+            r"^/admin/\d+$",
+            "el patrón del operador histórico es el fuente del regex"
+        );
+    }
+
+    /// 1.12 el modo simple no puede producir ningún operador de cadena.
+    #[test]
+    fn test_project_only_produces_rx_and_truthy_over_the_catalog() {
+        use crate::templates::all_rule_templates;
+
+        let templates = all_rule_templates();
+
+        for template in &templates {
+            let rule = rule_from_template(template);
+            let pipeline =
+                TransformationPipeline::parse(&template.transformations).unwrap_or_default();
+
+            for condition in project(&rule, &pipeline) {
+                assert!(
+                    matches!(condition.operator, Operator::Rx(_) | Operator::Truthy),
+                    "«{}»: el modo simple solo puede proyectar `@rx` o `@truthy`, no «{}»",
+                    template.name,
+                    condition.operator.name()
+                );
+            }
+        }
     }
 }
