@@ -264,15 +264,35 @@ CREATE TABLE rule_conditions (
 
 `REQUEST_URI_RAW`, `REQUEST_URI`, `REQUEST_BASENAME`, `REQUEST_FILENAME`, `QUERY_STRING`, `ARGS`, `ARGS_GET`, `ARGS_GET_NAMES`, `REQUEST_HEADERS`, `REQUEST_HEADERS_NAMES`, `REQUEST_COOKIES`, `REQUEST_COOKIES_NAMES`, `REQUEST_METHOD`, `REQUEST_PROTOCOL`, `REMOTE_ADDR`, `REMOTE_HOST`, `GEO_COUNTRY_CODE`, `GEO_CITY`, `GEO_COUNTRY_NAME`, `IS_TOR`.
 
+**`is_tor`: el caso especial que entra en esta fase.**
+
+`IS_TOR` está en la lista, pero no es una colección como las demás. Hoy el matcheo lo trata como un **predicado booleano al margen del conjunto de condiciones** (`check_tor` en `CacheRule::evaluate()`, encadenado al final de la conjunción). Es la última cosa que el motor no sabe expresar como condición, y por eso **F2a la deja fuera**: con `Operator` reducido a `@rx` no hay forma de comparar un booleano que no sea inventarle una representación de cadena, que es andamiaje muerto. La reentrada es escalonada, y cada peldaño cae en su sub-entrega:
+
+| Sub-entrega | Qué añade | Sin ella, `is_tor` no puede… |
+|---|---|---|
+| **F2b** | `IS_TOR` en el vocabulario de colecciones y su proyección desde la columna `is_tor` | representarse |
+| **F2c** | el operador booleano que lo compara (`@streq true`, o un `@truthy` dedicado) | compararse |
+| **F2d** | `negate` por condición y `condition_operator` | expresar «sólo Tor» — hoy el interruptor es de una sola dirección |
+
+**La regla de proyección es distinta a la de los 14 campos, y es la parte que se rompe si se generaliza sin pensar.** `is_tor = true` proyecta a **una** condición `IS_TOR @streq true`. `is_tor = false` e `is_tor = NULL` proyectan a **ninguna** condición: son **neutrales**, igual que hoy —la *closure* sólo decide con `Some(true)` y deja pasar cualquier otro valor—. Proyectar el `false` a una condición **invertiría el sentido de la regla** y bloquearía todo el tráfico que **no** venga de Tor. El error no se vería en una prueba escrita con `is_tor = true`: hay que cubrir explícitamente el caso `false`.
+
+**Invariantes que se conservan, idénticos a los de los 14 campos.**
+
+- **La colección ausente no casa.** `TorService::is_exit_node()` devuelve `None` mientras la lista no ha cargado —los primeros 30 s tras el arranque— y también cuando la dirección del cliente no parsea como IP. El brazo es el mismo que el de un campo restringido que la petición no trae: la condición no se cumple y se emite su `debug!` nombrando la regla y la colección. Es un fail-open deliberado, hermano del que ya tiene el transporte del Jail.
+- **La colección no se transforma.** `IS_TOR` no es una cadena: su pipeline es, por contrato, **vacía**, y una pipeline sobre ella no debe poder declararse.
+- **La evidencia es una decisión, no un accidente.** Hoy `check_tor` **no** anota nada en el evento de auditoría. Convertirlo en condición abre la puerta a un `{"is_tor": "true"}` que hoy no existe: **sería un cambio observable**. Se decide explícitamente en la sub-entrega que lo integre —o no se anota, y la clave no cambia—, nunca por el arrastre de la generalización.
+
+Mientras `IS_TOR` no haya entrado, el chequeo booleano se queda donde está: al final de `evaluate()`, después del conjunto de condiciones. Es correcto y no estorba.
+
 **Operadores:** `@rx`, `@pm`, `@contains`, `@streq`, `@beginsWith`, `@endsWith`, `@within`, `@ipMatch`, `@ipMatchF`, `@gt`, `@ge`, `@lt`, `@le`, `@validateByteRange`, `@validateUrlEncoding`, `@validateUtf8Encoding`, `@unconditionalMatch`.
 
 **Compatibilidad — lo crítico:** los 14 campos actuales **no se retiran**. La regla se puede escribir en modo `simple` (las 14 columnas, lo que la UI muestra hoy) o `advanced` (la tabla de condiciones). Al cargar, **ambas formas se proyectan a la misma representación interna** `Vec<Condition>`, y el pipeline del WAF solo conoce esa. Resultado: **un único camino de matcheo**, `first match wins` intacto, y las plantillas y la UI actuales siguen funcionando sin tocarlas.
 
 **Sub-entregas, cada una publicable:**
 
-- **F2a** — tabla, IR `Condition`, proyección de compatibilidad desde los 14 campos. Sin cambio funcional visible.
-- **F2b** — colecciones nuevas: cookies, cabeceras con nombre, argumentos del query uno a uno, basename/extensión.
-- **F2c** — operadores nuevos. `@ipMatch` con CIDR, `@pm` con Aho-Corasick, los de cadena y los de validación.
+- **F2a** — IR `Condition` y proyección de compatibilidad desde los 14 campos, **en memoria**. **Sin tabla y sin migración**: la fuente de verdad siguen siendo las 14 columnas y la tabla llega en F2b. Sin cambio funcional visible. **✅ Entregada.** `Collection`, `Operator::Rx` y `Condition` con `project()` viven en `backend/src/models/condition.rs`; `CacheRule` pasa de 14 `Option<Regex>` más una pipeline propia a un `Vec<Condition>`; `evaluate()` recorre el conjunto en AND con cortocircuito y `check_tor` sigue **fuera** del conjunto. Resultado real de los gates: backend **535** verdes / **0** rojos / 1 ignorado; `cargo clippy --lib --bins` en **0** y `--all-targets` en **83** (la base, sin añadidos); `cargo fmt --check` limpio. Cero migración, cero cambio de oferta de API y cero cambio en la forma del evento.
+- **F2b** — la tabla `rule_conditions` con su backfill desde los 14 campos, las colecciones nuevas (cookies, cabeceras con nombre, argumentos del query uno a uno, basename/extensión) y la integración de `IS_TOR`.
+- **F2c** — operadores nuevos: `@ipMatch` con CIDR, `@pm` con Aho-Corasick, los de cadena y los de validación, y el operador booleano que le da sentido a `IS_TOR`.
 - **F2d** — lógica booleana: `condition_operator` (`and` | `or`) en la regla y `negate` por condición. El encadenado completo de Coraza con `capture` y variables `TX` **queda fuera** de esta fase.
 
 **Gates:** proyección de compatibilidad probada contra las 42 plantillas; cada operador nuevo con su prueba de contrato; `@ipMatch` rechaza `192.168.999.999` donde el regex actual lo acepta.
@@ -358,7 +378,7 @@ Merece la pena aunque F1 llegue después: son capas distintas y se complementan.
 ```mermaid
 flowchart LR
   F1["F1 · Transformaciones<br/>(mayor valor/esfuerzo)"] --> F2a["F2a · Condiciones 1:N<br/>sin cambio funcional"]
-  F2a --> F2b["F2b · Colecciones<br/>cookies, cabeceras, args"]
+  F2a --> F2b["F2b · Colecciones + tabla<br/>rule_conditions · cookies, cabeceras, args · IS_TOR"]
   F2b --> F2c["F2c · Operadores<br/>CIDR, @pm, validación"]
   F2c --> F2d["F2d · Lógica<br/>AND/OR/NOT"]
   F2d --> F3["F3 · Severidad y scoring<br/>+ niveles de paranoia"]

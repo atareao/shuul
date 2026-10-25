@@ -314,7 +314,14 @@ de los otros como transporte.
 
 ### CacheRule
 
-`CacheRule` en `backend/src/models/rule.rs` envuelve una `Rule` con `Option<Regex>` precompilado para cada filtro. **No tiene** `CachedRateLimit` ni campo `rate_limit`.
+`CacheRule` en `backend/src/models/rule.rs` envuelve una `Rule` con un **conjunto ordenado de condiciones** (`Vec<Condition>`) proyectadas desde los 14 campos. **No tiene** `CachedRateLimit` ni campo `rate_limit`. Ya **no** guarda un `Option<Regex>` por filtro ni una pipeline propia: la pipeline de transformaciones viaja **dentro de cada condición**.
+
+#### La IR de condiciones (`models/condition.rs`)
+
+- `Collection` — las 14 colecciones de la petición (`ip_address` … `x_request_id`), con `Collection::ALL` en el orden de la cadena histórica, `field_name()` (que es la clave de la evidencia) y `request_value()`.
+- `Operator` — nace con una sola variante: `Rx(Regex)`.
+- `Condition { collection, pipeline, operator }` — una condición ya compilada.
+- `project(rule, pipeline) -> Vec<Condition>` — proyecta a condiciones los campos que la regla restringe. Un patrón **ausente**, **vacío** o **no compilable** **no** proyecta ninguna condición; `is_tor` **nunca** proyecta.
 
 #### Filtros disponibles (14)
 
@@ -325,26 +332,15 @@ user_agent, method, referer, content_type,
 accept_language, x_request_id
 ```
 
-#### Lógica de `matches()`
+#### Lógica de `evaluate()`
 
-Todos los filtros se evalúan con AND. Si el regex de la regla es `None` → condición se cumple. Si el valor del request es `None` → condición se cumple. Ambos deben existir para que el regex se evalúe.
+`evaluate()` recorre el conjunto de condiciones **en orden y en AND con cortocircuito**: la primera que no casa detiene la evaluación y `matched` es `false`. Una regla **sin** condiciones es **neutral**: casa. El contrato de cada condición es el de los tres brazos históricos:
 
-```rust
-check_match(self.ip_address.as_ref(), request.ip_address.as_ref())
-    && check_match(self.protocol.as_ref(), request.protocol.as_ref())
-    && check_match(self.fqdn.as_ref(), request.fqdn.as_ref())
-    && check_match(self.path.as_ref(), request.path.as_ref())
-    && check_match(self.query.as_ref(), request.query.as_ref())
-    && check_match(self.city_name.as_ref(), request.city_name.as_ref())
-    && check_match(self.country_name.as_ref(), request.country_name.as_ref())
-    && check_match(self.country_code.as_ref(), request.country_code.as_ref())
-    && check_match(self.user_agent.as_ref(), request.user_agent.as_ref())
-    && check_match(self.method.as_ref(), request.method.as_ref())
-    && check_match(self.referer.as_ref(), request.referer.as_ref())
-    && check_match(self.content_type.as_ref(), request.content_type.as_ref())
-    && check_match(self.accept_language.as_ref(), request.accept_language.as_ref())
-    && check_match(self.x_request_id.as_ref(), request.x_request_id.as_ref())
-```
+- colección restringida y **presente** → la pipeline se aplica **al valor de la petición** —nunca al patrón, que se usa tal como se compiló— y el operador decide sobre el resultado; si casa y la pipeline no está vacía, el valor **transformado** queda en la evidencia bajo `Collection::field_name()`;
+- colección restringida y **ausente** → la condición **no** se cumple y se emite un `debug!` que nombra el campo y la regla;
+- colección que la regla **no** restringe → **no** genera condición: es neutral.
+
+`is_tor` **no** forma parte del conjunto: sigue siendo el predicado booleano `check_tor` que se combina al final, con el mismo cortocircuito —solo se evalúa si todas las condiciones casaron—. La clave de la evidencia sigue siendo el **nombre del campo** (`path`, `user_agent`…), no un nombre de colección.
 
 ### Base de datos — SQLite
 
