@@ -22,6 +22,7 @@ import type { DialogMode } from "@/common/types";
 import { DialogModes } from "@/common/types";
 import type { DialogMessages } from "@/components/dialogs/custom_dialog";
 import type Item from "@/models/rule";
+import type { EditableConditionOperator } from "@/models/rule";
 import { isJailPipeline, collectionRequiresKey } from "@/models/rule";
 import type RateLimitProfile from "@/models/rate_limit_profile";
 import { CANONICAL_TRANSFORMATIONS } from "./rule_transformations";
@@ -30,6 +31,7 @@ import {
   LABEL_WIDTH,
   inferConditionMode,
   newDraftCondition,
+  operatorRequiresPattern,
   seedConditions,
   serializeCondition,
 } from "./condition_editor_model";
@@ -187,10 +189,38 @@ export default function RuleDialog({
   const [conditions, setConditions] = useState<DraftCondition[]>(
     initialConditionState.conditions,
   );
-  // Identificadores de las filas cuya colección exige clave y la tienen vacía.
-  // Sólo se puebla al intentar guardar: el error se señala al confirmar, no
-  // mientras se escribe.
-  const [invalidKeyUids, setInvalidKeyUids] = useState<number[]>([]);
+  // Estado de validación del editor: las filas pendientes, por `uid`, separadas
+  // por el motivo —clave que falta en una colección que la exige, o patrón vacío
+  // con un operador que lo requiere—. Vive en **un solo** objeto y no en dos
+  // estados hermanos: así ambos campos no pueden desincronizarse. El reinicio y
+  // la poda pasan por un único punto (`setValidation`), y los cuatro movimientos
+  // —cambio de item, paso a avanzado, vuelta a simple y guardado— los mueven
+  // juntos. Sólo se puebla al intentar guardar: el error se señala al confirmar,
+  // no mientras se escribe.
+  const [invalidUids, setInvalidUids] = useState<{
+    key: number[];
+    pattern: number[];
+  }>({ key: [], pattern: [] });
+
+  /**
+   * Único punto de mutación del estado de validación.
+   *
+   * Sin argumento lo deja vacío: es el reinicio que comparten el cambio de item,
+   * el paso a avanzado, la vuelta a simple y el guardado. Con un `uid` **poda**
+   * esa fila de los dos campos, que es lo que hace `removeCondition` para que el
+   * identificador de una fila retirada no quede señalando a nadie.
+   */
+  const setValidation = useCallback((pruneUid?: number) => {
+    setInvalidUids((prev) =>
+      pruneUid === undefined
+        ? { key: [], pattern: [] }
+        : {
+            key: prev.key.filter((candidate) => candidate !== pruneUid),
+            pattern: prev.pattern.filter((candidate) => candidate !== pruneUid),
+          },
+    );
+  }, []);
+
   // Visibilidad del `Popconfirm` que pide confirmación al volver a modo simple.
   // Controlado y en árbol, para que se desmonte con el diálogo y no se filtre
   // entre tests (a diferencia del `Modal.confirm` estático de antd).
@@ -242,9 +272,9 @@ export default function RuleDialog({
     }
     setConditionMode(initial.mode);
     setConditions(initial.conditions);
-    setInvalidKeyUids([]);
+    setValidation();
     setError(null);
-  }, [selectedItem, dialogMode]);
+  }, [selectedItem, dialogMode, setValidation]);
 
   const updateField = useCallback((key: string, value: unknown) => {
     setFormValues((prev) => ({ ...prev, [key]: value }));
@@ -288,16 +318,37 @@ export default function RuleDialog({
     setConditions((prev) => [...prev, newDraftCondition()]);
   }, []);
 
-  /** Retira la fila con el `uid` dado. */
-  const removeCondition = useCallback((uid: number) => {
-    setConditions((prev) => prev.filter((row) => row.uid !== uid));
-  }, []);
+  /** Retira la fila con el `uid` dado y la poda del estado de validación. */
+  const removeCondition = useCallback(
+    (uid: number) => {
+      setConditions((prev) => prev.filter((row) => row.uid !== uid));
+      setValidation(uid);
+    },
+    [setValidation],
+  );
 
   /** Aplica un cambio parcial a una fila. */
   const updateCondition = useCallback(
     (uid: number, patch: Partial<DraftCondition>) => {
       setConditions((prev) =>
         prev.map((row) => (row.uid === uid ? { ...row, ...patch } : row)),
+      );
+    },
+    [],
+  );
+
+  /**
+   * Fija el operador de una fila.
+   *
+   * Sólo lo eligen las filas de texto: la booleana `is_tor` no ofrece selector y
+   * fija `@truthy` al serializar. El patrón no se toca —el borrador lo conserva
+   * aunque el campo se oculte en `@unconditionalMatch`, para recuperarlo al
+   * volver a un operador que lo exija—.
+   */
+  const updateConditionOperator = useCallback(
+    (uid: number, operator: EditableConditionOperator) => {
+      setConditions((prev) =>
+        prev.map((row) => (row.uid === uid ? { ...row, operator } : row)),
       );
     },
     [],
@@ -342,7 +393,7 @@ export default function RuleDialog({
     }
     if (value === "advanced") {
       setConditions(seedConditions(formValues));
-      setInvalidKeyUids([]);
+      setValidation();
       setConditionMode("advanced");
       return;
     }
@@ -352,7 +403,7 @@ export default function RuleDialog({
   /** Confirmación aceptada del conmutador: descarta la lista y vuelve a simple. */
   const confirmSwitchToSimple = () => {
     setConditions([]);
-    setInvalidKeyUids([]);
+    setValidation();
     setConditionMode("simple");
     setConfirmSimpleOpen(false);
   };
@@ -447,18 +498,29 @@ export default function RuleDialog({
     // petición de escritura —el backend también lo rechazaría, pero es mejor no
     // enviar un cuerpo inválido—.
     if (conditionMode === "advanced") {
-      const pending = conditions
+      const pendingKey = conditions
         .filter(
           (row) =>
             collectionRequiresKey(row.collection) && row.key.trim() === "",
         )
         .map((row) => row.uid);
-      if (pending.length > 0) {
-        setInvalidKeyUids(pending);
+      // Una fila de texto con el patrón vacío tampoco puede guardarse —la API lo
+      // rechazaría con `400`—. La única excepción es `@unconditionalMatch`, cuyo
+      // contrato es el patrón vacío; la booleana `is_tor` no tiene patrón.
+      const pendingPattern = conditions
+        .filter(
+          (row) =>
+            row.collection !== "is_tor" &&
+            operatorRequiresPattern(row.operator) &&
+            row.pattern.trim() === "",
+        )
+        .map((row) => row.uid);
+      if (pendingKey.length > 0 || pendingPattern.length > 0) {
+        setInvalidUids({ key: pendingKey, pattern: pendingPattern });
         return;
       }
     }
-    setInvalidKeyUids([]);
+    setValidation();
     await handleApiCall();
   };
 
@@ -732,7 +794,8 @@ export default function RuleDialog({
     <ConditionEditor
       mode={conditionMode}
       conditions={conditions}
-      invalidKeyUids={invalidKeyUids}
+      invalidKeyUids={invalidUids.key}
+      invalidPatternUids={invalidUids.pattern}
       disabled={disabled}
       confirmOpen={confirmSimpleOpen}
       t={t}
@@ -742,6 +805,7 @@ export default function RuleDialog({
       onAdd={addCondition}
       onRemove={removeCondition}
       onUpdate={updateCondition}
+      onOperatorChange={updateConditionOperator}
       onInsertTransformation={insertConditionTransformation}
     />
   );

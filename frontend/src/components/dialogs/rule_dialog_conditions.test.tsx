@@ -720,3 +720,558 @@ describe("RuleDialog: el operador fijo de `is_tor`", () => {
     ]);
   });
 });
+
+// ─── El operador por fila: el catálogo, el patrón oculto y la validación ─────
+// Escenarios del delta `waf-string-operators` (F2c-1): la autoría avanzada elige
+// el operador de **cada fila** entre los siete del catálogo —`@rx` por defecto
+// más los seis operadores de cadena de Coraza—. `is_tor` conserva `@truthy`
+// **fijo** y sin selector; `@unconditionalMatch` **oculta** el campo de patrón y
+// lo envía vacío; y la validación de fila impide guardar mientras alguna fila
+// tenga el patrón vacío **salvo** en `@unconditionalMatch`.
+//
+// Localización de los controles: el `Select` de antd expone el `aria-label` en su
+// `combobox` —verificado empíricamente—, así que el selector de operador de una
+// fila se localiza por su nombre accesible `Operator` **dentro de esa fila**, y
+// sus opciones se consultan por el `title` de la opción del desplegable.
+
+/**
+ * El desplegable abierto del `Select` de operador de la fila.
+ *
+ * El desplegable vive en un portal fuera de la fila, así que no se puede acotar
+ * con `within(row)`. antd lo asocia al `combobox` por `aria-controls`, que apunta
+ * al `id` del `listbox` de **ese** selector: es la forma de elegir el de esta
+ * fila aunque otra tenga el suyo montado —tras abrirse una vez, antd deja el
+ * `listbox` en el DOM— y evita la consulta global ambigua a `listbox`. Si el
+ * atributo no estuviese, se degrada a la búsqueda global.
+ */
+async function openOperatorDropdown(
+  user: UserEvent,
+  row: HTMLElement,
+): Promise<HTMLElement> {
+  const combobox = within(row).getByRole("combobox", { name: "Operator" });
+  await user.click(combobox);
+  const listboxId = combobox.getAttribute("aria-controls");
+  const listbox = listboxId
+    ? await waitFor(() => {
+        const found = document.getElementById(listboxId);
+        if (!found) {
+          throw new Error(`Operator listbox ${listboxId} not found`);
+        }
+        return found;
+      })
+    : await screen.findByRole("listbox");
+  const dropdown = listbox.closest<HTMLElement>(".ant-select-dropdown");
+  if (!dropdown) {
+    throw new Error("Operator dropdown not found");
+  }
+  return dropdown;
+}
+
+/** Elige la opción `name` en el selector de operador de la fila. */
+async function chooseOperator(
+  user: UserEvent,
+  row: HTMLElement,
+  name: string,
+): Promise<void> {
+  const dropdown = await openOperatorDropdown(user, row);
+  await user.click(within(dropdown).getByTitle(name));
+}
+
+/**
+ * Regla en modo avanzado con dos filas: la booleana `is_tor`/`@truthy` y una de
+ * texto `method`/`@rx`.
+ *
+ * Las dos juntas hacen visible el contrato del operador por fila: el selector se
+ * ofrece en la de texto —con su operador a la vista— y **no** en la booleana,
+ * cuyo operador está fijo. La columna `is_tor` es falsa y no participa, así que
+ * la lista difiere de la proyección de los 14 campos —ninguno relleno— y el
+ * diálogo abre en avanzado.
+ */
+const TOR_AND_TEXT_ITEM: Item = {
+  ...WAF_ITEM,
+  transformations: "",
+  is_tor: false,
+  conditions: [
+    {
+      collection: "is_tor",
+      key: null,
+      transformations: "",
+      operator: "@truthy",
+      pattern: "",
+    },
+    {
+      collection: "method",
+      key: null,
+      transformations: "",
+      operator: "@rx",
+      pattern: "POST",
+    },
+  ],
+};
+
+/**
+ * Regla cuyos 14 campos están rellenos y cuyas condiciones son **exactamente** su
+ * proyección: catorce condiciones `@rx` en orden canónico, sin `is_tor`. La
+ * inferencia del modo debe reconocerla como simple y no degradarla a avanzado.
+ */
+const FULL_SIMPLE_ITEM: Item = {
+  ...WAF_ITEM,
+  transformations: "",
+  is_tor: false,
+  ip_address: "10.0.0.1",
+  protocol: "http",
+  fqdn: "example.com",
+  path: "/admin",
+  query: "a=1",
+  city_name: "Madrid",
+  country_name: "Spain",
+  country_code: "ES",
+  user_agent: "curl/8.0",
+  method: "POST",
+  referer: "https://example.com/",
+  content_type: "application/json",
+  accept_language: "es-ES",
+  x_request_id: "abc-123",
+  conditions: [
+    {
+      collection: "ip_address",
+      key: null,
+      transformations: "",
+      operator: "@rx",
+      pattern: "10.0.0.1",
+    },
+    {
+      collection: "protocol",
+      key: null,
+      transformations: "",
+      operator: "@rx",
+      pattern: "http",
+    },
+    {
+      collection: "fqdn",
+      key: null,
+      transformations: "",
+      operator: "@rx",
+      pattern: "example.com",
+    },
+    {
+      collection: "path",
+      key: null,
+      transformations: "",
+      operator: "@rx",
+      pattern: "/admin",
+    },
+    {
+      collection: "query",
+      key: null,
+      transformations: "",
+      operator: "@rx",
+      pattern: "a=1",
+    },
+    {
+      collection: "city_name",
+      key: null,
+      transformations: "",
+      operator: "@rx",
+      pattern: "Madrid",
+    },
+    {
+      collection: "country_name",
+      key: null,
+      transformations: "",
+      operator: "@rx",
+      pattern: "Spain",
+    },
+    {
+      collection: "country_code",
+      key: null,
+      transformations: "",
+      operator: "@rx",
+      pattern: "ES",
+    },
+    {
+      collection: "user_agent",
+      key: null,
+      transformations: "",
+      operator: "@rx",
+      pattern: "curl/8.0",
+    },
+    {
+      collection: "method",
+      key: null,
+      transformations: "",
+      operator: "@rx",
+      pattern: "POST",
+    },
+    {
+      collection: "referer",
+      key: null,
+      transformations: "",
+      operator: "@rx",
+      pattern: "https://example.com/",
+    },
+    {
+      collection: "content_type",
+      key: null,
+      transformations: "",
+      operator: "@rx",
+      pattern: "application/json",
+    },
+    {
+      collection: "accept_language",
+      key: null,
+      transformations: "",
+      operator: "@rx",
+      pattern: "es-ES",
+    },
+    {
+      collection: "x_request_id",
+      key: null,
+      transformations: "",
+      operator: "@rx",
+      pattern: "abc-123",
+    },
+  ],
+};
+
+/**
+ * Regla en modo avanzado cuyo conjunto persistido es una única condición
+ * `method`/`@streq`/`POST`: un operador de cadena que la proyección de los 14
+ * campos **no** produce —`method` está vacío en la columna—, así que la lista
+ * difiere y el diálogo abre en avanzado con esa fila y su operador.
+ */
+const STREQ_ITEM: Item = {
+  ...WAF_ITEM,
+  transformations: "",
+  method: "",
+  conditions: [
+    {
+      collection: "method",
+      key: null,
+      transformations: "",
+      operator: "@streq",
+      pattern: "POST",
+    },
+  ],
+};
+
+describe("RuleDialog: el operador por fila", () => {
+  afterEach(() => {
+    vi.unstubAllGlobals();
+  });
+
+  it("el operador recibido se refleja en el selector, que ofrece los siete del catálogo", async () => {
+    const user = userEvent.setup();
+    stubFetch();
+
+    renderUpdateDialog(ADVANCED_ITEM);
+    await openConditionsTab(user);
+
+    const rows = conditionRows();
+    expect(rows).toHaveLength(1);
+
+    // El operador recibido (`@rx`) es el valor elegido en el selector.
+    expect(within(rows[0]).getByText("@rx")).toBeInTheDocument();
+
+    const dropdown = await openOperatorDropdown(user, rows[0]);
+    expect(
+      within(dropdown)
+        .getAllByRole("option")
+        .map((option) => option.textContent),
+    ).toEqual([
+      "@rx",
+      "@contains",
+      "@streq",
+      "@beginsWith",
+      "@endsWith",
+      "@within",
+      "@unconditionalMatch",
+    ]);
+  });
+
+  it("una fila nueva trae `@rx` como operador por defecto", async () => {
+    const user = userEvent.setup();
+    stubFetch();
+
+    // Se parte de modo avanzado vacío y se añade la fila, que nace sin operador
+    // recibido: el suyo es el valor por defecto del catálogo, no uno copiado.
+    renderCreateDialog();
+    await openConditionsTab(user);
+    await switchToAdvanced(user);
+    expect(conditionRows()).toHaveLength(0);
+
+    await user.click(screen.getByRole("button", { name: "Add condition" }));
+
+    const rows = conditionRows();
+    expect(rows).toHaveLength(1);
+    // La fila nueva ofrece su selector de operador y éste trae `@rx` elegido.
+    expect(
+      within(rows[0]).getByRole("combobox", { name: "Operator" }),
+    ).toBeInTheDocument();
+    expect(within(rows[0]).getByText("@rx")).toBeInTheDocument();
+  });
+
+  it("`@unconditionalMatch` oculta el campo de patrón y lo envía vacío", async () => {
+    const user = userEvent.setup();
+    const fetchMock = stubFetch();
+
+    renderUpdateDialog(ADVANCED_ITEM);
+    await openConditionsTab(user);
+
+    const rows = conditionRows();
+    expect(patternOf(rows[0])).toBe(".+");
+
+    await chooseOperator(user, rows[0], "@unconditionalMatch");
+
+    // El campo de patrón desaparece: dejar el anterior en la fila produciría un
+    // `400` al guardar, porque el operador exige el patrón vacío.
+    await waitFor(() =>
+      expect(
+        within(conditionRows()[0]).queryByRole("textbox", { name: "Pattern" }),
+      ).toBeNull(),
+    );
+
+    await user.click(screen.getByRole("button", { name: "Ok" }));
+    await waitFor(() => expect(patchedRuleBodies(fetchMock)).toHaveLength(1));
+
+    expect(patchedRuleBodies(fetchMock)[0].conditions).toEqual([
+      {
+        collection: "request_cookies",
+        key: "PHPSESSID",
+        transformations: "",
+        operator: "@unconditionalMatch",
+        pattern: "",
+      },
+    ]);
+  });
+
+  it("la fila `is_tor` no ofrece selector de operador y envía `@truthy` sin patrón", async () => {
+    const user = userEvent.setup();
+    const fetchMock = stubFetch();
+
+    renderUpdateDialog(TOR_AND_TEXT_ITEM);
+    await openConditionsTab(user);
+
+    const rows = conditionRows();
+    expect(rows).toHaveLength(2);
+    const [torRow, textRow] = rows;
+
+    // La booleana conserva `@truthy` **fijo** y sin selector: ofrecerlo insinuaría
+    // una elección que la validación rechaza.
+    expect(
+      within(torRow).queryByRole("combobox", { name: "Operator" }),
+    ).toBeNull();
+    expect(within(torRow).getByText("@truthy")).toBeInTheDocument();
+
+    // La fila de texto, en cambio, sí ofrece el suyo.
+    expect(
+      within(textRow).getByRole("combobox", { name: "Operator" }),
+    ).toBeInTheDocument();
+
+    await user.click(screen.getByRole("button", { name: "Ok" }));
+    await waitFor(() => expect(patchedRuleBodies(fetchMock)).toHaveLength(1));
+
+    expect(patchedRuleBodies(fetchMock)[0].conditions).toEqual([
+      {
+        collection: "is_tor",
+        key: null,
+        transformations: "",
+        operator: "@truthy",
+        pattern: "",
+      },
+      {
+        collection: "method",
+        key: null,
+        transformations: "",
+        operator: "@rx",
+        pattern: "POST",
+      },
+    ]);
+  });
+
+  it("una fila con el patrón vacío impide guardar salvo en `@unconditionalMatch`", async () => {
+    const user = userEvent.setup();
+    const fetchMock = stubFetch();
+
+    // ── Patrón vacío con `@rx`: la fila queda pendiente y no se emite nada ──
+    renderUpdateDialog(ADVANCED_ITEM);
+    await openConditionsTab(user);
+
+    await user.clear(
+      within(conditionRows()[0]).getByRole("textbox", { name: "Pattern" }),
+    );
+    await user.click(screen.getByRole("button", { name: "Ok" }));
+
+    // La fila pendiente se señala con un mensaje accesible —la clave de
+    // traducción literal, porque `t` es la identidad—, igual que la clave que
+    // falta en una colección con clave.
+    await waitFor(() =>
+      expect(within(conditionRows()[0]).getByRole("alert")).toHaveTextContent(
+        "This pattern is required",
+      ),
+    );
+    // Y no viaja ninguna petición de escritura: el cuerpo sería inválido.
+    expect(patchedRuleBodies(fetchMock)).toHaveLength(0);
+    expect(postedRuleBodies(fetchMock)).toHaveLength(0);
+
+    // ── Patrón vacío con `@unconditionalMatch`: es su contrato y sí guarda ──
+    cleanup();
+    renderUpdateDialog(ADVANCED_ITEM);
+    await openConditionsTab(user);
+    await chooseOperator(user, conditionRows()[0], "@unconditionalMatch");
+
+    await user.click(screen.getByRole("button", { name: "Ok" }));
+    await waitFor(() => expect(patchedRuleBodies(fetchMock)).toHaveLength(1));
+    expect(patchedRuleBodies(fetchMock)[0].conditions).toEqual([
+      {
+        collection: "request_cookies",
+        key: "PHPSESSID",
+        transformations: "",
+        operator: "@unconditionalMatch",
+        pattern: "",
+      },
+    ]);
+  });
+
+  it("`@contains` viaja con su operador y con el patrón escrito tal cual", async () => {
+    const user = userEvent.setup();
+    const fetchMock = stubFetch();
+
+    renderUpdateDialog(ADVANCED_ITEM);
+    await openConditionsTab(user);
+
+    await chooseOperator(user, conditionRows()[0], "@contains");
+
+    const patternInput = within(conditionRows()[0]).getByRole("textbox", {
+      name: "Pattern",
+    });
+    await user.clear(patternInput);
+    await user.type(patternInput, "nikto");
+
+    await user.click(screen.getByRole("button", { name: "Ok" }));
+    await waitFor(() => expect(patchedRuleBodies(fetchMock)).toHaveLength(1));
+
+    expect(patchedRuleBodies(fetchMock)[0].conditions).toEqual([
+      {
+        collection: "request_cookies",
+        key: "PHPSESSID",
+        transformations: "",
+        operator: "@contains",
+        pattern: "nikto",
+      },
+    ]);
+  });
+
+  it("`@within` conserva el campo de patrón y envía la lista separada por comas tal cual", async () => {
+    const user = userEvent.setup();
+    const fetchMock = stubFetch();
+
+    renderUpdateDialog(ADVANCED_ITEM);
+    await openConditionsTab(user);
+
+    await chooseOperator(user, conditionRows()[0], "@within");
+
+    // El contrato visible de `@within`: el campo de patrón **sigue** visible
+    // —sólo `@unconditionalMatch` lo oculta— y en él se escribe la lista
+    // separada por comas, que viaja tal cual, sin recortar.
+    const patternInput = within(conditionRows()[0]).getByRole("textbox", {
+      name: "Pattern",
+    });
+    await user.clear(patternInput);
+    await user.type(patternInput, "GET, POST");
+
+    await user.click(screen.getByRole("button", { name: "Ok" }));
+    await waitFor(() => expect(patchedRuleBodies(fetchMock)).toHaveLength(1));
+
+    expect(patchedRuleBodies(fetchMock)[0].conditions).toEqual([
+      {
+        collection: "request_cookies",
+        key: "PHPSESSID",
+        transformations: "",
+        operator: "@within",
+        pattern: "GET, POST",
+      },
+    ]);
+  });
+
+  it("`@beginsWith` conserva el campo de patrón y envía su patrón literal", async () => {
+    const user = userEvent.setup();
+    const fetchMock = stubFetch();
+
+    renderUpdateDialog(ADVANCED_ITEM);
+    await openConditionsTab(user);
+
+    await chooseOperator(user, conditionRows()[0], "@beginsWith");
+
+    const patternInput = within(conditionRows()[0]).getByRole("textbox", {
+      name: "Pattern",
+    });
+    await user.clear(patternInput);
+    await user.type(patternInput, "/admin");
+
+    await user.click(screen.getByRole("button", { name: "Ok" }));
+    await waitFor(() => expect(patchedRuleBodies(fetchMock)).toHaveLength(1));
+
+    expect(patchedRuleBodies(fetchMock)[0].conditions).toEqual([
+      {
+        collection: "request_cookies",
+        key: "PHPSESSID",
+        transformations: "",
+        operator: "@beginsWith",
+        pattern: "/admin",
+      },
+    ]);
+  });
+});
+
+// ─── La inferencia del modo no cambia con los operadores de cadena ────────────
+// La inferencia sigue comparando las condiciones recibidas con la proyección de
+// los 14 campos y de la columna `is_tor`, que sólo produce `@rx` y `@truthy`. Una
+// regla simple no se degrada, y una avanzada con un operador de cadena —que la
+// proyección no puede producir— abre en avanzado con su lista y su operador.
+describe("RuleDialog: la inferencia del modo con operadores de cadena", () => {
+  afterEach(() => {
+    vi.unstubAllGlobals();
+  });
+
+  it("una regla cuyas condiciones son la proyección de los 14 campos abre en simple", async () => {
+    const user = userEvent.setup();
+    const fetchMock = stubFetch();
+
+    renderUpdateDialog(FULL_SIMPLE_ITEM);
+    await openConditionsTab(user);
+
+    expect(simpleRadio()).toBeChecked();
+    expect(screen.queryByText(ADVANCED_NOTE)).toBeNull();
+    expect(screen.queryByRole("list", { name: "Conditions" })).toBeNull();
+
+    await user.click(screen.getByRole("button", { name: "Ok" }));
+    await waitFor(() => expect(patchedRuleBodies(fetchMock)).toHaveLength(1));
+    expect(Object.keys(patchedRuleBodies(fetchMock)[0])).not.toContain(
+      "conditions",
+    );
+  });
+
+  it("una regla con un operador de cadena abre en avanzado con su fila y su operador a la vista", async () => {
+    const user = userEvent.setup();
+    stubFetch();
+
+    renderUpdateDialog(STREQ_ITEM);
+    await openConditionsTab(user);
+
+    expect(advancedRadio()).toBeChecked();
+    expect(screen.getByText(ADVANCED_NOTE)).toBeTruthy();
+
+    const rows = conditionRows();
+    expect(rows).toHaveLength(1);
+    expect(within(rows[0]).getByText("method")).toBeInTheDocument();
+    expect(patternOf(rows[0])).toBe("POST");
+
+    // La lista se siembra con el operador recibido, que queda elegido en el
+    // selector de la fila: la inferencia no lo degrada a `@rx`.
+    expect(
+      within(rows[0]).getByRole("combobox", { name: "Operator" }),
+    ).toBeInTheDocument();
+    expect(within(rows[0]).getByText("@streq")).toBeInTheDocument();
+  });
+});

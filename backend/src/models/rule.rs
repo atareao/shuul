@@ -278,32 +278,32 @@ impl CacheRule {
         // (decisión explícita, revisable): la forma del evento de auditoría no
         // cambia.
         if condition.collection == Collection::IsTor {
-            match &condition.operator {
-                Operator::Truthy => {
-                    if request.is_tor == Some(true) {
-                        return true;
-                    }
-                    debug!(
-                        field = condition.collection.field_name(),
-                        key = ?condition.key,
-                        rule_id = self.rule.id,
-                        rule_name = %self.rule.name,
-                        "condición no cumplida: la petición no es Tor (o no se sabe)"
-                    );
-                    return false;
-                },
-                Operator::Rx(_) => {
-                    debug!(
-                        field = condition.collection.field_name(),
-                        operator = condition.operator.name(),
-                        key = ?condition.key,
-                        rule_id = self.rule.id,
-                        rule_name = %self.rule.name,
-                        "condición no cumplida: operador incoherente con la colección booleana"
-                    );
-                    return false;
-                },
+            if matches!(condition.operator, Operator::Truthy) {
+                if request.is_tor == Some(true) {
+                    return true;
+                }
+                debug!(
+                    field = condition.collection.field_name(),
+                    key = ?condition.key,
+                    rule_id = self.rule.id,
+                    rule_name = %self.rule.name,
+                    "condición no cumplida: la petición no es Tor (o no se sabe)"
+                );
+                return false;
             }
+            // Cualquier otro operador —`@rx` y los seis de cadena— es incoherente
+            // con la colección booleana: la autoría lo rechaza y la lectura lo
+            // descarta, así que aquí no casa, con el mismo diagnóstico. La
+            // decisión no ramifica por variante: basta con no ser `@truthy`.
+            debug!(
+                field = condition.collection.field_name(),
+                operator = condition.operator.name(),
+                key = ?condition.key,
+                rule_id = self.rule.id,
+                rule_name = %self.rule.name,
+                "condición no cumplida: operador incoherente con la colección booleana"
+            );
+            return false;
         }
         let Some(value) = condition
             .collection
@@ -321,6 +321,34 @@ impl CacheRule {
         let transformed = condition.pipeline.apply(value);
         let matched = match &condition.operator {
             Operator::Rx(regex) => regex.is_match(&transformed),
+            // Los cuatro operadores de cadena comparan el valor **ya
+            // transformado** con su patrón literal, **sensibles a mayúsculas**:
+            // no se compilan ni se aplica la pipeline al patrón. La comparación
+            // insensible se obtiene con la transformación `t:lowercase` sobre el
+            // valor (D4).
+            Operator::Contains(pattern) => transformed.contains(pattern.as_str()),
+            Operator::Streq(pattern) => transformed.as_ref() == pattern.as_str(),
+            Operator::BeginsWith(pattern) => transformed.starts_with(pattern.as_str()),
+            Operator::EndsWith(pattern) => transformed.ends_with(pattern.as_str()),
+            // `@within`: el valor es la **aguja** y el patrón el **pajar** (la
+            // lista de elementos, inverso de `@contains`). Casa si el valor es
+            // igual a alguno de los elementos **recortados** de espacios. Una
+            // lista con un elemento **vacío** (una coma suelta) no casa ningún
+            // valor —no es un comodín—: se exige que **todos** los elementos
+            // recortados sean no vacíos antes de comparar.
+            Operator::Within(items) => {
+                // Dos pasadas **sin asignación**: la primera exige que todos los
+                // elementos recortados sean no vacíos (una coma suelta anula la
+                // condición, no es un comodín) y la segunda busca la igualdad.
+                // Evita construir un `Vec` en cada evaluación de cada petición (D9).
+                let value = transformed.as_ref();
+                items.iter().all(|item| !item.trim().is_empty())
+                    && items.iter().any(|item| item.trim() == value)
+            },
+            // `@unconditionalMatch` casa cualquier valor de la colección
+            // **presente**; la colección ausente se resolvió antes (fail-open,
+            // D2).
+            Operator::UnconditionalMatch => true,
             // `@truthy` solo es válido para `is_tor`, que se resolvió arriba: una
             // combinación incoherente (operador booleano sobre una colección de
             // texto) no casa. La lectura ya descarta esas filas.
@@ -410,17 +438,161 @@ impl From<&Condition> for ConditionInput {
     /// ([`Operator::name`]): `@rx` con el patrón, o `@truthy` con patrón vacío
     /// para `is_tor`.
     fn from(condition: &Condition) -> Self {
-        let pattern = match &condition.operator {
-            Operator::Rx(regex) => regex.as_str(),
-            Operator::Truthy => "",
-        };
+        // El patrón lo sirve el propio operador ([`Operator::pattern`]): es la
+        // representación única y no hay `match` que ramifique por variante.
         Self {
             collection: condition.collection.field_name().to_string(),
             key: condition.key.clone(),
             transformations: condition.pipeline.spec().to_string(),
             operator: Some(condition.operator.name().to_string()),
-            pattern: pattern.to_string(),
+            pattern: condition.operator.pattern().into_owned(),
         }
+    }
+}
+
+/// Valida que el patrón de un operador que lo exige no sea vacío.
+///
+/// `@rx` y los operadores de cadena de Coraza —`@contains`, `@streq`,
+/// `@beginsWith`, `@endsWith` y `@within`— exigen un patrón **no vacío**: un
+/// patrón vacío no describe ninguna coincidencia y se rechaza con `400`. Es el
+/// único punto donde se exige; `@unconditionalMatch` sigue el contrato inverso
+/// —patrón vacío—. Para `@within` el llamante valida el patrón **canónico** (ya
+/// recortado y unido por coma), no el crudo: un patrón de solo espacios se
+/// canoniza a la cadena vacía y también se rechaza.
+fn non_empty_string_pattern(
+    collection: Collection,
+    operator: &str,
+    pattern: &str,
+) -> Result<String, AppError> {
+    if pattern.is_empty() {
+        return Err(AppError::InvalidInput(format!(
+            "el operador «{operator}» de la condición «{}» exige un patrón no vacío",
+            collection.field_name()
+        )));
+    }
+    Ok(pattern.to_string())
+}
+
+/// Reconstruye el operador de una fila de `rule_conditions` desde su nombre y su
+/// patrón, o `None` si la fila es **irresoluble** —y en tal caso emite el
+/// diagnóstico que nombra la causa antes de descartarla—.
+///
+/// Es el fallo seguro de la lectura frente al rollback a una imagen anterior,
+/// que no conoce los operadores nuevos: la fila se descarta, no se aplica mal.
+/// Se descarta cuando el nombre del operador es desconocido, cuando un operador
+/// de cadena o `@rx` traen patrón **vacío**, cuando `@unconditionalMatch` trae
+/// patrón **no** vacío, cuando `@rx` trae un patrón que no compila, y cuando la
+/// combinación colección/operador es incoherente —`is_tor` con un operador
+/// distinto de `@truthy`, `@truthy` fuera de `is_tor`, `@truthy` con clave o
+/// transformaciones—. Todo descarte emite un `warn!` que nombra la causa.
+#[must_use]
+fn operator_from_row(
+    rule_id: i32,
+    collection: Collection,
+    collection_name: &str,
+    operator_name: &str,
+    pattern: &str,
+    has_key: bool,
+    has_transformations: bool,
+) -> Option<Operator> {
+    match (collection, operator_name) {
+        (Collection::IsTor, "@truthy") => {
+            if !pattern.is_empty() || has_key || has_transformations {
+                warn!(
+                    rule_id,
+                    collection = %collection_name,
+                    "condición descartada: «@truthy» exige patrón vacío, sin clave y sin \
+                     transformaciones"
+                );
+                return None;
+            }
+            Some(Operator::Truthy)
+        },
+        (Collection::IsTor, other) => {
+            warn!(
+                rule_id,
+                collection = %collection_name,
+                operator = %other,
+                "condición descartada: la colección «is_tor» exige el operador «@truthy»"
+            );
+            None
+        },
+        (_, "@truthy") => {
+            warn!(
+                rule_id,
+                collection = %collection_name,
+                "condición descartada: «@truthy» solo es válido para la colección «is_tor»"
+            );
+            None
+        },
+        (_, "@rx") => {
+            // `@rx` exige patrón **no vacío**: un patrón vacío compila
+            // (`Regex::new("")`) y casaría cualquier valor presente, así que una
+            // fila con el patrón vacío es incoherente con su operador y se
+            // descarta como las de cadena.
+            if pattern.is_empty() {
+                warn!(
+                    rule_id,
+                    collection = %collection_name,
+                    operator = "@rx",
+                    "condición descartada: el operador «@rx» exige un patrón no vacío"
+                );
+                return None;
+            }
+            let Ok(regex) = Regex::new(pattern) else {
+                // El descarte va a `warn!`, como el resto: es la ruta de
+                // diagnóstico del rollback (D5) y nombra el operador.
+                warn!(
+                    rule_id,
+                    collection = %collection_name,
+                    operator = "@rx",
+                    "condición descartada: el patrón no compila"
+                );
+                return None;
+            };
+            Some(Operator::Rx(regex))
+        },
+        // Los operadores de cadena exigen patrón no vacío: una fila con el
+        // patrón vacío (incoherente con el operador) se descarta.
+        (_, "@contains" | "@streq" | "@beginsWith" | "@endsWith" | "@within") => {
+            if pattern.is_empty() {
+                warn!(
+                    rule_id,
+                    collection = %collection_name,
+                    operator = %operator_name,
+                    "condición descartada: el operador de cadena exige un patrón no vacío"
+                );
+                return None;
+            }
+            Some(match operator_name {
+                "@contains" => Operator::Contains(pattern.to_string()),
+                "@streq" => Operator::Streq(pattern.to_string()),
+                "@beginsWith" => Operator::BeginsWith(pattern.to_string()),
+                "@endsWith" => Operator::EndsWith(pattern.to_string()),
+                // `@within` reconstruye su lista separando el patrón por coma.
+                _ => Operator::Within(pattern.split(',').map(str::to_string).collect()),
+            })
+        },
+        (_, "@unconditionalMatch") => {
+            if !pattern.is_empty() {
+                warn!(
+                    rule_id,
+                    collection = %collection_name,
+                    "condición descartada: «@unconditionalMatch» exige patrón vacío"
+                );
+                return None;
+            }
+            Some(Operator::UnconditionalMatch)
+        },
+        (_, other) => {
+            warn!(
+                rule_id,
+                collection = %collection_name,
+                operator = %other,
+                "condición descartada: operador desconocido"
+            );
+            None
+        },
     }
 }
 
@@ -438,12 +610,16 @@ impl ConditionInput {
     /// - la colección debe ser conocida ([`Collection::from_field_name`]);
     /// - la clave es obligatoria exactamente cuando la colección la exige
     ///   ([`Collection::requires_key`]) y no debe venir en caso contrario;
-    /// - el operador es ausente o `@rx` para las colecciones de texto, y
-    ///   `@truthy` **solo** para `is_tor` —con patrón vacío, sin clave y sin
-    ///   transformaciones—; `@truthy` fuera de `is_tor` y `@rx` sobre `is_tor`
-    ///   se rechazan;
-    /// - el patrón debe compilar con [`Regex::new`] (para `is_tor`/`@truthy` es
-    ///   vacío);
+    /// - para las colecciones de texto el operador es ausente o uno de los siete
+    ///   admitidos: `@rx` —cuyo patrón debe compilar con [`Regex::new`]—, los
+    ///   cuatro de cadena `@contains`, `@streq`, `@beginsWith` y `@endsWith`
+    ///   —patrón **no vacío**, literal—, `@within` —patrón **no vacío**, lista
+    ///   separada por comas— o `@unconditionalMatch` —patrón **vacío**—;
+    /// - `@truthy` **solo** es válido para `is_tor` —con patrón vacío, sin clave
+    ///   y sin transformaciones—; `@truthy` fuera de `is_tor`, cualquier operador
+    ///   sobre `is_tor` distinto de `@truthy` y cualquier nombre fuera del
+    ///   vocabulario se rechazan;
+    /// - el patrón de `is_tor`/`@truthy` es vacío;
     /// - las transformaciones deben resolverse con
     ///   [`TransformationPipeline::parse`];
     /// - para `request_headers` la clave se normaliza a minúsculas, igual que
@@ -486,52 +662,12 @@ impl ConditionInput {
             None
         };
 
-        // El operador decide la forma de la condición. `@truthy` es el operador
-        // booleano y **solo** es válido para la colección `is_tor`, que exige
-        // patrón vacío, `key` ausente (ya validado arriba) y transformaciones
-        // vacías. Las colecciones de texto admiten ausente o `@rx`. Cualquier otro
-        // caso es `400`.
-        let operator = match (collection, self.operator.as_deref()) {
-            (Collection::IsTor, None | Some("@truthy")) => {
-                if !self.pattern.is_empty() {
-                    return Err(AppError::InvalidInput(
-                        "la condición «is_tor» con «@truthy» no admite patrón".to_string(),
-                    ));
-                }
-                if !self.transformations.is_empty() {
-                    return Err(AppError::InvalidInput(
-                        "la condición «is_tor» con «@truthy» no admite transformaciones"
-                            .to_string(),
-                    ));
-                }
-                Operator::Truthy
-            },
-            (Collection::IsTor, Some(other)) => {
-                return Err(AppError::InvalidInput(format!(
-                    "la colección «is_tor» exige el operador «@truthy», no «{other}»"
-                )));
-            },
-            (_, Some("@truthy")) => {
-                return Err(AppError::InvalidInput(format!(
-                    "«@truthy» solo es válido para la colección «is_tor», no para «{}»",
-                    collection.field_name()
-                )));
-            },
-            (_, None | Some("@rx")) => {
-                let regex = Regex::new(&self.pattern).map_err(|error| {
-                    AppError::InvalidInput(format!(
-                        "el patrón de la condición «{}» no compila: {error}",
-                        collection.field_name()
-                    ))
-                })?;
-                Operator::Rx(regex)
-            },
-            (_, Some(other)) => {
-                return Err(AppError::InvalidInput(format!(
-                    "operador no admitido: «{other}»"
-                )));
-            },
-        };
+        let operator = resolve_operator(
+            collection,
+            self.operator.as_deref(),
+            &self.pattern,
+            &self.transformations,
+        )?;
 
         let pipeline = TransformationPipeline::parse(&self.transformations)
             .map_err(|error| AppError::InvalidInput(error.to_string()))?;
@@ -542,6 +678,114 @@ impl ConditionInput {
             pipeline,
             operator,
         })
+    }
+}
+
+/// Resuelve el operador de una condición desde su nombre y su patrón, aplicando
+/// la **tabla de validación por operador y colección**.
+///
+/// Es el único punto donde se decide qué nombre de operador es válido para qué
+/// colección y con qué forma de patrón:
+///
+/// - `@truthy` es el operador booleano y **solo** es válido para `is_tor`, que
+///   exige patrón vacío, sin clave (ya validado por el llamante) y sin
+///   transformaciones; cualquier operador sobre `is_tor` distinto de `@truthy`,
+///   y `@truthy` fuera de `is_tor`, se rechazan;
+/// - las colecciones de texto admiten ausente o `@rx` —patrón no vacío y
+///   compilable—, los cuatro de cadena `@contains`, `@streq`, `@beginsWith` y
+///   `@endsWith` —patrón **no vacío**, literal—, `@within` —patrón **no vacío**,
+///   lista separada por comas— y `@unconditionalMatch` —patrón **vacío**—;
+/// - cualquier nombre fuera del vocabulario se rechaza.
+///
+/// # Errors
+///
+/// Devuelve [`AppError::InvalidInput`] —que la API traduce a `400 Bad Request`—
+/// cuando la combinación de operador, colección y patrón no es válida.
+fn resolve_operator(
+    collection: Collection,
+    operator: Option<&str>,
+    pattern: &str,
+    transformations: &str,
+) -> Result<Operator, AppError> {
+    match (collection, operator) {
+        (Collection::IsTor, None | Some("@truthy")) => {
+            if !pattern.is_empty() {
+                return Err(AppError::InvalidInput(
+                    "la condición «is_tor» con «@truthy» no admite patrón".to_string(),
+                ));
+            }
+            if !transformations.is_empty() {
+                return Err(AppError::InvalidInput(
+                    "la condición «is_tor» con «@truthy» no admite transformaciones".to_string(),
+                ));
+            }
+            Ok(Operator::Truthy)
+        },
+        (Collection::IsTor, Some(other)) => Err(AppError::InvalidInput(format!(
+            "la colección «is_tor» exige el operador «@truthy», no «{other}»"
+        ))),
+        (_, Some("@truthy")) => Err(AppError::InvalidInput(format!(
+            "«@truthy» solo es válido para la colección «is_tor», no para «{}»",
+            collection.field_name()
+        ))),
+        (_, None | Some("@rx")) => {
+            // El patrón de `@rx` es **no vacío** por contrato (spec de `rules`):
+            // `Regex::new("")` compila y casaría cualquier valor presente, un
+            // `@unconditionalMatch` encubierto. Se exige antes de compilar.
+            non_empty_string_pattern(collection, "@rx", pattern)?;
+            let regex = Regex::new(pattern).map_err(|error| {
+                AppError::InvalidInput(format!(
+                    "el patrón de la condición «{}» no compila: {error}",
+                    collection.field_name()
+                ))
+            })?;
+            Ok(Operator::Rx(regex))
+        },
+        (_, Some("@contains")) => Ok(Operator::Contains(non_empty_string_pattern(
+            collection,
+            "@contains",
+            pattern,
+        )?)),
+        (_, Some("@streq")) => Ok(Operator::Streq(non_empty_string_pattern(
+            collection, "@streq", pattern,
+        )?)),
+        (_, Some("@beginsWith")) => Ok(Operator::BeginsWith(non_empty_string_pattern(
+            collection,
+            "@beginsWith",
+            pattern,
+        )?)),
+        (_, Some("@endsWith")) => Ok(Operator::EndsWith(non_empty_string_pattern(
+            collection,
+            "@endsWith",
+            pattern,
+        )?)),
+        (_, Some("@within")) => {
+            let operator = Operator::Within(
+                non_empty_string_pattern(collection, "@within", pattern)?
+                    .split(',')
+                    .map(str::to_string)
+                    .collect(),
+            );
+            // El patrón **canónico** de `@within` recorta los espacios de cada
+            // elemento: un patrón de solo espacios (`" "`, `"\t"`) se canoniza a
+            // la cadena vacía y la lectura lo descartaría, dejando la regla sin
+            // condiciones —neutral, casa toda petición—. Se valida, pues, el
+            // **canónico** y no el crudo, para que el round-trip sea estable (D5).
+            non_empty_string_pattern(collection, "@within", &operator.pattern())?;
+            Ok(operator)
+        },
+        (_, Some("@unconditionalMatch")) => {
+            if !pattern.is_empty() {
+                return Err(AppError::InvalidInput(format!(
+                    "el operador «@unconditionalMatch» de la condición «{}» no admite patrón",
+                    collection.field_name()
+                )));
+            }
+            Ok(Operator::UnconditionalMatch)
+        },
+        (_, Some(other)) => Err(AppError::InvalidInput(format!(
+            "operador no admitido: «{other}»"
+        ))),
     }
 }
 
@@ -755,10 +999,9 @@ impl Rule {
         for (index, condition) in conditions.iter().enumerate() {
             let position = i32::try_from(index)
                 .map_err(|error| AppError::Other(format!("demasiadas condiciones: {error}")))?;
-            let pattern = match &condition.operator {
-                Operator::Rx(regex) => regex.as_str(),
-                Operator::Truthy => "",
-            };
+            // El patrón canónico lo sirve el propio operador
+            // ([`Operator::pattern`]): `@within` se persiste ya canonizado.
+            let pattern = condition.operator.pattern();
             query(
                 "INSERT INTO rule_conditions
                     (rule_id, position, collection, key, transformations, operator, pattern, negate)
@@ -808,12 +1051,18 @@ impl Rule {
     /// colección, patrón no compilable, especificación de transformaciones no
     /// legible o clave ausente en una colección que la exige).
     ///
-    /// La columna `operator` reconstruye el operador: `@rx` (para las colecciones
-    /// de texto) o `@truthy` (solo para `is_tor`). Una fila incoherente —`@truthy`
-    /// en una colección de texto, `is_tor` con operador distinto de `@truthy`,
-    /// `@truthy` con patrón, clave o transformaciones— se **descarta** con un
-    /// diagnóstico que la nombra, en vez de aplicarse mal: es el fallo seguro
-    /// frente al rollback a una imagen anterior, que no conoce `@truthy`.
+    /// La columna `operator` reconstruye el operador de una colección de texto
+    /// —`@rx`, los cuatro de cadena `@contains`/`@streq`/`@beginsWith`/`@endsWith`,
+    /// `@within` y `@unconditionalMatch`— o `@truthy` (solo para `is_tor`). Una
+    /// fila irresoluble se **descarta** con un diagnóstico que la nombra, en vez
+    /// de aplicarse mal: es el fallo seguro frente al rollback a una imagen
+    /// anterior, que no conoce los operadores —ni `@truthy` ni los seis de
+    /// cadena—. Se descarta cuando el operador es desconocido, cuando un operador
+    /// de cadena trae patrón **vacío**, cuando `@unconditionalMatch` trae patrón
+    /// **no** vacío, cuando `@rx` trae un patrón que no compila, o cuando la
+    /// combinación colección/operador es incoherente —`@truthy` en una colección
+    /// de texto, `is_tor` con operador distinto de `@truthy`, o `@truthy` con
+    /// patrón, clave o transformaciones—.
     ///
     /// Es el criterio compartido por [`Rule::read_conditions`] y
     /// [`Rule::read_conditions_batch`]: una fila irresoluble se descarta con un
@@ -834,57 +1083,15 @@ impl Rule {
         let transformations: String = row.get("transformations");
         let key: Option<String> = row.try_get("key").ok().flatten();
 
-        let operator = match (collection, operator_name.as_str()) {
-            (Collection::IsTor, "@truthy") => {
-                if !pattern.is_empty() || key.is_some() || !transformations.is_empty() {
-                    warn!(
-                        rule_id,
-                        collection = %collection_name,
-                        "condición descartada: «@truthy» exige patrón vacío, sin clave y sin \
-                         transformaciones"
-                    );
-                    return None;
-                }
-                Operator::Truthy
-            },
-            (Collection::IsTor, other) => {
-                warn!(
-                    rule_id,
-                    collection = %collection_name,
-                    operator = %other,
-                    "condición descartada: la colección «is_tor» exige el operador «@truthy»"
-                );
-                return None;
-            },
-            (_, "@truthy") => {
-                warn!(
-                    rule_id,
-                    collection = %collection_name,
-                    "condición descartada: «@truthy» solo es válido para la colección «is_tor»"
-                );
-                return None;
-            },
-            (_, "@rx") => {
-                let Ok(regex) = Regex::new(&pattern) else {
-                    debug!(
-                        rule_id,
-                        collection = %collection_name,
-                        "condición descartada: el patrón no compila"
-                    );
-                    return None;
-                };
-                Operator::Rx(regex)
-            },
-            (_, other) => {
-                warn!(
-                    rule_id,
-                    collection = %collection_name,
-                    operator = %other,
-                    "condición descartada: operador desconocido"
-                );
-                return None;
-            },
-        };
+        let operator = operator_from_row(
+            rule_id,
+            collection,
+            &collection_name,
+            &operator_name,
+            &pattern,
+            key.is_some(),
+            !transformations.is_empty(),
+        )?;
 
         let pipeline = match TransformationPipeline::parse(&transformations) {
             Ok(pipeline) => pipeline,
@@ -2467,6 +2674,810 @@ mod tests {
         assert!(
             with_transformations.compile().is_err(),
             "`@truthy` no admite transformaciones"
+        );
+    }
+
+    // ── F2c-1: operadores de cadena ──
+
+    /// Una condición con el operador indicado, para el matcheo.
+    fn string_condition(
+        collection: Collection,
+        key: Option<&str>,
+        transformations: &str,
+        operator: Operator,
+    ) -> Condition {
+        Condition {
+            collection,
+            key: key.map(str::to_string),
+            pipeline: TransformationPipeline::parse(transformations).unwrap_or_default(),
+            operator,
+        }
+    }
+
+    /// 1.2 semántica de `@contains`.
+    #[test]
+    fn test_contains_operator_matches_and_is_case_sensitive() {
+        let request = make_request_with(|q| q.user_agent = Some("Nikto/2.1.6".to_string()));
+
+        let contains = make_rule_with_conditions(vec![string_condition(
+            Collection::UserAgent,
+            None,
+            "",
+            Operator::Contains("Nikto".to_string()),
+        )]);
+        assert!(
+            contains.matches(&request),
+            "`@contains` debe casar cuando el valor contiene el patrón"
+        );
+
+        let lowercase = make_rule_with_conditions(vec![string_condition(
+            Collection::UserAgent,
+            None,
+            "",
+            Operator::Contains("nikto".to_string()),
+        )]);
+        assert!(
+            !lowercase.matches(&request),
+            "`@contains` es sensible a mayúsculas: «nikto» no casa «Nikto/2.1.6»"
+        );
+
+        let absent = make_rule_with_conditions(vec![string_condition(
+            Collection::UserAgent,
+            None,
+            "",
+            Operator::Contains("sqlmap".to_string()),
+        )]);
+        assert!(
+            !absent.matches(&request),
+            "`@contains` no debe casar un patrón que el valor no contiene"
+        );
+    }
+
+    /// 1.3 semántica de `@streq`.
+    #[test]
+    fn test_streq_operator_requires_exact_equality() {
+        let request = make_request_with(|q| q.method = Some("POST".to_string()));
+
+        let exact = make_rule_with_conditions(vec![string_condition(
+            Collection::Method,
+            None,
+            "",
+            Operator::Streq("POST".to_string()),
+        )]);
+        assert!(
+            exact.matches(&request),
+            "`@streq` debe casar con la igualdad exacta"
+        );
+
+        for (pattern, why) in [
+            ("POST ", "un espacio de más"),
+            ("post", "otra capitalización"),
+            ("POS", "un prefijo"),
+        ] {
+            let rule = make_rule_with_conditions(vec![string_condition(
+                Collection::Method,
+                None,
+                "",
+                Operator::Streq(pattern.to_string()),
+            )]);
+            assert!(
+                !rule.matches(&request),
+                "`@streq` no debe casar «{pattern}» con el método «POST» ({why})"
+            );
+        }
+    }
+
+    /// 1.4 semántica de `@beginsWith`.
+    #[test]
+    fn test_begins_with_operator_anchors_at_the_start() {
+        let request = make_request_with(|q| q.path = Some("/admin/login".to_string()));
+
+        let begins = make_rule_with_conditions(vec![string_condition(
+            Collection::Path,
+            None,
+            "",
+            Operator::BeginsWith("/admin".to_string()),
+        )]);
+        assert!(
+            begins.matches(&request),
+            "`@beginsWith` debe casar cuando el valor empieza por el patrón"
+        );
+
+        for pattern in ["admin", "login"] {
+            let rule = make_rule_with_conditions(vec![string_condition(
+                Collection::Path,
+                None,
+                "",
+                Operator::BeginsWith(pattern.to_string()),
+            )]);
+            assert!(
+                !rule.matches(&request),
+                "`@beginsWith` está anclado al principio: «{pattern}» no casa «/admin/login»"
+            );
+        }
+    }
+
+    /// 1.5 semántica de `@endsWith`.
+    #[test]
+    fn test_ends_with_operator_anchors_at_the_end() {
+        let request = make_request_with(|q| q.path = Some("/uploads/shell.php".to_string()));
+
+        let ends = make_rule_with_conditions(vec![string_condition(
+            Collection::Path,
+            None,
+            "",
+            Operator::EndsWith(".php".to_string()),
+        )]);
+        assert!(
+            ends.matches(&request),
+            "`@endsWith` debe casar cuando el valor termina por el patrón"
+        );
+
+        let inner = make_rule_with_conditions(vec![string_condition(
+            Collection::Path,
+            None,
+            "",
+            Operator::EndsWith("/uploads".to_string()),
+        )]);
+        assert!(
+            !inner.matches(&request),
+            "`@endsWith` está anclado al final: «/uploads» no casa «/uploads/shell.php»"
+        );
+    }
+
+    /// 1.6 semántica de `@within`.
+    #[test]
+    fn test_within_operator_matches_the_value_against_the_list() {
+        let request = make_request_with(|q| q.method = Some("POST".to_string()));
+
+        let listed = make_rule_with_conditions(vec![string_condition(
+            Collection::Method,
+            None,
+            "",
+            Operator::Within(vec!["GET".to_string(), "POST".to_string()]),
+        )]);
+        assert!(
+            listed.matches(&request),
+            "`@within` debe casar cuando el valor es uno de los elementos de la lista"
+        );
+
+        let not_listed = make_rule_with_conditions(vec![string_condition(
+            Collection::Method,
+            None,
+            "",
+            Operator::Within(vec!["GET".to_string(), "HEAD".to_string()]),
+        )]);
+        assert!(
+            !not_listed.matches(&request),
+            "`@within` no debe casar cuando el valor no está en la lista"
+        );
+
+        // El constructor guarda los elementos tal cual: el recorte es del operador.
+        let padded = make_rule_with_conditions(vec![string_condition(
+            Collection::Method,
+            None,
+            "",
+            Operator::Within(vec!["GET".to_string(), " POST ".to_string()]),
+        )]);
+        assert!(
+            padded.matches(&request),
+            "`@within` debe recortar los espacios de cada elemento antes de comparar"
+        );
+
+        // Un elemento vacío NO es un comodín.
+        let with_empty = make_rule_with_conditions(vec![string_condition(
+            Collection::Method,
+            None,
+            "",
+            Operator::Within(vec!["GET".to_string(), String::new()]),
+        )]);
+        assert!(
+            !with_empty.matches(&request),
+            "un elemento vacío del patrón de `@within` no casa ningún valor"
+        );
+        assert!(
+            !with_empty.matches(&make_request_with(|q| q.method = Some("GET".to_string()))),
+            "un elemento vacío del patrón de `@within` tampoco casa el elemento no vacío"
+        );
+
+        // Inverso de `@contains`: aquí el valor es la aguja y el patrón el pajar.
+        let contains = make_rule_with_conditions(vec![string_condition(
+            Collection::Method,
+            None,
+            "",
+            Operator::Contains("POST".to_string()),
+        )]);
+        assert!(
+            contains.matches(&make_request_with(|q| q.method = Some("POST".to_string()))),
+            "`@contains` casa cuando el valor contiene el patrón"
+        );
+        let within = make_rule_with_conditions(vec![string_condition(
+            Collection::Method,
+            None,
+            "",
+            Operator::Within(vec!["POST".to_string()]),
+        )]);
+        assert!(
+            !within.matches(&make_request_with(
+                |q| q.method = Some("POST, GET".to_string())
+            )),
+            "`@within` no casa un valor que contiene el elemento: la aguja y el pajar están \
+             invertidos respecto de `@contains`"
+        );
+    }
+
+    /// 1.7 semántica de `@unconditionalMatch`.
+    #[test]
+    fn test_unconditional_match_matches_any_present_value() {
+        let path = make_rule_with_conditions(vec![string_condition(
+            Collection::Path,
+            None,
+            "",
+            Operator::UnconditionalMatch,
+        )]);
+        assert!(
+            path.matches(&make_request_with(
+                |q| q.path = Some("/cualquiera".to_string())
+            )),
+            "`@unconditionalMatch` debe casar cualquier valor de la colección presente"
+        );
+
+        let user_agent = make_rule_with_conditions(vec![string_condition(
+            Collection::UserAgent,
+            None,
+            "",
+            Operator::UnconditionalMatch,
+        )]);
+        assert!(
+            user_agent.matches(&make_request_with(|q| q.user_agent = Some("x".to_string()))),
+            "`@unconditionalMatch` debe casar cualquier valor de la colección presente"
+        );
+
+        assert!(
+            !path.matches(&make_request(None)),
+            "`@unconditionalMatch` NO casa si la petición no trae la colección: el brazo de la \
+             colección ausente precede al operador (D2)"
+        );
+    }
+
+    /// 1.8 contrato compartido: la pipeline se aplica al valor y nunca al patrón.
+    #[test]
+    fn test_string_operator_pipeline_applies_to_value_not_pattern() {
+        let request = make_request_with(|q| q.method = Some("GET".to_string()));
+
+        let lowered_value = make_rule_with_conditions(vec![string_condition(
+            Collection::Method,
+            None,
+            "lowercase",
+            Operator::Streq("get".to_string()),
+        )]);
+        assert!(
+            lowered_value.matches(&request),
+            "con `t:lowercase` el valor «GET» se compara ya transformado como «get»"
+        );
+
+        let untransformed_pattern = make_rule_with_conditions(vec![string_condition(
+            Collection::Method,
+            None,
+            "lowercase",
+            Operator::Streq("GET".to_string()),
+        )]);
+        assert!(
+            !untransformed_pattern.matches(&request),
+            "el patrón NO se transforma: «GET» no casa el valor transformado «get»"
+        );
+
+        let contains = make_rule_with_conditions(vec![string_condition(
+            Collection::UserAgent,
+            None,
+            "lowercase",
+            Operator::Contains("nikto".to_string()),
+        )]);
+        assert!(
+            contains.matches(&make_request_with(
+                |q| q.user_agent = Some("Nikto".to_string())
+            )),
+            "`@contains` decide sobre el valor transformado"
+        );
+    }
+
+    /// 1.8 contrato compartido: una condición que no casa detiene la conjunción.
+    #[test]
+    fn test_string_operator_short_circuits_the_conjunction() {
+        let rule = make_rule_with_conditions(vec![
+            string_condition(
+                Collection::Path,
+                None,
+                "",
+                Operator::Contains("/admin".to_string()),
+            ),
+            string_condition(
+                Collection::Method,
+                None,
+                "",
+                Operator::Streq("GET".to_string()),
+            ),
+        ]);
+
+        assert!(
+            rule.matches(&make_request_with(|q| {
+                q.path = Some("/admin/login".to_string());
+                q.method = Some("GET".to_string());
+            })),
+            "la regla casa cuando las dos condiciones casan"
+        );
+
+        assert!(
+            !rule.matches(&make_request_with(|q| {
+                q.path = Some("/public".to_string());
+                q.method = Some("GET".to_string());
+            })),
+            "una condición que no casa descarta la regla aunque la siguiente sí case"
+        );
+    }
+
+    /// 1.8 contrato compartido: un operador de cadena sobre `is_tor` es incoherente.
+    #[test]
+    fn test_string_operator_on_is_tor_is_incoherent_and_does_not_match() {
+        let rule = make_rule_with_conditions(vec![string_condition(
+            Collection::IsTor,
+            None,
+            "",
+            Operator::Contains("x".to_string()),
+        )]);
+
+        assert!(
+            !rule.matches(&make_request(Some(true))),
+            "un operador de cadena sobre la colección booleana no casa ni con `Some(true)`"
+        );
+    }
+
+    /// 1.9 evidencia: el valor transformado, solo con pipeline no vacía.
+    #[test]
+    fn test_string_operator_evidence_contract() {
+        // Colección de campo, pipeline no vacía: el valor transformado.
+        let field = make_rule_with_conditions(vec![string_condition(
+            Collection::UserAgent,
+            None,
+            "lowercase",
+            Operator::Contains("nikto".to_string()),
+        )]);
+        let outcome = field.evaluate(&make_request_with(|q| {
+            q.user_agent = Some("Nikto".to_string());
+        }));
+        assert!(
+            outcome.matched,
+            "`@contains` debe casar el valor transformado"
+        );
+        let evidence = outcome
+            .evidence
+            .expect("con pipeline no vacía debe haber evidencia");
+        assert_eq!(
+            evidence.get("user_agent").map(String::as_str),
+            Some("nikto"),
+            "la evidencia debe llevar el valor transformado bajo la clave de la colección"
+        );
+
+        // Colección con clave: la clave compuesta `colección[clave]`.
+        let keyed = make_rule_with_conditions(vec![string_condition(
+            Collection::RequestHeaders,
+            Some("user-agent"),
+            "lowercase",
+            Operator::Contains("nikto".to_string()),
+        )]);
+        let request = make_request_with(|q| {
+            q.headers
+                .insert("user-agent".to_string(), "Nikto".to_string());
+        });
+        let outcome = keyed.evaluate(&request);
+        assert!(outcome.matched, "la cabecera debe casar");
+        let evidence = outcome
+            .evidence
+            .expect("con pipeline no vacía debe haber evidencia");
+        assert_eq!(
+            evidence
+                .get("request_headers[user-agent]")
+                .map(String::as_str),
+            Some("nikto"),
+            "la evidencia debe usar la clave compuesta para las colecciones con clave"
+        );
+
+        // Pipeline vacía: nadie anota evidencia.
+        let plain = make_rule_with_conditions(vec![string_condition(
+            Collection::UserAgent,
+            None,
+            "",
+            Operator::Contains("Nikto".to_string()),
+        )]);
+        let outcome = plain.evaluate(&make_request_with(|q| {
+            q.user_agent = Some("Nikto".to_string());
+        }));
+        assert!(outcome.matched, "`@contains` debe casar");
+        assert!(
+            outcome.evidence.is_none(),
+            "con la pipeline vacía no se anota evidencia"
+        );
+
+        // `@unconditionalMatch` sigue el mismo contrato.
+        let unconditional = make_rule_with_conditions(vec![string_condition(
+            Collection::Path,
+            None,
+            "lowercase",
+            Operator::UnconditionalMatch,
+        )]);
+        let outcome = unconditional.evaluate(&make_request_with(|q| {
+            q.path = Some("/ADMIN".to_string());
+        }));
+        assert!(
+            outcome.matched,
+            "`@unconditionalMatch` casa la colección presente"
+        );
+        let evidence = outcome
+            .evidence
+            .expect("con pipeline no vacía debe haber evidencia");
+        assert_eq!(
+            evidence.get("path").map(String::as_str),
+            Some("/admin"),
+            "`@unconditionalMatch` anota el valor transformado"
+        );
+
+        let unconditional_plain = make_rule_with_conditions(vec![string_condition(
+            Collection::Path,
+            None,
+            "",
+            Operator::UnconditionalMatch,
+        )]);
+        let outcome = unconditional_plain.evaluate(&make_request_with(|q| {
+            q.path = Some("/ADMIN".to_string());
+        }));
+        assert!(
+            outcome.matched,
+            "`@unconditionalMatch` casa la colección presente"
+        );
+        assert!(
+            outcome.evidence.is_none(),
+            "`@unconditionalMatch` con pipeline vacía no anota evidencia"
+        );
+    }
+
+    /// 1.10 validación: los operadores de cadena se aceptan con patrón no vacío.
+    #[test]
+    fn test_compile_accepts_string_operators_with_non_empty_pattern() {
+        let cases: [(&str, &str); 5] = [
+            ("@contains", "OS"),
+            ("@streq", "GET"),
+            ("@beginsWith", "/admin"),
+            ("@endsWith", ".php"),
+            ("@within", "GET,POST"),
+        ];
+
+        for (operator, pattern) in cases {
+            let input = ConditionInput {
+                collection: "method".to_string(),
+                key: None,
+                transformations: String::new(),
+                operator: Some(operator.to_string()),
+                pattern: pattern.to_string(),
+            };
+
+            let compiled = input.compile();
+            assert!(
+                compiled.is_ok(),
+                "«{operator}» con patrón no vacío debe compilarse; error: {:?}",
+                compiled.err()
+            );
+            let condition = compiled.expect("compilada arriba");
+            assert_eq!(
+                condition.operator.name(),
+                operator,
+                "el operador compilado debe ser el de cadena pedido"
+            );
+            assert!(
+                !matches!(condition.operator, Operator::Rx(_) | Operator::Truthy),
+                "«{operator}» no puede degradarse a un operador de las variantes históricas"
+            );
+        }
+    }
+
+    /// 1.10 validación: los operadores de cadena exigen patrón no vacío.
+    #[test]
+    fn test_compile_rejects_empty_pattern_for_string_operators() {
+        for operator in ["@contains", "@streq", "@beginsWith", "@endsWith", "@within"] {
+            let accepted = ConditionInput {
+                collection: "method".to_string(),
+                key: None,
+                transformations: String::new(),
+                operator: Some(operator.to_string()),
+                pattern: "OS".to_string(),
+            };
+            assert!(
+                accepted.compile().is_ok(),
+                "«{operator}» con patrón no vacío debe aceptarse (control del par)"
+            );
+
+            let rejected = ConditionInput {
+                pattern: String::new(),
+                ..accepted
+            };
+            let error = rejected.compile().err();
+            assert!(
+                matches!(error, Some(AppError::InvalidInput(_))),
+                "«{operator}» con patrón vacío debe rechazarse con `InvalidInput`; error: {error:?}"
+            );
+        }
+    }
+
+    /// 1.10 validación: `@unconditionalMatch` exige patrón vacío.
+    #[test]
+    fn test_compile_accepts_unconditional_match_with_empty_pattern_and_rejects_a_pattern() {
+        let accepted = ConditionInput {
+            collection: "path".to_string(),
+            key: None,
+            transformations: String::new(),
+            operator: Some("@unconditionalMatch".to_string()),
+            pattern: String::new(),
+        };
+        let compiled = accepted.compile();
+        assert!(
+            compiled.is_ok(),
+            "`@unconditionalMatch` con patrón vacío debe aceptarse; error: {:?}",
+            compiled.err()
+        );
+        assert_eq!(
+            compiled.expect("compilada arriba").operator.name(),
+            "@unconditionalMatch",
+            "el operador compilado debe ser `@unconditionalMatch`"
+        );
+
+        let rejected = ConditionInput {
+            pattern: "x".to_string(),
+            ..accepted
+        };
+        let error = rejected.compile().err();
+        assert!(
+            matches!(error, Some(AppError::InvalidInput(_))),
+            "`@unconditionalMatch` con patrón debe rechazarse con `InvalidInput`; error: {error:?}"
+        );
+    }
+
+    /// 1.10 validación: un operador fuera del vocabulario se rechaza.
+    #[test]
+    fn test_compile_rejects_unknown_operator() {
+        let input = ConditionInput {
+            collection: "ip_address".to_string(),
+            key: None,
+            transformations: String::new(),
+            operator: Some("@ipMatch".to_string()),
+            pattern: "10.0.0.0/8".to_string(),
+        };
+
+        let error = input.compile().err();
+        assert!(
+            matches!(error, Some(AppError::InvalidInput(_))),
+            "`@ipMatch` (F2c-2, fuera de alcance) debe rechazarse con `InvalidInput`; error: {error:?}"
+        );
+    }
+
+    /// 1.10 validación: un operador de cadena sobre `is_tor` se rechaza.
+    #[test]
+    fn test_compile_rejects_string_operator_on_is_tor() {
+        for operator in ["@contains", "@streq", "@beginsWith", "@endsWith", "@within"] {
+            let input = ConditionInput {
+                collection: "is_tor".to_string(),
+                key: None,
+                transformations: String::new(),
+                operator: Some(operator.to_string()),
+                pattern: "x".to_string(),
+            };
+
+            let error = input.compile().err();
+            assert!(
+                matches!(error, Some(AppError::InvalidInput(_))),
+                "«{operator}» sobre la colección booleana debe rechazarse con `InvalidInput`; \
+                 error: {error:?}"
+            );
+        }
+    }
+
+    /// 1.11 el patrón de `@within` se canoniza a elementos recortados por coma.
+    #[test]
+    fn test_compile_canonicalizes_the_within_pattern() {
+        for pattern in ["GET, POST", "GET ,POST"] {
+            let input = ConditionInput {
+                collection: "method".to_string(),
+                key: None,
+                transformations: String::new(),
+                operator: Some("@within".to_string()),
+                pattern: pattern.to_string(),
+            };
+
+            let compiled = input.compile();
+            assert!(
+                compiled.is_ok(),
+                "«{pattern}» debe compilarse como `@within`; error: {:?}",
+                compiled.err()
+            );
+            let condition = compiled.expect("compilada arriba");
+            assert_eq!(
+                &*condition.operator.pattern(),
+                "GET,POST",
+                "el patrón canónico de `@within` recorta los espacios y une por coma sin espacios"
+            );
+        }
+    }
+
+    // ── F2c-1 (remediación): validación por el patrón canónico y descartes ──
+
+    /// Escenario (rules/spec): «Un operador de cadena con patrón vacío se
+    /// rechaza (400)».
+    ///
+    /// Un patrón de `@within` formado **solo por espacios** se canoniza a la
+    /// cadena vacía; validar el crudo lo aceptaría y la lectura lo descartaría
+    /// después, dejando la regla sin condiciones —neutral, casa toda petición—.
+    /// Se valida el **canónico** y se rechaza.
+    #[test]
+    fn test_compile_rejects_within_pattern_of_only_spaces() {
+        for pattern in [" ", "\t", "   "] {
+            let input = ConditionInput {
+                collection: "method".to_string(),
+                key: None,
+                transformations: String::new(),
+                operator: Some("@within".to_string()),
+                pattern: pattern.to_string(),
+            };
+
+            let error = input.compile().err();
+            assert!(
+                matches!(error, Some(AppError::InvalidInput(_))),
+                "«@within» con patrón de solo espacios ({pattern:?}) debe rechazarse con \
+                 `InvalidInput`; error: {error:?}"
+            );
+        }
+    }
+
+    /// Escenario (rules/spec): «`@rx` y los operadores de cadena SHALL exigir un
+    /// patrón **no vacío**».
+    ///
+    /// `Regex::new("")` compila y casaría cualquier valor presente —un
+    /// `@unconditionalMatch` encubierto—, así que se exige patrón no vacío
+    /// **antes** de compilar.
+    #[test]
+    fn test_compile_rejects_empty_rx_pattern() {
+        let input = ConditionInput {
+            collection: "path".to_string(),
+            key: None,
+            transformations: String::new(),
+            operator: Some("@rx".to_string()),
+            pattern: String::new(),
+        };
+
+        let error = input.compile().err();
+        assert!(
+            matches!(error, Some(AppError::InvalidInput(_))),
+            "«@rx» con patrón vacío debe rechazarse con `InvalidInput`; error: {error:?}"
+        );
+    }
+
+    /// Escenario (rules/spec): «Al leer, el sistema SHALL reconstruir el operador
+    /// desde el nombre y el patrón persistidos».
+    ///
+    /// `operator_from_row` acepta los cuatro operadores nuevos con su patrón
+    /// canónico —incluido `@unconditionalMatch` con patrón vacío—.
+    #[test]
+    fn test_operator_from_row_accepts_the_new_operators() {
+        let cases: [(Collection, &str, &str, &str); 4] = [
+            (Collection::Path, "path", "@beginsWith", "/admin"),
+            (Collection::Path, "path", "@endsWith", ".php"),
+            (Collection::Method, "method", "@within", "GET,POST"),
+            (Collection::Referer, "referer", "@unconditionalMatch", ""),
+        ];
+
+        for (collection, name, operator_name, pattern) in cases {
+            let operator =
+                operator_from_row(7, collection, name, operator_name, pattern, false, false)
+                    .unwrap_or_else(|| {
+                        panic!("«{operator_name}» sobre «{name}» debe reconstruirse")
+                    });
+            assert_eq!(
+                operator.name(),
+                operator_name,
+                "el operador reconstruido debe ser «{operator_name}»"
+            );
+            assert_eq!(
+                &*operator.pattern(),
+                pattern,
+                "el patrón reconstruido de «{operator_name}» debe ser el canónico"
+            );
+        }
+    }
+
+    /// Escenario (rules/spec): «Una fila incoherente con su operador se descarta
+    /// con diagnóstico».
+    ///
+    /// `@unconditionalMatch` con patrón **no** vacío se descarta.
+    #[test]
+    fn test_operator_from_row_discards_unconditional_match_with_pattern() {
+        let discarded = operator_from_row(
+            7,
+            Collection::Referer,
+            "referer",
+            "@unconditionalMatch",
+            "x",
+            false,
+            false,
+        );
+        assert!(
+            discarded.is_none(),
+            "«@unconditionalMatch» con patrón debe descartarse"
+        );
+    }
+
+    /// Escenario (rules/spec): el descarte de una fila irresoluble deja
+    /// **diagnóstico**.
+    ///
+    /// El descarte de una fila `@rx` —patrón vacío o no compilable— emite un
+    /// `warn!` que nombra la colección y el operador. Se observa con el
+    /// subscriber de `capture_debug`, que captura también los eventos `warn!`.
+    #[test]
+    fn test_operator_from_row_discard_emits_warn_diagnostic() {
+        let log = capture_debug(|| {
+            let empty = operator_from_row(7, Collection::Path, "path", "@rx", "", false, false);
+            assert!(empty.is_none(), "«@rx» con patrón vacío debe descartarse");
+            let uncompilable =
+                operator_from_row(7, Collection::Query, "query", "@rx", "(", false, false);
+            assert!(
+                uncompilable.is_none(),
+                "«@rx» con patrón no compilable debe descartarse"
+            );
+        });
+
+        assert!(
+            log.contains("path") && log.contains("@rx"),
+            "el diagnóstico del patrón vacío debe nombrar la colección y el operador; log: {log:?}"
+        );
+        assert!(
+            log.contains("query"),
+            "el diagnóstico del patrón no compilable debe nombrar la colección; log: {log:?}"
+        );
+    }
+
+    /// Escenario (rule-matching/spec): «`@endsWith` casa por el final y no por el
+    /// principio» sobre una colección **derivada**.
+    ///
+    /// La colección del escenario es `request_basename`; se añade además un
+    /// operador de cadena sobre `request_extension` para cubrir ambas colecciones
+    /// derivadas de F2b-2a.
+    #[test]
+    fn test_string_operator_over_a_derived_collection() {
+        let by_basename = make_rule_with_conditions(vec![string_condition(
+            Collection::RequestBasename,
+            None,
+            "",
+            Operator::EndsWith(".exe".to_string()),
+        )]);
+
+        assert!(
+            by_basename.matches(&make_request_with(
+                |q| q.basename = Some("setup.exe".to_string())
+            )),
+            "`@endsWith` debe casar el basename que termina por el patrón"
+        );
+        assert!(
+            !by_basename.matches(&make_request_with(
+                |q| q.basename = Some("setup.exe.txt".to_string())
+            )),
+            "`@endsWith` está anclado al final: «.exe» no casa «setup.exe.txt»"
+        );
+
+        let by_extension = make_rule_with_conditions(vec![string_condition(
+            Collection::RequestExtension,
+            None,
+            "",
+            Operator::Streq("exe".to_string()),
+        )]);
+        assert!(
+            by_extension.matches(&make_request_with(|q| q.extension = Some("exe".to_string()))),
+            "un operador de cadena debe funcionar sobre `request_extension`"
         );
     }
 }

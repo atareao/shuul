@@ -135,20 +135,66 @@ export function collectionRequiresKey(collection: Collection): boolean {
 }
 
 /**
+ * Los ocho nombres canónicos de operador que la API admite en
+ * `conditions[].operator`.
+ *
+ * Siete de ellos son **editables** —el regex histórico `@rx` y los seis
+ * operadores de cadena de Coraza— y el octavo, `@truthy`, es el operador **fijo**
+ * de la colección booleana `is_tor`: no es una elección, sino la única forma de
+ * decir «el booleano es verdadero». El tipo es la unión literal, no `string`,
+ * para que el compilador vigile el catálogo y el editor: un operador inventado no
+ * compila.
+ */
+export type ConditionOperator =
+  | "@rx"
+  | "@contains"
+  | "@streq"
+  | "@beginsWith"
+  | "@endsWith"
+  | "@within"
+  | "@unconditionalMatch"
+  | "@truthy";
+
+/**
+ * El operador de una fila del editor: los siete editables, sin `@truthy`.
+ *
+ * La booleana `is_tor` fija su operador al serializar y su fila no ofrece
+ * selector, así que el borrador de una fila nunca elige `@truthy`.
+ */
+export type EditableConditionOperator = Exclude<ConditionOperator, "@truthy">;
+
+/**
+ * Los siete operadores editables, con `@rx` primero.
+ *
+ * Es el catálogo del selector de operador del editor —`@rx` por defecto más los
+ * seis operadores de cadena de Coraza—, declarado en el mismo estilo que
+ * `CONDITION_COLLECTIONS`: un orden estable y predecible. `@truthy` **no**
+ * aparece: la fila `is_tor` lo fija sin ofrecer elección.
+ */
+export const CONDITION_OPERATORS: readonly EditableConditionOperator[] = [
+  "@rx",
+  "@contains",
+  "@streq",
+  "@beginsWith",
+  "@endsWith",
+  "@within",
+  "@unconditionalMatch",
+];
+
+/**
  * Una condición ya compilada, en su forma serializada: la misma que lee y escribe
  * la API.
  *
  * `key` es `null` —no `undefined`— en las colecciones sin clave, de modo que el
  * cuerpo JSON lleva la clave **presente** y nula, que es lo que el backend espera
  * deserializar. `operator` es opcional porque la API lo omite cuando vale `@rx`,
- * y el editor lo fija siempre a `@rx` salvo en la colección `is_tor`, donde el
- * operador fijo es `@truthy`.
+ * y la colección `is_tor` lleva siempre su operador fijo `@truthy`.
  */
 export interface Condition {
   collection: Collection;
   key?: string | null;
   transformations: string;
-  operator?: "@rx" | "@truthy";
+  operator?: ConditionOperator;
   pattern: string;
 }
 

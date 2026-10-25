@@ -1,4 +1,9 @@
-import type { Collection, Condition, ProjectableFields } from "@/models/rule";
+import type {
+  Collection,
+  Condition,
+  EditableConditionOperator,
+  ProjectableFields,
+} from "@/models/rule";
 import {
   collectionRequiresKey,
   projectConditions,
@@ -29,14 +34,19 @@ export type ConditionMode = "simple" | "advanced";
  *
  * El `uid` no viaja a la API: es sólo la clave de React, para que reordenar o
  * retirar filas no reasigne el foco ni el identificador de los Inputs ya
- * montados. El operador no se guarda porque hoy es siempre `@rx`, el único que
- * existe: se fija al serializar.
+ * montados.
+ *
+ * `operator` es la elección de la fila y sólo admite los siete operadores
+ * editables: `@truthy` queda fuera porque la colección booleana `is_tor` fija su
+ * operador al serializar y su fila no ofrece selector. El valor por defecto de
+ * una fila nueva es `@rx`, el mismo que la API asume cuando el campo se omite.
  */
 export interface DraftCondition {
   uid: number;
   collection: Collection;
   key: string;
   transformations: string;
+  operator: EditableConditionOperator;
   pattern: string;
 }
 
@@ -122,17 +132,58 @@ export function conditionToDraft(condition: Condition): DraftCondition {
     collection: condition.collection,
     key: condition.key ?? "",
     transformations: condition.transformations,
+    operator: editableOperator(condition.operator),
     pattern: condition.pattern,
   };
+}
+
+/**
+ * El operador editable de una condición recibida, con `@rx` por defecto.
+ *
+ * El operador recibido se copia tal cual cuando es uno de los siete editables y
+ * cae en `@rx` —el valor por defecto, que es también el que la API asume cuando
+ * el campo se omite— cuando falta o cuando vale `@truthy`. `@truthy` es
+ * exclusivo de la colección booleana `is_tor`, cuya fila fija su operador al
+ * serializar y no lo elige: el valor del borrador no se usa allí.
+ */
+function editableOperator(
+  operator: Condition["operator"],
+): EditableConditionOperator {
+  return operator === undefined || operator === "@truthy" ? "@rx" : operator;
+}
+
+/**
+ * ¿El operador exige un patrón no vacío?
+ *
+ * Falso **sólo** para `@unconditionalMatch`, cuyo contrato es el patrón vacío
+ * —dejar el anterior produciría un `400`—: es el único de los siete editables que
+ * casa sin comparar contra nada. El resto —`@rx`, `@contains`, `@streq`,
+ * `@beginsWith`, `@endsWith` y `@within`— compara contra el patrón y lo exige no
+ * vacío, así que lo requiere.
+ *
+ * Vive aquí, en el modelo puro, porque lo consumen los dos lados del editor: el
+ * componente para decidir si muestra el campo de patrón y el diálogo para la
+ * validación de fila al guardar.
+ */
+export function operatorRequiresPattern(
+  operator: EditableConditionOperator,
+): boolean {
+  return operator !== "@unconditionalMatch";
 }
 
 /**
  * Serializa una fila a la forma que espera la API.
  *
  * `key` viaja con la clave sólo en las colecciones que la exigen y como `null` en
- * el resto —nunca ausente—. El operador se fija por colección: `@truthy` para la
- * booleana `is_tor` y `@rx` para el resto. Una fila `is_tor` no lleva patrón ni
- * transformaciones —no tienen sentido para un booleano—, así que viajan vacíos.
+ * el resto —nunca ausente—. El operador es el elegido en la fila (`row.operator`)
+ * salvo en la booleana `is_tor`, cuya fila no ofrece elección: fija `@truthy`.
+ * Una fila `is_tor` no lleva patrón ni transformaciones —no tienen sentido para un
+ * booleano—, así que viajan vacíos.
+ *
+ * El patrón viaja tal cual se escribió, salvo en `@unconditionalMatch`: ahí el
+ * contrato exige el patrón **vacío**, así que se envía vacío aunque el borrador
+ * conserve el anterior —el campo está oculto— para que volver a otro operador lo
+ * recupere.
  */
 export function serializeCondition(row: DraftCondition): Condition {
   if (row.collection === "is_tor") {
@@ -148,8 +199,8 @@ export function serializeCondition(row: DraftCondition): Condition {
     collection: row.collection,
     key: collectionRequiresKey(row.collection) ? row.key : null,
     transformations: row.transformations,
-    operator: "@rx",
-    pattern: row.pattern,
+    operator: row.operator,
+    pattern: operatorRequiresPattern(row.operator) ? row.pattern : "",
   };
 }
 
@@ -200,6 +251,7 @@ export function newDraftCondition(): DraftCondition {
     collection: FIELD_COLLECTIONS[0],
     key: "",
     transformations: "",
+    operator: "@rx",
     pattern: "",
   };
 }
@@ -220,6 +272,10 @@ export interface ConditionEditorProps {
   mode: ConditionMode;
   conditions: DraftCondition[];
   invalidKeyUids: number[];
+  // Identificadores de las filas cuyo operador exige patrón y lo tienen vacío.
+  // Hermano de `invalidKeyUids`: se puebla al intentar guardar y el diálogo los
+  // limpia a la vez.
+  invalidPatternUids: number[];
   disabled: boolean;
   confirmOpen: boolean;
   t: (key: string) => string;
@@ -229,5 +285,6 @@ export interface ConditionEditorProps {
   onAdd: () => void;
   onRemove: (uid: number) => void;
   onUpdate: (uid: number, patch: Partial<DraftCondition>) => void;
+  onOperatorChange: (uid: number, operator: EditableConditionOperator) => void;
   onInsertTransformation: (uid: number, token: string) => void;
 }
