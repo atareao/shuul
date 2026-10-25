@@ -98,6 +98,24 @@ async fn create_pool() -> SqlitePool {
     .await
     .unwrap();
 
+    sqlx::query(
+        "CREATE TABLE IF NOT EXISTS rule_conditions (
+            id              INTEGER PRIMARY KEY AUTOINCREMENT,
+            rule_id         INTEGER NOT NULL REFERENCES rules(id) ON DELETE CASCADE,
+            position        INTEGER NOT NULL,
+            collection      TEXT    NOT NULL,
+            key             TEXT,
+            transformations TEXT    NOT NULL DEFAULT '',
+            operator        TEXT    NOT NULL DEFAULT '@rx',
+            pattern         TEXT    NOT NULL,
+            negate          INTEGER NOT NULL DEFAULT 0,
+            UNIQUE(rule_id, position)
+        )",
+    )
+    .execute(&pool)
+    .await
+    .unwrap();
+
     pool
 }
 
@@ -133,6 +151,16 @@ async fn insert_jail_rule(pool: &SqlitePool, id: i32, name: &str, weight: i32, p
     .bind(name)
     .bind(weight)
     .bind(profile_id)
+    .execute(pool)
+    .await
+    .unwrap();
+
+    sqlx::query(
+        "INSERT INTO rule_conditions
+            (rule_id, position, collection, key, transformations, operator, pattern, negate)
+         VALUES (?, 0, 'path', NULL, '', '@rx', '^/admin', 0)",
+    )
+    .bind(id)
     .execute(pool)
     .await
     .unwrap();
