@@ -185,7 +185,7 @@ Each condition is `{collection, key, transformations, operator, pattern}`. On to
 | `request_extension` | forbidden | the substring after the last dot of the basename, when the dot is not the first character |
 | `is_tor` | forbidden | whether the request comes from a known Tor exit node — a boolean, not a string |
 
-`key` is mandatory exactly when the collection requires it and rejected otherwise. Any other rejection — unknown collection, a pattern that does not compile, `transformations` that do not resolve, or an `operator` that is not valid for its collection — is a `400` and the rule is **not** stored. `operator` is optional and defaults to `@rx`; `@rx` is the regular-expression operator, and `@truthy` is the boolean operator, accepted **only** for the `is_tor` collection (no pattern, no key, no transformations).
+`key` is mandatory exactly when the collection requires it and rejected otherwise. Any other rejection — unknown collection, a pattern that does not compile, `transformations` that do not resolve, an `operator` that is not valid for its collection, or a pattern that does not fit its operator — is a `400` and the rule is **not** stored. `operator` is optional and defaults to `@rx`. Seven operators are selectable — `@rx` (regular expression), `@contains`, `@streq`, `@beginsWith`, `@endsWith`, `@within` and `@unconditionalMatch` — and `@truthy` is the boolean operator, accepted **only** for the `is_tor` collection (no pattern, no key, no transformations). See **Matching operators** below for what each one does.
 
 A keyed collection is resolved **by name**: `request_cookies[PHPSESSID]` is the evidence key a cookie condition logs, so two conditions over the same collection with different keys are told apart in the audit log.
 
@@ -208,7 +208,7 @@ Example — deny any request carrying a `PHPSESSID` cookie whose value is exactl
 }
 ```
 
-Read a rule back and you get the same `conditions` array — each entry with its `"operator"` (`@rx`, or `@truthy` for an `is_tor` condition) and the canonicalised `transformations` — so a read–edit–PATCH round trip is stable.
+Read a rule back and you get the same `conditions` array — each entry with its `"operator"` (one of the seven selectable operators, or `@truthy` for an `is_tor` condition) and the canonicalised `transformations` — so a read–edit–PATCH round trip is stable.
 
 #### The Tor filter
 
@@ -233,16 +233,50 @@ In **simple** mode the historical **Tor Exit Node** toggle still projects to exa
 The rule dialog authors both forms from its **Conditions** tab, through a Simple / Advanced switch:
 
 - **Simple** is the historical form: the 14 fields, and `conditions` is left out of the request (the backend projects the 14 fields).
-- **Advanced** authors an ordered list of conditions. Each row offers the collection, the key — only when the collection requires it —, the transformation chips, the pattern, and the operator shown as a fixed `@rx`; for the `is_tor` collection the operator is instead a fixed `@truthy`, and the pattern, key and transformation controls are hidden. `Add condition` appends an empty row and `Remove` drops one. The list travels as `conditions`, **even when it is empty**. The tabs of the 14 fields (Network, Location, Request) are disabled, with a note that those fields are stored but take no part in matching; they still travel in the request.
+- **Advanced** authors an ordered list of conditions. Each row offers the collection, the key — only when the collection requires it —, the transformation chips, the pattern, and the **operator**, chosen from the seven eligible operators and defaulting to `@rx`; picking `@unconditionalMatch` hides the pattern field (that operator takes no pattern), and for the `is_tor` collection the operator is a fixed `@truthy` with the pattern, key and transformation controls hidden. `Add condition` appends an empty row and `Remove` drops one. The list travels as `conditions`, **even when it is empty**. The tabs of the 14 fields (Network, Location, Request) are disabled, with a note that those fields are stored but take no part in matching; they still travel in the request.
 
 Two transitions:
 
 - **Simple → Advanced** seeds the list by projecting the filled 14 fields, in canonical order: one condition per field with a non-empty pattern, carrying the rule's transformations. The Tor condition is seeded too, at the end of the list, whenever the rule's **Tor Exit Node** toggle is on.
 - **Advanced → Simple** asks for confirmation and, once confirmed, discards the list; the rule is then sent without `conditions`.
 
-A condition in a keyed collection (`request_cookies`, `request_headers`, `args_get`) with no key blocks saving and flags the row — red border and an inline message — instead of sending an invalid body.
+A condition in a keyed collection (`request_cookies`, `request_headers`, `args_get`) with no key blocks saving and flags the row — red border and an inline message — instead of sending an invalid body. A text condition with an empty pattern blocks saving the same way; the only exception is `@unconditionalMatch`, whose contract is the empty pattern.
 
 When editing an existing rule the dialog infers the form: if the received `conditions` are exactly the projection of its 14 fields — including the Tor condition, when the toggle is on — it opens in **simple**, otherwise in **advanced**, seeded with the received conditions. The inference is lossless — whichever form it opens in, saving sends back the same set that was loaded.
+
+#### Matching operators
+
+Every condition compares the value — **after** its transformation pipeline has run, never the pattern itself — with one of seven operators. The operator is the row's choice in the Conditions tab, and the same vocabulary is accepted by the API:
+
+| Operator | The condition passes when… |
+|---|---|
+| `@rx` | the value matches the regular expression. The default, and the only operator the simple form ever produces. |
+| `@contains` | the value **contains** the pattern. Case-sensitive. |
+| `@streq` | the value is **exactly equal** to the pattern. Case-sensitive. |
+| `@beginsWith` | the value **starts with** the pattern. |
+| `@endsWith` | the value **ends with** the pattern. |
+| `@within` | the value is equal to **any one** of the pattern's comma-separated items. |
+| `@unconditionalMatch` | the collection is **present**, whatever its value. Takes no pattern. |
+
+`@truthy` is not in this list: it is the fixed operator of the boolean `is_tor` collection (see **The Tor filter** above), with no selector and no pattern.
+
+`@within` is the mirror image of `@contains` — the needle and the haystack swap places:
+
+- `@contains` with pattern `GET` passes when the value is `GET, POST` (the value contains `GET`).
+- `@within` with pattern `GET, POST` passes when the value is `GET` (the value is one of the pattern's items).
+
+```json
+{
+  "conditions": [
+    { "collection": "method", "operator": "@within", "pattern": "GET,POST" }
+  ]
+}
+```
+
+Two things to keep in mind:
+
+- **`@within` takes a comma-separated list.** Items are trimmed of surrounding spaces, so `GET, POST` and `GET ,POST` mean the same. But an **empty item nullifies the whole condition**: a stray comma (`GET,,POST`) makes the condition fail for every value — an empty item is **not** a wildcard, so mind the commas.
+- **`@unconditionalMatch` matches any present value**, but does **not** match an absent collection: if the request carries nothing for that collection, the condition fails. It takes an empty pattern, and the editor hides the pattern field for it.
 
 ### Rule Modes
 
