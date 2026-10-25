@@ -1,4 +1,15 @@
 # Changelog
+## [0.24.1] - 2026-10-25
+
+### Documentation
+
+- *(openspec)* Archiva waf-transformations
+- Documenta la IR de condiciones y marca F2a entregada
+- *(openspec)* Archiva waf-condition-ir
+
+### Refactor
+
+- *(waf)* Proyecta el matcheo a un conjunto de condiciones 1:N
 ## [0.24.0] - 2026-10-24
 
 ### Documentation
@@ -13,6 +24,10 @@
 
 - *(waf)* La pipeline de transformaciones se aplica al valor de la petición
 - *(admin)* Ofrece las transformaciones como chips en el diálogo de regla
+
+### Miscellaneous Tasks
+
+- Release v0.24.0
 ## [0.23.1] - 2026-10-24
 
 ### Bug Fixes
