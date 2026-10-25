@@ -48,4 +48,4 @@
 - [x] 5.2 Frontend verde. **Verificación:** `npx vitest run` y `npx tsc -b`.
 - [x] 5.3 Clippy lib+bins en 0, all-targets en la base, fmt en 0. **Verificación:** los tres comandos.
 - [x] 5.4 Cero cambio observable: la equivalencia sobre las 42 plantillas (incluida «Tor exit nodes») sigue verde y la forma del evento no cambia. **Verificación:** los tests de equivalencia pasan.
-- [ ] 5.5 Archivar el change con `openspec archive is-tor-collection --yes` y comprobar que las dos specs destino reciben sus requisitos. **Verificación:** `openspec list` sin changes activos y los requisitos presentes.
+- [x] 5.5 Archivar el change con `openspec archive is-tor-collection --yes` y comprobar que las dos specs destino reciben sus requisitos. **Verificación:** `openspec list` sin changes activos y los requisitos presentes.
