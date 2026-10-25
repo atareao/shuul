@@ -1,4 +1,14 @@
 # Changelog
+## [0.25.0] - 2026-10-25
+
+### Documentation
+
+- Documenta la tabla rule_conditions y marca F2b-1 entregada
+- *(openspec)* Archiva waf-rule-conditions
+
+### Features
+
+- *(waf)* Persiste las condiciones de la regla en rule_conditions
 ## [0.24.1] - 2026-10-25
 
 ### Documentation
@@ -6,6 +16,10 @@
 - *(openspec)* Archiva waf-transformations
 - Documenta la IR de condiciones y marca F2a entregada
 - *(openspec)* Archiva waf-condition-ir
+
+### Miscellaneous Tasks
+
+- Release v0.24.1
 
 ### Refactor
 
