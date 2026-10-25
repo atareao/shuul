@@ -314,14 +314,14 @@ de los otros como transporte.
 
 ### CacheRule
 
-`CacheRule` en `backend/src/models/rule.rs` envuelve una `Rule` con un **conjunto ordenado de condiciones** (`Vec<Condition>`) proyectadas desde los 14 campos. **No tiene** `CachedRateLimit` ni campo `rate_limit`. Ya **no** guarda un `Option<Regex>` por filtro ni una pipeline propia: la pipeline de transformaciones viaja **dentro de cada condición**.
+`CacheRule` en `backend/src/models/rule.rs` envuelve una `Rule` con un **conjunto ordenado de condiciones** (`Vec<Condition>`). En producción ese conjunto se **lee** de la tabla `rule_conditions` —la fuente persistida del matcheo—; la proyección desde los 14 campos es la que usa la **escritura** para poblar esa tabla. **No tiene** `CachedRateLimit` ni campo `rate_limit`. Ya **no** guarda un `Option<Regex>` por filtro ni una pipeline propia: la pipeline de transformaciones viaja **dentro de cada condición**.
 
 #### La IR de condiciones (`models/condition.rs`)
 
 - `Collection` — las 14 colecciones de la petición (`ip_address` … `x_request_id`), con `Collection::ALL` en el orden de la cadena histórica, `field_name()` (que es la clave de la evidencia) y `request_value()`.
 - `Operator` — nace con una sola variante: `Rx(Regex)`.
 - `Condition { collection, pipeline, operator }` — una condición ya compilada.
-- `project(rule, pipeline) -> Vec<Condition>` — proyecta a condiciones los campos que la regla restringe. Un patrón **ausente**, **vacío** o **no compilable** **no** proyecta ninguna condición; `is_tor` **nunca** proyecta.
+- `project(rule, pipeline) -> Vec<Condition>` — proyecta a condiciones los campos que la regla restringe. Un patrón **ausente**, **vacío** o **no compilable** **no** proyecta ninguna condición; `is_tor` **nunca** proyecta. Lo usan la **escritura** (`Rule::write_conditions`) para poblar `rule_conditions` y el constructor en memoria (`CacheRule::from_rule`); la **lectura** de producción (`Rule::read_conditions`) reconstruye la IR desde la tabla.
 
 #### Filtros disponibles (14)
 
@@ -351,16 +351,22 @@ Shuul usa **SQLite** (NO PostgreSQL). Puntos clave:
 - Migraciones automáticas al arrancar (sqlx migrate).
 - `DATABASE_URL` por defecto: `sqlite:///app/data/shuul.db?mode=rwc`
 - `PRAGMA` features: mode rwc (read-write-create).
-- NO hay tablas de requests individuales. Sólo: `rules`, `rate_limit_profiles`, `bans`, `settings`, `stats_cache`.
+- NO hay tablas de requests individuales. Sólo: `rules`, `rule_conditions`, `rate_limit_profiles`, `bans`, `settings`, `stats_cache`.
 
 #### Migraciones
 
 ```
 backend/migrations/
-├── 20260902000000_initial_schema.up.sql       # Schema completo inicial
+├── 20260902000000_initial_schema.up.sql                  # Schema completo inicial
 ├── 20260903000000_add_log_all_requests_setting.up.sql
 ├── 20260903000001_update_rate_limit_profiles.up.sql
-└── 20260903000002_add_scanner_aggressive_profile.up.sql
+├── 20260903000002_add_scanner_aggressive_profile.up.sql
+├── 20260921000000_add_unique_ip_rule_id.up.sql
+├── 20260922000000_create_rate_limiter_state.up.sql
+├── 20260922000001_update_multipliers.up.sql
+├── 20261023000000_normalize_jail_rule_weight.up.sql
+├── 20261024000000_add_rule_transformations.up.sql
+└── 20261025000000_create_rule_conditions.up.sql
 ```
 
 #### Tablas
@@ -368,6 +374,7 @@ backend/migrations/
 | Tabla | Propósito |
 |---|---|
 | `rules` | Reglas WAF + Jail (14 filtros, rate_limit_profile_id FK) |
+| `rule_conditions` | Conjunto ordenado de condiciones de cada regla (fuente persistida del matcheo; `position` fija el orden de evaluación, `ON DELETE CASCADE` desde `rules`) |
 | `rate_limit_profiles` | Perfiles de rate limiting (max_retry, find_time, fail_codes, escalado) |
 | `bans` | Baneos persistentes (IP, rule_id, duración, nivel de escalado) |
 | `settings` | Configuración clave-valor (default_rule_mode, log_retention_days, log_all_requests) |
