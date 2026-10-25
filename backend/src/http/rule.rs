@@ -350,9 +350,15 @@ pub async fn import_handler(
             x_request_id = EXCLUDED.x_request_id,
             rate_limit_profile_id = EXCLUDED.rate_limit_profile_id,
             active = EXCLUDED.active,
-            updated_at = EXCLUDED.updated_at";
+            updated_at = EXCLUDED.updated_at
+        RETURNING id";
 
-        sqlx::query(sql)
+        // El UPSERT de la fila y el **reemplazo** de sus condiciones comparten
+        // transacción. `RETURNING id` da el id real tanto en el INSERT como en la
+        // rama `DO UPDATE` del `ON CONFLICT`, y con él se reemplaza el conjunto
+        // persistido de condiciones de la versión importada.
+        let mut tx = app_state.pool.begin().await?;
+        let rule_id: i32 = sqlx::query_scalar(sql)
             .bind(&rule.name)
             .bind(rule.description.as_deref().unwrap_or(""))
             .bind(weight)
@@ -378,8 +384,10 @@ pub async fn import_handler(
             .bind(now)
             .bind(now)
             .bind(transformations)
-            .execute(&app_state.pool)
+            .fetch_one(&mut *tx)
             .await?;
+        Rule::replace_conditions_for_id(&mut tx, rule_id).await?;
+        tx.commit().await?;
         imported += 1;
     }
 
