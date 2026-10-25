@@ -7,6 +7,7 @@
 //! compartido de la aplicación ([`AppState`]).
 
 mod ban_manager;
+pub mod condition;
 mod data;
 pub mod error;
 mod ipdata;
