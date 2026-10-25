@@ -130,9 +130,20 @@ export function conditionToDraft(condition: Condition): DraftCondition {
  * Serializa una fila a la forma que espera la API.
  *
  * `key` viaja con la clave sólo en las colecciones que la exigen y como `null` en
- * el resto —nunca ausente—, y el operador se fija a `@rx`.
+ * el resto —nunca ausente—. El operador se fija por colección: `@truthy` para la
+ * booleana `is_tor` y `@rx` para el resto. Una fila `is_tor` no lleva patrón ni
+ * transformaciones —no tienen sentido para un booleano—, así que viajan vacíos.
  */
 export function serializeCondition(row: DraftCondition): Condition {
+  if (row.collection === "is_tor") {
+    return {
+      collection: "is_tor",
+      key: null,
+      transformations: "",
+      operator: "@truthy",
+      pattern: "",
+    };
+  }
   return {
     collection: row.collection,
     key: collectionRequiresKey(row.collection) ? row.key : null,
@@ -162,15 +173,19 @@ export function projectableFieldsFrom(
   if (typeof values.transformations === "string") {
     fields.transformations = values.transformations;
   }
+  if (typeof values.is_tor === "boolean") {
+    fields.is_tor = values.is_tor;
+  }
   return fields;
 }
 
 /**
- * Siembra la lista de condiciones con la proyección de los 14 campos rellenos.
+ * Siembra la lista de condiciones con la proyección de los 14 campos rellenos y
+ * la columna `is_tor`.
  *
  * Es el estado al pasar a avanzado: así el cambio de modo no pierde ninguna
  * restricción y el punto de partida es el conjunto que el backend ya venía
- * evaluando, en orden canónico.
+ * evaluando, en orden canónico —la condición `is_tor`/`@truthy` al final—.
  */
 export function seedConditions(
   values: Record<string, unknown>,

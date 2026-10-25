@@ -18,11 +18,11 @@
 use axum::body::Body;
 use axum::http::{Method, Request, StatusCode};
 use backend::http::rule_router;
-use backend::models::condition::{Collection, Operator, project};
+use backend::models::condition::{Collection, Condition, Operator, project};
 use backend::models::transformation::TransformationPipeline;
 use backend::models::{
-    AppState, BanManager, CacheRule, ConditionInput, GeoIpService, NewRule, RateLimiter, Rule,
-    Settings, StatsCollector, TorService, UpdateRule,
+    AppState, BanManager, CacheRule, ConditionInput, GeoIpService, NewRequest, NewRule,
+    RateLimiter, Rule, Settings, StatsCollector, TorService, UpdateRule,
 };
 use backend::templates::{RuleTemplate, all_rule_templates};
 use serde_json::{Value, json};
@@ -60,14 +60,18 @@ async fn create_migrated_pool() -> SqlitePool {
     pool
 }
 
-/// Pool `SQLite` en memoria con todas las migraciones **menos** la de
-/// `rule_conditions`, que se devuelve aparte para aplicarla después del backfill.
+/// Pool `SQLite` en memoria con todas las migraciones **excepto** las dos de
+/// `rule_conditions`, que se devuelven aparte: la que **crea** la tabla (F2b-1) y
+/// la que **proyecta** `is_tor` (F2b-3).
 ///
-/// Sirve para simular una base ya desplegada antes de esta sub-entrega. En la
-/// fase RED la migración de `rule_conditions` no existe: se aplican todas las
-/// actuales y se devuelve `None`, de modo que el test del backfill falla al no
-/// encontrar la migración que debe ejercitar.
-async fn migrated_pool_without_conditions() -> (SqlitePool, Option<String>) {
+/// Sirve para simular una base ya desplegada antes de F2b-1 (el test de su
+/// backfill) y antes de F2b-3 (el test del backfill de `is_tor`). Las dos
+/// migraciones se localizan por su **contenido** —y nunca por un número mágico—:
+/// la de `rule_conditions` sin `is_tor` es la creación de la tabla, la que
+/// menciona ambas es el backfill de `is_tor`. En RED la de `is_tor` no existe y
+/// su hueco queda `None`.
+async fn migrated_pool_without_conditions_migrations()
+-> (SqlitePool, Option<String>, Option<String>) {
     let opts = SqliteConnectOptions::from_str("sqlite::memory:")
         .expect("url sqlite válida")
         .create_if_missing(true);
@@ -84,17 +88,22 @@ async fn migrated_pool_without_conditions() -> (SqlitePool, Option<String>) {
     let mut migrations: Vec<Migration> = migrator.migrations.clone().into_owned();
     migrations.sort_by_key(|migration| migration.version);
 
-    // Localizada por su contenido, nunca por un número mágico: en RED no existe
-    // y `conditions_sql` queda `None`.
-    let mut conditions_sql: Option<String> = None;
+    let mut create_sql: Option<String> = None;
+    let mut is_tor_sql: Option<String> = None;
     for migration in &migrations {
-        let is_conditions = migration.description.contains("rule_conditions")
-            || migration.sql.contains("rule_conditions");
-        if is_conditions {
-            conditions_sql = Some(migration.sql.as_ref().to_string());
+        let sql = migration.sql.as_ref();
+        let mentions_rule_conditions =
+            migration.description.contains("rule_conditions") || sql.contains("rule_conditions");
+        let mentions_is_tor = migration.description.contains("is_tor") || sql.contains("is_tor");
+        if mentions_rule_conditions && mentions_is_tor {
+            is_tor_sql = Some(sql.to_string());
             continue;
         }
-        sqlx::raw_sql(migration.sql.as_ref())
+        if mentions_rule_conditions {
+            create_sql = Some(sql.to_string());
+            continue;
+        }
+        sqlx::raw_sql(sql)
             .execute(&pool)
             .await
             .unwrap_or_else(|error| {
@@ -105,7 +114,15 @@ async fn migrated_pool_without_conditions() -> (SqlitePool, Option<String>) {
             });
     }
 
-    (pool, conditions_sql)
+    (pool, create_sql, is_tor_sql)
+}
+
+/// Pool `SQLite` en memoria con todas las migraciones **menos** la que crea
+/// `rule_conditions` (F2b-1), que se devuelve aparte para aplicarla después del
+/// backfill. Es el harness del test de backfill de F2b-1.
+async fn migrated_pool_without_conditions() -> (SqlitePool, Option<String>) {
+    let (pool, create_sql, _is_tor_sql) = migrated_pool_without_conditions_migrations().await;
+    (pool, create_sql)
 }
 
 /// Construye el `AppState` mínimo que necesitan los handlers de reglas.
@@ -268,6 +285,7 @@ fn new_rule_from_template(template: &RuleTemplate) -> NewRule {
 fn operator_pattern(operator: &Operator) -> &str {
     match operator {
         Operator::Rx(regex) => regex.as_str(),
+        Operator::Truthy => "@truthy",
     }
 }
 
@@ -280,6 +298,29 @@ fn observable(conditions: &[backend::models::condition::Condition]) -> Vec<(Stri
             (
                 condition.collection.field_name().to_string(),
                 operator_pattern(&condition.operator).to_string(),
+            )
+        })
+        .collect()
+}
+
+/// La representación **serializable** de una condición: `(collection, operator,
+/// pattern)`.
+///
+/// A diferencia de [`observable`], incluye el nombre del operador y el patrón tal
+/// y como se persiste (`""` para el operador booleano), de modo que la
+/// equivalencia cubre también `is_tor`/`@truthy`, que no lleva patrón.
+fn serialized(conditions: &[Condition]) -> Vec<(String, String, String)> {
+    conditions
+        .iter()
+        .map(|condition| {
+            let pattern = match &condition.operator {
+                Operator::Rx(regex) => regex.as_str(),
+                Operator::Truthy => "",
+            };
+            (
+                condition.collection.field_name().to_string(),
+                condition.operator.name().to_string(),
+                pattern.to_string(),
             )
         })
         .collect()
@@ -784,13 +825,16 @@ async fn test_projection_from_table_is_equivalent_over_the_catalog() {
             .await
             .unwrap_or_else(|error| panic!("«{}»: crear la regla: {error}", template.name));
 
-        // Esperado: la proyección desde los 14 campos de la regla persistida.
+        // Esperado: la proyección desde los 14 campos y la columna `is_tor` de la
+        // regla persistida.
         let pipeline = TransformationPipeline::parse(&created.transformations).unwrap_or_default();
-        let expected = observable(&project(&created, &pipeline));
+        let expected = serialized(&project(&created, &pipeline));
 
-        // La tabla: lo que se ha persistido al escribir la regla.
-        let stored: Vec<(String, String)> = sqlx::query_as(
-            "SELECT collection, pattern FROM rule_conditions WHERE rule_id = ? ORDER BY position ASC",
+        // La tabla: lo que se ha persistido al escribir la regla. Se compara el
+        // operador además del patrón, porque la proyección incluye el operador
+        // booleano `@truthy` de `is_tor`, cuyo patrón es vacío y no lo distingue.
+        let stored: Vec<(String, String, String)> = sqlx::query_as(
+            "SELECT collection, operator, pattern FROM rule_conditions WHERE rule_id = ? ORDER BY position ASC",
         )
         .bind(created.id)
         .fetch_all(&pool)
@@ -799,7 +843,7 @@ async fn test_projection_from_table_is_equivalent_over_the_catalog() {
 
         assert_eq!(
             stored, expected,
-            "«{}»: las condiciones persistidas deben ser las mismas que proyectan los 14 campos",
+            "«{}»: las condiciones persistidas deben ser las mismas que proyectan los 14 campos y `is_tor`",
             template.name
         );
 
@@ -817,10 +861,10 @@ async fn test_projection_from_table_is_equivalent_over_the_catalog() {
                 )
             });
         assert_eq!(
-            observable(&cached.conditions),
+            serialized(&cached.conditions),
             expected,
             "«{}»: `read_all_active` debe construir el conjunto de condiciones desde la tabla, \
-             equivalente al de los 14 campos",
+             equivalente al de los 14 campos y `is_tor`",
             template.name
         );
 
@@ -1489,4 +1533,505 @@ async fn test_import_reject_invalid_conditions() {
         "la regla válida debe tener su condición; almacenadas: {rows:?}"
     );
     assert_eq!(rows[0].collection, "path");
+}
+
+// ---------------------------------------------------------------------------
+// F2b-3 (is-tor-collection) — la columna `is_tor` y el operador `@truthy`
+// ---------------------------------------------------------------------------
+//
+// Contrato verificado:
+// - La columna `is_tor` se proyecta a una fila `is_tor`/`@truthy` al final.
+// - La autoría avanzada acepta la condición `is_tor`/`@truthy`.
+// - La lectura reconstruye el operador de la columna `operator`.
+// - Una fila incoherente con su colección se descarta con diagnóstico.
+// - La proyección desde la tabla equivale a la de las columnas.
+// - La migración de backfill rellena las reglas `is_tor = 1` y es idempotente.
+
+/// Inserta por SQL crudo una regla «legacy» y devuelve su `id`, sin pasar por la
+/// API (que en RED todavía no proyecta `is_tor`).
+async fn insert_legacy_rule(pool: &SqlitePool, name: &str, is_tor: i32, path: Option<&str>) -> i32 {
+    sqlx::query(
+        "INSERT INTO rules
+            (name, description, weight, mode, pipeline, allow, is_tor, path, active, created_at, updated_at)
+         VALUES (?, '', 100, 'enforce', 'waf', 0, ?, ?, 1, datetime('now'), datetime('now'))",
+    )
+    .bind(name)
+    .bind(is_tor)
+    .bind(path)
+    .execute(pool)
+    .await
+    .unwrap_or_else(|error| panic!("insertar la regla legacy {name}: {error}"));
+    sqlx::query_scalar("SELECT id FROM rules WHERE name = ?")
+        .bind(name)
+        .fetch_one(pool)
+        .await
+        .unwrap_or_else(|error| panic!("id de la regla legacy {name}: {error}"))
+}
+
+/// Inserta por SQL crudo una fila de `rule_conditions`.
+async fn insert_raw_condition(
+    pool: &SqlitePool,
+    rule_id: i32,
+    position: i32,
+    collection: &str,
+    transformations: &str,
+    operator: &str,
+    pattern: &str,
+) {
+    sqlx::query(
+        "INSERT INTO rule_conditions
+            (rule_id, position, collection, key, transformations, operator, pattern, negate)
+         VALUES (?, ?, ?, NULL, ?, ?, ?, 0)",
+    )
+    .bind(rule_id)
+    .bind(position)
+    .bind(collection)
+    .bind(transformations)
+    .bind(operator)
+    .bind(pattern)
+    .execute(pool)
+    .await
+    .unwrap_or_else(|error| panic!("insertar la fila cruda {collection}/{operator}: {error}"));
+}
+
+/// Escenario (rules/spec): «La columna `is_tor` genera su fila».
+///
+/// GIVEN una regla con `path` restringido y `is_tor = Some(true)`
+/// WHEN se crea por la API
+/// THEN SHALL existir una fila `is_tor`/`@truthy` con patrón vacío, `key` nula y
+///      `negate` 0
+/// AND esa fila SHALL ir después de la de `path`.
+#[tokio::test]
+async fn test_is_tor_column_persists_a_truthy_condition_at_the_end() {
+    let pool = create_migrated_pool().await;
+
+    let mut rule = blank_new_rule("it-column");
+    rule.path = Some("^/admin$".to_string());
+    rule.is_tor = Some(true);
+    let created = Rule::create(&pool, rule)
+        .await
+        .expect("crear la regla con `is_tor`");
+
+    let rows = stored_conditions(&pool, created.id).await;
+    assert_eq!(
+        rows.len(),
+        2,
+        "`path` más `is_tor` deben persistir dos filas; almacenadas: {rows:?}"
+    );
+    assert_eq!(
+        rows[0],
+        StoredCondition {
+            position: 0,
+            collection: "path".to_string(),
+            key: None,
+            transformations: String::new(),
+            operator: "@rx".to_string(),
+            pattern: "^/admin$".to_string(),
+            negate: 0,
+        },
+        "la condición de `path` va primero"
+    );
+    assert_eq!(
+        rows[1],
+        StoredCondition {
+            position: 1,
+            collection: "is_tor".to_string(),
+            key: None,
+            transformations: String::new(),
+            operator: "@truthy".to_string(),
+            pattern: String::new(),
+            negate: 0,
+        },
+        "la fila `is_tor`/`@truthy` va después, con patrón vacío y `key` nula"
+    );
+}
+
+/// Escenario (rules/spec): «Una condición de `is_tor` con `@truthy` se acepta».
+#[tokio::test]
+async fn test_advanced_rule_accepts_is_tor_truthy() {
+    let pool = create_migrated_pool().await;
+    let state = build_app_state(pool.clone());
+
+    let payload = json!({
+        "name": "it-advanced",
+        "conditions": [{
+            "collection": "is_tor",
+            "key": null,
+            "transformations": "",
+            "operator": "@truthy",
+            "pattern": "",
+        }],
+    });
+
+    let (status, response) = call_rules_api(&state, Method::POST, "/", Some(payload)).await;
+    assert_eq!(
+        status,
+        StatusCode::CREATED,
+        "la condición `is_tor`/`@truthy` debe aceptarse; respuesta: {response}"
+    );
+
+    let rule_id: i32 = sqlx::query_scalar("SELECT id FROM rules WHERE name = ?")
+        .bind("it-advanced")
+        .fetch_one(&pool)
+        .await
+        .expect("id de it-advanced");
+    let rows = stored_conditions(&pool, rule_id).await;
+    assert_eq!(
+        rows.len(),
+        1,
+        "la condición debe persistirse; almacenadas: {rows:?}"
+    );
+    assert_eq!(rows[0].collection, "is_tor");
+    assert_eq!(
+        rows[0].operator, "@truthy",
+        "el operador persistido debe ser `@truthy`"
+    );
+    assert_eq!(rows[0].pattern, "", "el patrón debe quedar vacío");
+}
+
+/// Escenario (rules/spec): el round-trip del operador en `rule_conditions`.
+///
+/// GIVEN una regla con una fila `@rx` y otra `@truthy` escritas en la tabla
+/// WHEN se lee por la vía de producción (`read_all_active`)
+/// THEN la lectura SHALL reconstruir el operador de cada fila.
+#[tokio::test]
+async fn test_reading_reconstructs_the_operator_from_the_column() {
+    let pool = create_migrated_pool().await;
+    let rule_id = insert_legacy_rule(&pool, "it-operator", 0, None).await;
+
+    insert_raw_condition(&pool, rule_id, 0, "path", "", "@rx", "^/admin$").await;
+    insert_raw_condition(&pool, rule_id, 1, "is_tor", "", "@truthy", "").await;
+
+    let cache = CacheRule::read_all_active(&pool)
+        .await
+        .expect("leer las reglas activas");
+    let cached = cache
+        .iter()
+        .find(|cache_rule| cache_rule.rule.id == rule_id)
+        .expect("la regla debe estar en la caché");
+
+    assert_eq!(
+        observable(&cached.conditions),
+        vec![
+            ("path".to_string(), "^/admin$".to_string()),
+            ("is_tor".to_string(), "@truthy".to_string()),
+        ],
+        "la lectura debe reconstruir el operador de cada fila; obtenidas: {:?}",
+        cached.conditions
+    );
+}
+
+/// Escenario (design.md D6): una fila incoherente se descarta con diagnóstico.
+///
+/// GIVEN filas con `@truthy` en una colección de texto, `is_tor` con `@rx`, y
+///      `@truthy` con transformaciones no vacías
+/// WHEN se lee
+/// THEN SHALL descartarse todas, conservando solo la fila de control válida.
+#[tokio::test]
+async fn test_incoherent_condition_rows_are_discarded() {
+    let pool = create_migrated_pool().await;
+    let rule_id = insert_legacy_rule(&pool, "it-incoherent", 0, None).await;
+
+    // `@truthy` en una colección de texto.
+    insert_raw_condition(&pool, rule_id, 0, "path", "", "@truthy", "^/admin$").await;
+    // `is_tor` con `@rx`.
+    insert_raw_condition(&pool, rule_id, 1, "is_tor", "", "@rx", "true").await;
+    // `@truthy` con transformaciones no vacías.
+    insert_raw_condition(&pool, rule_id, 2, "is_tor", "lowercase", "@truthy", "").await;
+    // Fila de control válida.
+    insert_raw_condition(&pool, rule_id, 3, "query", "", "@rx", "union").await;
+
+    let cache = CacheRule::read_all_active(&pool)
+        .await
+        .expect("leer las reglas activas");
+    let cached = cache
+        .iter()
+        .find(|cache_rule| cache_rule.rule.id == rule_id)
+        .expect("la regla debe estar en la caché");
+
+    assert_eq!(
+        observable(&cached.conditions),
+        vec![("query".to_string(), "union".to_string())],
+        "solo la fila de control debe sobrevivir; obtenidas: {:?}",
+        cached.conditions
+    );
+}
+
+/// Escenario (rules/spec): la proyección desde la tabla equivale a la de las
+/// columnas para una regla con `is_tor`.
+#[tokio::test]
+async fn test_projection_from_table_matches_columns_for_is_tor_rule() {
+    let pool = create_migrated_pool().await;
+
+    let mut rule = blank_new_rule("it-equivalence");
+    rule.path = Some("^/admin$".to_string());
+    rule.is_tor = Some(true);
+    let created = Rule::create(&pool, rule)
+        .await
+        .expect("crear la regla con `is_tor`");
+
+    let pipeline = TransformationPipeline::parse(&created.transformations).unwrap_or_default();
+    let expected = serialized(&project(&created, &pipeline));
+
+    let stored: Vec<(String, String, String)> = sqlx::query_as(
+        "SELECT collection, operator, pattern FROM rule_conditions WHERE rule_id = ? ORDER BY position ASC",
+    )
+    .bind(created.id)
+    .fetch_all(&pool)
+    .await
+    .expect("leer `rule_conditions`");
+
+    assert_eq!(
+        stored, expected,
+        "la proyección desde la tabla debe coincidir con la de las columnas"
+    );
+    assert!(
+        expected
+            .iter()
+            .any(|(collection, _, _)| collection == "is_tor"),
+        "la proyección debe incluir la condición `is_tor`; proyección: {expected:?}"
+    );
+}
+
+/// Escenario (rules/spec): «La migración rellena las reglas con `is_tor`».
+///
+/// GIVEN una base con reglas `is_tor = 1` anteriores a esta sub-entrega
+/// WHEN se aplica la migración de backfill
+/// THEN cada regla SHALL recibir su fila `is_tor`/`@truthy` (patrón vacío, `key`
+///      nula, `negate` 0), tras las filas de los campos
+/// AND las reglas con `is_tor` falso NO SHALL recibir fila
+/// AND reaplicarla SHALL ser idempotente.
+#[tokio::test]
+async fn test_migration_backfills_is_tor_rules_into_conditions() {
+    let (pool, create_sql, is_tor_sql) = migrated_pool_without_conditions_migrations().await;
+
+    let create_sql = create_sql.unwrap_or_else(|| {
+        panic!("no existe la migración que crea `rule_conditions` en `migrations/`")
+    });
+    let is_tor_sql = is_tor_sql.unwrap_or_else(|| {
+        panic!(
+            "no existe ninguna migración que proyecte `is_tor` a `rule_conditions` en \
+             `migrations/`: es el motivo por el que este test falla en la fase RED"
+        )
+    });
+
+    let tor_id = insert_legacy_rule(&pool, "it-legacy-tor", 1, None).await;
+    let no_tor_id = insert_legacy_rule(&pool, "it-legacy-not-tor", 0, None).await;
+    let tor_path_id = insert_legacy_rule(&pool, "it-legacy-tor-path", 1, Some("^/admin$")).await;
+
+    // La migración de F2b-1 crea el esquema y rellena los 14 campos.
+    sqlx::raw_sql(&create_sql)
+        .execute(&pool)
+        .await
+        .expect("aplicar la creación de `rule_conditions`");
+    // El backfill de `is_tor` (F2b-3), dos veces: la segunda debe ser idempotente.
+    sqlx::raw_sql(&is_tor_sql)
+        .execute(&pool)
+        .await
+        .expect("aplicar el backfill de `is_tor`");
+    sqlx::raw_sql(&is_tor_sql)
+        .execute(&pool)
+        .await
+        .expect("reaplicar el backfill de `is_tor` (idempotencia)");
+
+    let tor_rows = stored_conditions(&pool, tor_id).await;
+    assert_eq!(
+        tor_rows.len(),
+        1,
+        "una regla `is_tor = 1` sin campos debe recibir una única fila `is_tor`; \
+         almacenadas: {tor_rows:?}"
+    );
+    assert_eq!(
+        tor_rows[0],
+        StoredCondition {
+            position: 0,
+            collection: "is_tor".to_string(),
+            key: None,
+            transformations: String::new(),
+            operator: "@truthy".to_string(),
+            pattern: String::new(),
+            negate: 0,
+        },
+        "la fila debe ser `is_tor`/`@truthy` con patrón vacío, `key` nula y `negate` 0"
+    );
+
+    assert_eq!(
+        stored_conditions_count(&pool, no_tor_id).await,
+        0,
+        "una regla `is_tor = 0` NO debe recibir ninguna fila"
+    );
+
+    let tor_path_rows = stored_conditions(&pool, tor_path_id).await;
+    assert_eq!(
+        tor_path_rows.len(),
+        2,
+        "una regla con `path` e `is_tor` debe quedar con dos filas (idempotente); \
+         almacenadas: {tor_path_rows:?}"
+    );
+    assert_eq!(tor_path_rows[0].collection, "path");
+    assert_eq!(
+        (
+            tor_path_rows[1].position,
+            tor_path_rows[1].collection.as_str(),
+            tor_path_rows[1].operator.as_str(),
+        ),
+        (1, "is_tor", "@truthy"),
+        "la fila de `is_tor` va después de las de los campos"
+    );
+}
+
+// ---------------------------------------------------------------------------
+// Remediación de la auditoría de F2b-3
+// ---------------------------------------------------------------------------
+//
+// MEDIO-1: en modo avanzado la columna `is_tor` NO participa fuera del conjunto
+// (requisito de `rule-matching`). BAJO-1: los 400 de la validación del operador
+// vistos por HTTP.
+
+/// Un `NewRequest` mínimo con el `path` y el booleano Tor indicados.
+fn request_with_path_and_tor(path: Option<&str>, is_tor: Option<bool>) -> NewRequest {
+    let mut request = NewRequest::from_request(&axum::http::HeaderMap::new(), None, None);
+    request.path = path.map(str::to_string);
+    request.is_tor = is_tor;
+    request
+}
+
+/// Hallazgo MEDIO-1: en modo avanzado la columna `is_tor` no participa del
+/// matcheo.
+///
+/// GIVEN una regla creada con `conditions` que NO incluyen `is_tor` y con la
+///       columna `is_tor = 1`
+/// WHEN se evalúa con el conjunto persistido (`read_all_active`)
+/// THEN NO SHALL casar una petición Tor cuyas condiciones no casan: la columna no
+///      aporta ningún predicado al conjunto
+/// AND SHALL casar una petición **no-Tor** cuyas condiciones sí casan: la columna
+///     deja de restringir el tráfico a Tor, conforme al requisito de
+///     `rule-matching`.
+#[tokio::test]
+async fn test_advanced_mode_ignores_the_is_tor_column() {
+    let pool = create_migrated_pool().await;
+
+    // Regla avanzada: la lista NO incluye `is_tor`, pero la columna vale 1. Los 14
+    // campos (aquí `path`) se almacenan pero NO participan del matcheo.
+    let mut rule = blank_new_rule("it-advanced-column-ignored");
+    rule.is_tor = Some(true);
+    rule.path = Some("^/ignored$".to_string());
+    rule.conditions = Some(vec![ConditionInput {
+        collection: "path".to_string(),
+        key: None,
+        transformations: String::new(),
+        operator: None,
+        pattern: "^/admin$".to_string(),
+    }]);
+    let created = Rule::create(&pool, rule)
+        .await
+        .expect("crear la regla avanzada");
+
+    // La tabla contiene exactamente la condición de la lista: la columna no añade
+    // una fila `is_tor`.
+    let rows = stored_conditions(&pool, created.id).await;
+    assert_eq!(
+        rows.len(),
+        1,
+        "el conjunto avanzado no debe ampliarse con la columna `is_tor`; almacenadas: {rows:?}"
+    );
+    assert!(
+        rows.iter().all(|row| row.collection != "is_tor"),
+        "no debe persistirse una condición `is_tor` desde la columna; almacenadas: {rows:?}"
+    );
+
+    // El matcheo se alimenta de la tabla (`read_all_active`), no de la proyección
+    // de los campos: es la vía de producción.
+    let cache = CacheRule::read_all_active(&pool)
+        .await
+        .expect("leer las reglas activas");
+    let cached = cache
+        .iter()
+        .find(|cache_rule| cache_rule.rule.id == created.id)
+        .expect("la regla creada debe estar en la caché");
+
+    // Una petición Tor cuyas condiciones no casan (`/other` ≠ `^/admin$`) NO casa:
+    // la columna `is_tor = 1` no aporta ningún predicado que la haga casar.
+    assert!(
+        !cached.matches(&request_with_path_and_tor(Some("/other"), Some(true))),
+        "la columna `is_tor = 1` no debe hacer casar una regla avanzada cuyas \
+         condiciones no casan"
+    );
+
+    // Una petición NO-Tor cuyas condiciones sí casan: la columna no restringe a
+    // Tor, así que la regla casa.
+    assert!(
+        cached.matches(&request_with_path_and_tor(Some("/admin"), Some(false))),
+        "en modo avanzado la columna `is_tor` no debe restringir el tráfico a Tor"
+    );
+
+    // Control: la misma petición marcada como Tor casa igual, por las condiciones.
+    assert!(
+        cached.matches(&request_with_path_and_tor(Some("/admin"), Some(true))),
+        "con las condiciones casando, la regla casa sea o no Tor"
+    );
+}
+
+/// Hallazgo BAJO-1: `@truthy` en una colección de texto se rechaza con 400.
+#[tokio::test]
+async fn test_http_create_rejects_truthy_on_text_collection() {
+    let pool = create_migrated_pool().await;
+    let state = build_app_state(pool.clone());
+
+    let payload = json!({
+        "name": "it-http-truthy-on-text",
+        "conditions": [{
+            "collection": "path",
+            "key": null,
+            "transformations": "",
+            "operator": "@truthy",
+            "pattern": "^/admin$",
+        }],
+    });
+
+    let (status, response) = call_rules_api(&state, Method::POST, "/", Some(payload)).await;
+    assert_eq!(
+        status,
+        StatusCode::BAD_REQUEST,
+        "`@truthy` en una colección de texto debe rechazarse con 400; respuesta: {response}"
+    );
+
+    let count: i64 = sqlx::query_scalar("SELECT count(*) FROM rules WHERE name = ?")
+        .bind("it-http-truthy-on-text")
+        .fetch_one(&pool)
+        .await
+        .expect("contar reglas");
+    assert_eq!(count, 0, "la regla rechazada NO debe almacenarse");
+}
+
+/// Hallazgo BAJO-1: `@rx` sobre la colección booleana `is_tor` se rechaza con 400.
+#[tokio::test]
+async fn test_http_create_rejects_rx_on_is_tor() {
+    let pool = create_migrated_pool().await;
+    let state = build_app_state(pool.clone());
+
+    let payload = json!({
+        "name": "it-http-rx-on-is-tor",
+        "conditions": [{
+            "collection": "is_tor",
+            "key": null,
+            "transformations": "",
+            "operator": "@rx",
+            "pattern": "true",
+        }],
+    });
+
+    let (status, response) = call_rules_api(&state, Method::POST, "/", Some(payload)).await;
+    assert_eq!(
+        status,
+        StatusCode::BAD_REQUEST,
+        "`@rx` sobre `is_tor` debe rechazarse con 400; respuesta: {response}"
+    );
+
+    let count: i64 = sqlx::query_scalar("SELECT count(*) FROM rules WHERE name = ?")
+        .bind("it-http-rx-on-is-tor")
+        .fetch_one(&pool)
+        .await
+        .expect("contar reglas");
+    assert_eq!(count, 0, "la regla rechazada NO debe almacenarse");
 }

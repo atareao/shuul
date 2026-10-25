@@ -174,7 +174,7 @@ The rule dialog authors the matching set in either of two forms, and the API acc
 - **`conditions` absent or null → simple mode.** The set is projected from the 14 fields, exactly as the dialog does.
 - **`conditions` present (even an empty list) → advanced mode.** The list **is** the persisted set; the 14 fields are stored as they come and take no part in matching.
 
-Each condition is `{collection, key, transformations, operator, pattern}`. On top of the 14 fields, the vocabulary adds five collections:
+Each condition is `{collection, key, transformations, operator, pattern}`. On top of the 14 fields, the vocabulary adds six collections:
 
 | Collection | Key | What it reads |
 |---|---|---|
@@ -183,8 +183,9 @@ Each condition is `{collection, key, transformations, operator, pattern}`. On to
 | `args_get` | **required** — the query argument name | that argument's value, one by one and **raw** (still percent-encoded, like `query`) |
 | `request_basename` | forbidden | the last non-empty segment of the path |
 | `request_extension` | forbidden | the substring after the last dot of the basename, when the dot is not the first character |
+| `is_tor` | forbidden | whether the request comes from a known Tor exit node — a boolean, not a string |
 
-`key` is mandatory exactly when the collection requires it and rejected otherwise. Any other rejection — unknown collection, a pattern that does not compile, `transformations` that do not resolve, or an `operator` other than `@rx` — is a `400` and the rule is **not** stored. `operator` is optional, and `@rx` is the only operator this phase accepts.
+`key` is mandatory exactly when the collection requires it and rejected otherwise. Any other rejection — unknown collection, a pattern that does not compile, `transformations` that do not resolve, or an `operator` that is not valid for its collection — is a `400` and the rule is **not** stored. `operator` is optional and defaults to `@rx`; `@rx` is the regular-expression operator, and `@truthy` is the boolean operator, accepted **only** for the `is_tor` collection (no pattern, no key, no transformations).
 
 A keyed collection is resolved **by name**: `request_cookies[PHPSESSID]` is the evidence key a cookie condition logs, so two conditions over the same collection with different keys are told apart in the audit log.
 
@@ -207,23 +208,41 @@ Example — deny any request carrying a `PHPSESSID` cookie whose value is exactl
 }
 ```
 
-Read a rule back and you get the same `conditions` array — each entry with `"operator": "@rx"` and the canonicalised `transformations` — so a read–edit–PATCH round trip is stable.
+Read a rule back and you get the same `conditions` array — each entry with its `"operator"` (`@rx`, or `@truthy` for an `is_tor` condition) and the canonicalised `transformations` — so a read–edit–PATCH round trip is stable.
+
+#### The Tor filter
+
+`is_tor` is the one boolean collection. It holds whether the client address is a known Tor exit node, and it is compared with the boolean operator `@truthy`. The condition passes **only when the request actually comes from a known Tor exit node** — that is, when the answer is exactly `true`. When it is `false`, or when the answer is unknown (the exit list has not loaded yet, or the address does not parse as an IP), the condition does not pass and a debug line names the collection and the rule. A Tor condition carries **no pattern and no key**: there is nothing to match against, only a yes/no answer. Its transformation pipeline is empty by contract, and it adds nothing to the audit event — the shape of the event does not change.
+
+```json
+{
+  "name": "tor-only",
+  "pipeline": "waf",
+  "mode": "enforce",
+  "allow": false,
+  "conditions": [
+    { "collection": "is_tor", "operator": "@truthy" }
+  ]
+}
+```
+
+In **simple** mode the historical **Tor Exit Node** toggle still projects to exactly this condition, so the observable behaviour does not change. In **advanced** mode the collection list offers `is_tor`: pick it and the operator is fixed to `@truthy`, with the pattern, key and transformation controls hidden.
 
 #### The Conditions tab
 
 The rule dialog authors both forms from its **Conditions** tab, through a Simple / Advanced switch:
 
 - **Simple** is the historical form: the 14 fields, and `conditions` is left out of the request (the backend projects the 14 fields).
-- **Advanced** authors an ordered list of conditions. Each row offers the collection, the key — only when the collection requires it —, the transformation chips, the pattern, and the operator shown as a fixed `@rx`. `Add condition` appends an empty row and `Remove` drops one. The list travels as `conditions`, **even when it is empty**. The tabs of the 14 fields (Network, Location, Request) are disabled, with a note that those fields are stored but take no part in matching; they still travel in the request.
+- **Advanced** authors an ordered list of conditions. Each row offers the collection, the key — only when the collection requires it —, the transformation chips, the pattern, and the operator shown as a fixed `@rx`; for the `is_tor` collection the operator is instead a fixed `@truthy`, and the pattern, key and transformation controls are hidden. `Add condition` appends an empty row and `Remove` drops one. The list travels as `conditions`, **even when it is empty**. The tabs of the 14 fields (Network, Location, Request) are disabled, with a note that those fields are stored but take no part in matching; they still travel in the request.
 
 Two transitions:
 
-- **Simple → Advanced** seeds the list by projecting the filled 14 fields, in canonical order: one condition per field with a non-empty pattern, carrying the rule's transformations. `is_tor` is not projected.
+- **Simple → Advanced** seeds the list by projecting the filled 14 fields, in canonical order: one condition per field with a non-empty pattern, carrying the rule's transformations. The Tor condition is seeded too, at the end of the list, whenever the rule's **Tor Exit Node** toggle is on.
 - **Advanced → Simple** asks for confirmation and, once confirmed, discards the list; the rule is then sent without `conditions`.
 
 A condition in a keyed collection (`request_cookies`, `request_headers`, `args_get`) with no key blocks saving and flags the row — red border and an inline message — instead of sending an invalid body.
 
-When editing an existing rule the dialog infers the form: if the received `conditions` are exactly the projection of its 14 fields it opens in **simple**, otherwise in **advanced**, seeded with the received conditions. The inference is lossless — whichever form it opens in, saving sends back the same set that was loaded.
+When editing an existing rule the dialog infers the form: if the received `conditions` are exactly the projection of its 14 fields — including the Tor condition, when the toggle is on — it opens in **simple**, otherwise in **advanced**, seeded with the received conditions. The inference is lossless — whichever form it opens in, saving sends back the same set that was loaded.
 
 ### Rule Modes
 

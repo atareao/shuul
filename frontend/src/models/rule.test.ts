@@ -177,8 +177,8 @@ describe("describeRuleImport", () => {
 //
 // La proyección es idéntica a la del backend: recorre las 14 colecciones de
 // campo en su orden canónico —que es el orden de evaluación— y emite una
-// condición por cada campo con patrón no vacío (tras `trim`). `is_tor` nunca
-// proyecta: no es una de las 14 colecciones.
+// condición por cada campo con patrón no vacío (tras `trim`). Cuando la regla
+// tiene `is_tor` activo añade, **al final**, la condición `is_tor`/`@truthy`.
 
 /** Las 14 colecciones de campo, en el orden canónico de evaluación. */
 const FIELD_COLLECTION_NAMES = [
@@ -218,6 +218,7 @@ describe("collectionRequiresKey", () => {
       ...FIELD_COLLECTION_NAMES,
       "request_basename",
       "request_extension",
+      "is_tor",
     ];
 
     for (const collection of keyed) {
@@ -234,12 +235,13 @@ describe("los catálogos de colecciones", () => {
     expect([...FIELD_COLLECTIONS]).toEqual([...FIELD_COLLECTION_NAMES]);
   });
 
-  it("CONDITION_COLLECTIONS son las 19, sin repetidas", () => {
-    expect(CONDITION_COLLECTIONS).toHaveLength(19);
-    expect(new Set(CONDITION_COLLECTIONS).size).toBe(19);
+  it("CONDITION_COLLECTIONS son las 20, sin repetidas", () => {
+    expect(CONDITION_COLLECTIONS).toHaveLength(20);
+    expect(new Set(CONDITION_COLLECTIONS).size).toBe(20);
     for (const collection of [
       ...FIELD_COLLECTION_NAMES,
       ...EXTRA_COLLECTIONS,
+      "is_tor",
     ] as const) {
       expect(CONDITION_COLLECTIONS).toContain(collection);
     }
@@ -277,17 +279,61 @@ describe("projectConditions", () => {
     ]);
   });
 
-  it("no proyecta `is_tor`, que no es una colección de campo", () => {
-    const rule: Rule = {
-      id: 1,
-      name: "tor-only",
-      description: "",
-      mode: "enforce",
-      transformations: "",
+  it("añade la condición `is_tor`/`@truthy` al final cuando la regla tiene `is_tor` activo", () => {
+    const rule: ProjectableFields = {
+      path: "/admin",
+      transformations: "lowercase",
       is_tor: true,
     };
 
-    expect(projectConditions(rule)).toEqual([]);
+    expect(projectConditions(rule)).toEqual([
+      {
+        collection: "path",
+        key: null,
+        transformations: "lowercase",
+        operator: "@rx",
+        pattern: "/admin",
+      },
+      {
+        collection: "is_tor",
+        key: null,
+        transformations: "",
+        operator: "@truthy",
+        pattern: "",
+      },
+    ]);
+  });
+
+  it("no proyecta la condición `is_tor` cuando la regla la tiene inactiva o ausente", () => {
+    const inactive: ProjectableFields = { path: "/admin", is_tor: false };
+    const absent: ProjectableFields = { path: "/admin" };
+
+    const onlyPath = [
+      {
+        collection: "path",
+        key: null,
+        transformations: "",
+        operator: "@rx",
+        pattern: "/admin",
+      },
+    ];
+
+    expect(projectConditions(inactive)).toEqual(onlyPath);
+    expect(projectConditions(absent)).toEqual(onlyPath);
+  });
+
+  it("una regla que sólo restringe Tor proyecta únicamente su condición", () => {
+    const rule: ProjectableFields = { is_tor: true };
+
+    expect(projectConditions(rule)).toEqual([
+      {
+        collection: "is_tor",
+        key: null,
+        transformations: "",
+        operator: "@truthy",
+        pattern: "",
+      },
+    ]);
   });
 
   it("no proyecta los patrones vacíos ni los de solo espacios", () => {

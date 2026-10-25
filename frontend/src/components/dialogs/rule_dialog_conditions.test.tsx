@@ -303,6 +303,56 @@ const ADVANCED_ITEM: Item = {
   ],
 };
 
+/**
+ * Regla en modo simple que además restringe Tor: sus condiciones son la
+ * proyección de su único campo relleno **más** la condición `is_tor`/`@truthy`
+ * que proyecta la columna. Es la prueba de que una regla simple con `is_tor`
+ * **no** se degrada a avanzado.
+ */
+const SIMPLE_TOR_ITEM: Item = {
+  ...WAF_ITEM,
+  transformations: "",
+  path: "/admin",
+  is_tor: true,
+  conditions: [
+    {
+      collection: "path",
+      key: null,
+      transformations: "",
+      operator: "@rx",
+      pattern: "/admin",
+    },
+    {
+      collection: "is_tor",
+      key: null,
+      transformations: "",
+      operator: "@truthy",
+      pattern: "",
+    },
+  ],
+};
+
+/**
+ * Regla en modo avanzado cuyo conjunto persistido es una única condición
+ * `is_tor`/`@truthy`: la columna `is_tor` es falsa y no participa, así que la
+ * lista difiere de la proyección de los 14 campos y abre en avanzado con esa
+ * fila.
+ */
+const TOR_CONDITION_ITEM: Item = {
+  ...WAF_ITEM,
+  transformations: "",
+  is_tor: false,
+  conditions: [
+    {
+      collection: "is_tor",
+      key: null,
+      transformations: "",
+      operator: "@truthy",
+      pattern: "",
+    },
+  ],
+};
+
 describe("RuleDialog: el conmutador de modo simple y avanzado", () => {
   afterEach(() => {
     vi.unstubAllGlobals();
@@ -550,6 +600,26 @@ describe("RuleDialog: la inferencia del modo al editar", () => {
       },
     ]);
   });
+
+  it("una regla simple con `is_tor` abre en simple: no degrada a avanzado", async () => {
+    const user = userEvent.setup();
+    const fetchMock = stubFetch();
+
+    renderUpdateDialog(SIMPLE_TOR_ITEM);
+    await openConditionsTab(user);
+
+    // Sus condiciones son la proyección de sus 14 campos **más** la condición
+    // `is_tor`/`@truthy` que proyecta la columna, así que el modo inferido es
+    // simple: la proyección las reproduce exactamente.
+    expect(simpleRadio()).toBeChecked();
+    expect(screen.queryByText(ADVANCED_NOTE)).toBeNull();
+
+    await user.click(screen.getByRole("button", { name: "Ok" }));
+    await waitFor(() => expect(patchedRuleBodies(fetchMock)).toHaveLength(1));
+    expect(Object.keys(patchedRuleBodies(fetchMock)[0])).not.toContain(
+      "conditions",
+    );
+  });
 });
 
 // ─── La validación de la clave: una colección que la exige no puede ir vacía ──
@@ -585,5 +655,68 @@ describe("RuleDialog: una colección con clave sin clave impide guardar", () => 
     await waitFor(() => expect(keyInput).toHaveAttribute("aria-invalid", "true"));
     expect(patchedRuleBodies(fetchMock)).toHaveLength(0);
     expect(postedRuleBodies(fetchMock)).toHaveLength(0);
+  });
+});
+
+// ─── El operador fijo de `is_tor`: `@truthy`, sin patrón, clave ni pipeline ───
+// Escenario del delta: «El operador se fija para `is_tor`». La colección booleana
+// no se compara contra un patrón ni se resuelve por nombre, así que su fila fija
+// `@truthy` y **no** ofrece patrón, clave ni transformaciones.
+describe("RuleDialog: el operador fijo de `is_tor`", () => {
+  afterEach(() => {
+    vi.unstubAllGlobals();
+  });
+
+  it("fija `@truthy` y no ofrece patrón, clave ni transformaciones en la fila `is_tor`", async () => {
+    const user = userEvent.setup();
+    stubFetch();
+
+    renderUpdateDialog(TOR_CONDITION_ITEM);
+    await openConditionsTab(user);
+
+    const rows = conditionRows();
+    expect(rows).toHaveLength(1);
+    const row = rows[0];
+
+    // El operador está fijado a `@truthy` y a la vista.
+    expect(within(row).getByText("@truthy")).toBeInTheDocument();
+
+    // Ni patrón, ni clave, ni transformaciones: no tiene sentido para un booleano.
+    expect(within(row).queryByRole("textbox", { name: "Pattern" })).toBeNull();
+    expect(within(row).queryByRole("textbox", { name: "Key" })).toBeNull();
+    expect(
+      within(row).queryByRole("textbox", { name: "Transformations" }),
+    ).toBeNull();
+    expect(
+      within(row).queryByRole("group", { name: "Transformations" }),
+    ).toBeNull();
+  });
+
+  it("al guardar envía la condición `is_tor` serializada como `@truthy`, sin patrón, clave ni transformaciones", async () => {
+    const user = userEvent.setup();
+    const fetchMock = stubFetch();
+
+    renderUpdateDialog(TOR_CONDITION_ITEM);
+    await openConditionsTab(user);
+
+    expect(conditionRows()).toHaveLength(1);
+
+    await user.click(screen.getByRole("button", { name: "Ok" }));
+    await waitFor(() => expect(patchedRuleBodies(fetchMock)).toHaveLength(1));
+
+    // El contrato de serialización: la rama `is_tor` de `serializeCondition`
+    // fija el operador a `@truthy` y deja patrón y transformaciones vacíos, con
+    // la clave presente y nula —la forma exacta que espera la API—.
+    const body = patchedRuleBodies(fetchMock)[0];
+    expect(Object.keys(body)).toContain("conditions");
+    expect(body.conditions).toEqual([
+      {
+        collection: "is_tor",
+        key: null,
+        transformations: "",
+        operator: "@truthy",
+        pattern: "",
+      },
+    ]);
   });
 });

@@ -33,11 +33,14 @@ export default interface Rule {
 /**
  * Una colección del conjunto ordenado de condiciones que evalúa el backend.
  *
- * Son las 19 de F2b-2a: las 14 de campo —una por columna restringible del modo
- * simple— más las cinco que introduce el editor avanzado. Tres de ellas —la
+ * Son las 20: las 14 de campo —una por columna restringible del modo simple—, las
+ * cinco que introduce el editor avanzado y la booleana `is_tor`. Tres de ellas —la
  * cookie, la cabecera y el argumento del query— identifican un valor **por
  * nombre**, así que exigen una clave; las otras dos (`request_basename` y
  * `request_extension`) se resuelven del camino y no la llevan.
+ *
+ * `is_tor` no se resuelve por el texto de la petición sino desde la columna
+ * homónima de la regla.
  *
  * El tipo es la unión literal, no `string`, para que el compilador vigile los
  * catálogos y el editor: una colección inventada no compila.
@@ -61,7 +64,8 @@ export type Collection =
   | "request_headers"
   | "args_get"
   | "request_basename"
-  | "request_extension";
+  | "request_extension"
+  | "is_tor";
 
 /**
  * Las 14 colecciones de campo, **en el orden canónico de evaluación**.
@@ -71,7 +75,7 @@ export type Collection =
  * condiciones. `projectConditions()` lo respeta para que cambiar de modo no
  * reordene el conjunto persistido.
  */
-export const FIELD_COLLECTIONS: readonly Collection[] = [
+export const FIELD_COLLECTIONS: readonly Exclude<Collection, "is_tor">[] = [
   "ip_address",
   "protocol",
   "fqdn",
@@ -89,8 +93,8 @@ export const FIELD_COLLECTIONS: readonly Collection[] = [
 ];
 
 /**
- * Las 19 colecciones, con las 14 de campo primero —en orden canónico— y las cinco
- * de F2b-2a después.
+ * Las 20 colecciones, con las 14 de campo primero —en orden canónico—, las cinco
+ * de F2b-2a después y la booleana `is_tor` al final.
  *
  * Es el catálogo que ofrece el selector del editor: un orden estable y predecible
  * facilita localizar una colección a mano, aunque el test evite elegir por clic
@@ -103,6 +107,7 @@ export const CONDITION_COLLECTIONS: readonly Collection[] = [
   "args_get",
   "request_basename",
   "request_extension",
+  "is_tor",
 ];
 
 /**
@@ -135,28 +140,30 @@ export function collectionRequiresKey(collection: Collection): boolean {
  *
  * `key` es `null` —no `undefined`— en las colecciones sin clave, de modo que el
  * cuerpo JSON lleva la clave **presente** y nula, que es lo que el backend espera
- * deserializar. `operator` es opcional porque la API lo omite cuando vale `@rx`
- * —hoy su único operador—, y el editor lo fija siempre a `@rx`. F2c lo ampliará
- * a una unión de operadores.
+ * deserializar. `operator` es opcional porque la API lo omite cuando vale `@rx`,
+ * y el editor lo fija siempre a `@rx` salvo en la colección `is_tor`, donde el
+ * operador fijo es `@truthy`.
  */
 export interface Condition {
   collection: Collection;
   key?: string | null;
   transformations: string;
-  operator?: "@rx";
+  operator?: "@rx" | "@truthy";
   pattern: string;
 }
 
 /**
  * La forma proyectable de una regla: los 14 campos de campo más la pipeline de
- * transformaciones.
+ * transformaciones y el booleano `is_tor`.
  *
  * Se declara como `Partial<Record<…>>` y no como `Rule` para que la proyección
  * pueda invocarse también con los valores sueltos del formulario, que son
- * `Record<string, unknown>`. `is_tor` **no** forma parte: no es una colección de
- * campo y nunca proyecta.
+ * `Record<string, unknown>`. `is_tor` es la única colección que no se resuelve
+ * desde una columna de texto, así que se declara aparte con su tipo booleano.
  */
-export type ProjectableFields = Partial<Record<Collection | "transformations", string>>;
+export type ProjectableFields = Partial<
+  Record<Exclude<Collection, "is_tor"> | "transformations", string>
+> & { is_tor?: boolean };
 
 /**
  * Proyecta los 14 campos planos al conjunto ordenado de condiciones, con el
@@ -167,12 +174,14 @@ export type ProjectableFields = Partial<Record<Collection | "transformations", s
  * cada campo con patrón no vacío tras `trim`. El patrón se copia **tal cual** se
  * escribió: el `trim` sólo decide si el campo participa, no recorta el valor.
  *
- * `is_tor` queda fuera por construcción: no es ninguna de las 14 colecciones, así
- * que una regla que sólo restrinja Tor proyecta el conjunto vacío. Es lo correcto:
- * el predicado de Tor se combina aparte en el backend, no como condición.
+ * Cuando la regla tiene `is_tor` activo añade, **al final**, la condición
+ * `is_tor`/`@truthy` —sin clave, sin transformaciones y con patrón vacío—, que es
+ * como el backend proyecta la columna booleana. `is_tor` falso o ausente no
+ * proyecta nada: es neutral, igual que la clausura histórica, que sólo decide con
+ * `Some(true)`.
  *
- * La pipeline de transformaciones se copia en cada condición, y la cadena vacía
- * es el valor por defecto cuando la regla no declara ninguna.
+ * La pipeline de transformaciones se copia en cada condición de campo, y la
+ * cadena vacía es el valor por defecto cuando la regla no declara ninguna.
  */
 export function projectConditions(rule: ProjectableFields): Condition[] {
   const transformations = rule.transformations ?? "";
@@ -188,6 +197,15 @@ export function projectConditions(rule: ProjectableFields): Condition[] {
       transformations,
       operator: "@rx",
       pattern,
+    });
+  }
+  if (rule.is_tor === true) {
+    conditions.push({
+      collection: "is_tor",
+      key: null,
+      transformations: "",
+      operator: "@truthy",
+      pattern: "",
     });
   }
   return conditions;
