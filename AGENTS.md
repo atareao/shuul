@@ -318,13 +318,13 @@ de los otros como transporte.
 
 #### La IR de condiciones (`models/condition.rs`)
 
-- `Collection` — **19 variantes**: las 14 colecciones de campo (`ip_address` … `x_request_id`) más las cinco de F2b-2a — `RequestCookies`, `RequestHeaders` y `ArgsGet` (con clave) y `RequestBasename` y `RequestExtension` (sin clave). `Collection::ALL` sigue siendo **las 14**: es la lista de la representación simple y del orden histórico, no el catálogo completo. Cada variante tiene `field_name()` (la clave de la evidencia), `from_field_name()` (el inverso, que usa la lectura), `requires_key()` (verdadero solo para las tres con clave) y `request_value(request, key)`.
-- `Operator` — nace con una sola variante: `Rx(Regex)`.
-- `Condition { collection, key, pipeline, operator }` — una condición ya compilada. `key` es `Option<String>`: el nombre de la cookie, la cabecera o el argumento para las tres colecciones con clave, y `None` para el resto. **No** vive en `Collection`, que es `Copy`.
-- `ConditionInput { collection, key, transformations, operator, pattern }` — la forma serializable de una condición para la API; `NewRule` y `UpdateRule` la aceptan en su campo `conditions`. `ConditionInput::compile()` la valida y la compila a `Condition`: colección conocida, clave obligatoria exactamente cuando la colección la exige y prohibida cuando no, `operator` ausente o `@rx`, patrón compilable y transformaciones resolubles. Todo rechazo es `AppError::InvalidInput` (400) y la regla no se almacena.
-- `project(rule, pipeline) -> Vec<Condition>` — proyecta a condiciones los campos que la regla restringe. Un patrón **ausente**, **vacío** o **no compilable** **no** proyecta ninguna condición; `is_tor` **nunca** proyecta. Lo usan la **escritura** (`Rule::write_conditions`) para poblar `rule_conditions` en **modo simple** y el constructor en memoria (`CacheRule::from_rule`); la **lectura** de producción (`Rule::read_conditions`) reconstruye la IR desde la tabla.
+- `Collection` — **20 variantes**: las 14 colecciones de campo (`ip_address` … `x_request_id`) más las cinco de F2b-2a — `RequestCookies`, `RequestHeaders` y `ArgsGet` (con clave) y `RequestBasename` y `RequestExtension` (sin clave) — y `IsTor` (booleana, sin clave) de F2b-3. `Collection::ALL` sigue siendo **las 14**: es la lista de la representación simple y del orden histórico, no el catálogo completo. Cada variante tiene `field_name()` (la clave de la evidencia), `from_field_name()` (el inverso, que usa la lectura), `requires_key()` (verdadero solo para las tres con clave) y `request_value(request, key)`.
+- `Operator` — dos variantes: `Rx(Regex)` (la histórica) y `Truthy`, el operador booleano de F2b-3. `Truthy` se serializa como `@truthy` y se cumple **si y solo si** el booleano de la petición es exactamente `true`.
+- `Condition { collection, key, pipeline, operator }` — una condición ya compilada. `key` es `Option<String>`: el nombre de la cookie, la cabecera o el argumento para las tres colecciones con clave, y `None` para el resto. **No** vive en `Collection`, que es `Copy`. La colección `IsTor` lleva por contrato la pipeline **vacía** (un booleano no se transforma) y **no** anota evidencia: la forma del evento de auditoría no cambia.
+- `ConditionInput { collection, key, transformations, operator, pattern }` — la forma serializable de una condición para la API; `NewRule` y `UpdateRule` la aceptan en su campo `conditions`. `ConditionInput::compile()` la valida y la compila a `Condition`: colección conocida, clave obligatoria exactamente cuando la colección la exige y prohibida cuando no, `operator` ausente, `@rx` o `@truthy`, patrón compilable y transformaciones resolubles. `@truthy` se acepta **solo** para `is_tor` —patrón vacío, sin clave y sin transformaciones—; `@truthy` fuera de `is_tor` y `@rx` sobre `is_tor` se rechazan con 400. Todo rechazo es `AppError::InvalidInput` (400) y la regla no se almacena.
+- `project(rule, pipeline) -> Vec<Condition>` — proyecta a condiciones los campos que la regla restringe. Un patrón **ausente**, **vacío** o **no compilable** **no** proyecta ninguna condición. `is_tor == Some(true)` proyecta **al final** una condición `is_tor`/`@truthy`; `Some(false)` y `None` **no** proyectan nada (neutrales). Lo usan la **escritura** (`Rule::write_conditions`) para poblar `rule_conditions` en **modo simple** y el constructor en memoria (`CacheRule::from_rule`); la **lectura** de producción (`Rule::read_conditions`) reconstruye la IR desde la tabla.
 
-#### Filtros disponibles (19)
+#### Filtros disponibles (20)
 
 ```rust
 // 14 de campo (Collection::ALL)
@@ -335,6 +335,8 @@ accept_language, x_request_id
 // 5 de F2b-2a (las tres primeras, con clave entre corchetes)
 request_cookies[clave], request_headers[clave], args_get[clave],
 request_basename, request_extension
+// 1 de F2b-3 (booleana, sin clave, fuera de Collection::ALL)
+is_tor
 ```
 
 #### Modo simple frente a modo avanzado
@@ -346,6 +348,8 @@ El **modo** lo decide la presencia del campo `conditions` en la escritura, sin c
 
 La lectura siempre devuelve las condiciones: el cliente reconstruye el modo a partir de su presencia. La representación de una regla (crear, editar, leer, listar y exportar) **incluye** `conditions`; en el listado y la exportación se cargan **por lote** con una sola consulta `WHERE rule_id IN (…)` (`Rule::read_conditions_batch`), nunca una por regla.
 
+La columna `operator` de `rule_conditions` admite `@rx` y `@truthy`: se escribe y se lee tal cual, y una fila con un operador incoherente con su colección se **descarta** en la lectura con diagnóstico (fallo seguro). El backfill `20261026000000_project_is_tor_into_rule_conditions.up.sql` da a las reglas con `is_tor = 1` su fila `is_tor`/`@truthy`, porque la tabla es la fuente única del matcheo y sin él esas reglas perderían su condición Tor al arrancar; la migración es idempotente (`WHERE NOT EXISTS`).
+
 #### Lógica de `evaluate()`
 
 `evaluate()` recorre el conjunto de condiciones **en orden y en AND con cortocircuito**: la primera que no casa detiene la evaluación y `matched` es `false`. Una regla **sin** condiciones es **neutral**: casa. El contrato de cada condición es el de los tres brazos históricos:
@@ -356,9 +360,11 @@ La lectura siempre devuelve las condiciones: el cliente reconstruye el modo a pa
 
 Para las tres colecciones con clave, el valor se resuelve por el nombre: `request_value(request, key)` busca la cookie, la cabecera (el nombre normalizado a minúsculas) o el argumento del query. La clave de la evidencia es entonces la **clave compuesta** `colección[clave]` (`request_cookies[PHPSESSID]`), que distingue dos condiciones de la misma colección con claves distintas; las 14 de campo y `request_basename`/`request_extension` conservan su nombre simple.
 
-Una fila de `rule_conditions` **irresoluble** en la lectura se **descarta** con un diagnóstico que la nombra: colección desconocida, patrón que no compila, transformaciones que no se pueden leer, o colección con clave sin clave. Descartar en vez de aplicar mal es el **fallo seguro** del rollback a una imagen anterior (`openspec/changes/waf-collections/design.md`).
+La colección booleana `is_tor` no es una cadena: su operador es siempre `@truthy` y la condición se cumple **si y solo si** el booleano de la petición es exactamente `true`. `Some(false)` y ausente (`None`, cuando la lista de salidas Tor aún no ha cargado o la IP no parsea) **no** cumplen —fail-open— y emiten un `debug!` que nombra la colección y la regla. Su pipeline es **vacía** por contrato y **no** anota evidencia: la forma del evento de auditoría no cambia.
 
-`is_tor` **no** forma parte del conjunto: sigue siendo el predicado booleano `check_tor` que se combina al final, con el mismo cortocircuito —solo se evalúa si todas las condiciones casaron—.
+Una fila de `rule_conditions` **irresoluble** en la lectura se **descarta** con un diagnóstico que la nombra: colección desconocida, patrón que no compila, transformaciones que no se pueden leer, colección con clave sin clave, o un operador incoherente con la colección. Descartar en vez de aplicar mal es el **fallo seguro** del rollback a una imagen anterior (`openspec/changes/waf-collections/design.md`).
+
+F2b-3 **retiró** el predicado `check_tor` de `CacheRule::evaluate` y el campo `CacheRule.is_tor`: el chequeo de Tor es ahora **una condición más** del conjunto (`is_tor`/`@truthy`), proyectada desde la columna `is_tor` en modo simple. En **modo avanzado** la columna `is_tor` deja de participar fuera del conjunto, conforme al requisito de `rule-matching`.
 
 ### Base de datos — SQLite
 
@@ -384,7 +390,8 @@ backend/migrations/
 ├── 20260922000001_update_multipliers.up.sql
 ├── 20261023000000_normalize_jail_rule_weight.up.sql
 ├── 20261024000000_add_rule_transformations.up.sql
-└── 20261025000000_create_rule_conditions.up.sql
+├── 20261025000000_create_rule_conditions.up.sql
+└── 20261026000000_project_is_tor_into_rule_conditions.up.sql  # Backfill `is_tor`/`@truthy` (idempotente)
 ```
 
 #### Tablas

@@ -6,7 +6,7 @@ El matcheo sabe recorrer un conjunto ordenado de condiciones (F2a), sabe persist
 
 **F2b-3** cierra ese peldaño: `IS_TOR` entra en el vocabulario como **colección booleana**, su operador booleano `@truthy` la compara, la columna `is_tor` de `rules` la proyecta, el matcheo la evalúa como una condición más y el editor la ofrece. No es andamiaje: entra en funcionamiento y sustituye al predicado `check_tor`.
 
-**No hay cambio observable.** El comportamiento del filtro Tor es **equivalente** al de hoy —las 42 plantillas, incluida «Tor exit nodes», deciden igual—, la forma del evento de auditoría no cambia (no se anota evidencia para `is_tor`) y el modo simple se comporta byte a byte como antes.
+**No hay cambio observable en modo simple.** El comportamiento del filtro Tor es **equivalente** al de hoy —las 42 plantillas, incluida «Tor exit nodes», deciden igual—, la forma del evento de auditoría no cambia (no se anota evidencia para `is_tor`) y el modo simple se comporta byte a byte como antes. En **modo avanzado**, en cambio, la columna `is_tor` deja de participar fuera del conjunto —el conjunto se evalúa como exactamente la lista persistida—, conforme al requisito de `rule-matching`.
 
 ## What Changes
 
@@ -41,4 +41,4 @@ El matcheo sabe recorrer un conjunto ordenado de condiciones (F2a), sabe persist
 - **Base de datos:** **una migración** — `backend/migrations/20261026000000_project_is_tor_into_rule_conditions.up.sql`, backfill idempotente (`WHERE NOT EXISTS`) de la fila `is_tor`/`@truthy` para las reglas con `is_tor = 1`.
 - **API:** superficies **aditivas**: `is_tor` entra en el vocabulario de `conditions` y su operador `@truthy` en la validación. El modo simple no cambia.
 - **Frontend:** el catálogo de colecciones, el editor de condiciones y la proyección de siembra/inferencia de modo.
-- **Cambio observable:** **ninguno** —ni en el evento (no se anota evidencia) ni en modo simple—. El comportamiento del filtro Tor es **equivalente**.
+- **Cambio observable:** **ninguno en modo simple** —ni en el evento (no se anota evidencia) ni en la decisión de las 42 plantillas—. En **modo avanzado** la columna `is_tor` deja de participar fuera del conjunto, conforme al requisito de `rule-matching`: una regla avanzada con la columna `is_tor = 1` y sin condición `is_tor` en su lista ya **no** restringe el tráfico a Tor.

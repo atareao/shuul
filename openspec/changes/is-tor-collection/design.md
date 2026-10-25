@@ -51,6 +51,8 @@ Esto replica exactamente el predicado histórico que se combinaba **al final** d
 
 El chequeo de Tor deja de ser un predicado aparte: pasa a ser una condición más del conjunto, evaluada en AND con cortocircuito como las demás. `CacheRule` pierde el campo `is_tor` —redundante en cuanto la columna proyecta la condición—, y con él `check_tor`, en cascada. Es la forma natural de la arquitectura del motor: un único camino de matcheo, sin predicados al margen.
 
+**Observable:** en **modo simple** la decisión es idéntica a la de hoy —la columna `is_tor` se proyecta a la condición y decide en el mismo punto—. En **modo avanzado**, en cambio, la columna `is_tor` **deja de participar** fuera del conjunto: el matcheo se evalúa como exactamente la lista persistida, conforme al requisito de `rule-matching`. Una regla avanzada con la columna `is_tor = 1` y sin condición `is_tor` en su lista ya **no** restringe el tráfico a Tor —antes `check_tor` se combinaba al margen y sí lo hacía—.
+
 ### D5. La colección booleana no anota evidencia
 
 Hoy `check_tor` **no** anota nada en el evento de auditoría. Convertirlo en condición abre la puerta a un `{"is_tor": "true"}` que hoy no existe: **sería un cambio observable**. Se decide explícitamente **no anotar evidencia** para `is_tor`, de modo que la forma del evento no cambia y la decisión observable es idéntica a la de hoy. Es una decisión **revisable**: si una fase posterior quiere anotar el booleano, el cambio sería explícito y visible, nunca por el arrastre de la generalización.
