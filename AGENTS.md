@@ -528,7 +528,8 @@ Colector de estadísticas en memoria con:
 
 - **CustomTable** — Tabla CRUD genérica con paginación servidor, sorting, filtros, auto-refresh
 - **CustomDialog** — Modal genérico que auto-genera formularios desde `FieldDefinition<T>`
-- **RuleDialog** — Modal especializado con 4 tabs (General, Network, Location, Request)
+- **RuleDialog** — Modal especializado con 5 tabs (General, Network, Location, Request, Conditions). La pestaña **Conditions** es el editor de la autoría avanzada de reglas: un conmutador `Segmented` simple/avanzado, la lista ordenada de condiciones (colección, clave condicional, transformaciones por chips canónicos, patrón y operador `@rx` fijo), la siembra al pasar a avanzado y la confirmación (`Popconfirm` controlado) al volver a simple. Al editar infiere el modo comparando las condiciones recibidas con la proyección de los 14 campos.
+- **ConditionEditor** — el editor de condiciones de `RuleDialog`, extraído a `condition_editor.tsx` (presentacional) con su modelo puro en `condition_editor_model.ts`; los 18 tokens canónicos de transformación viven en `rule_transformations.ts`.
 - **RateLimitProfileDialog** — Modal especializado con 2 tabs (General, Penalty)
 - **AuthContext** — Contexto de autenticación JWT (token, login, logout, auto-logout timer)
 - **ModeContext** — Contexto de tema (dark/light, persistido en localStorage)

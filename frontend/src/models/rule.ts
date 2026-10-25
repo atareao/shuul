@@ -25,8 +25,172 @@ export default interface Rule {
   rate_limit_profile_id?: number;
   rate_limit_profile_name?: string;
   active?: number;
+  conditions?: Condition[];
   created_at?: Date;
   updated_at?: Date;
+}
+
+/**
+ * Una colección del conjunto ordenado de condiciones que evalúa el backend.
+ *
+ * Son las 19 de F2b-2a: las 14 de campo —una por columna restringible del modo
+ * simple— más las cinco que introduce el editor avanzado. Tres de ellas —la
+ * cookie, la cabecera y el argumento del query— identifican un valor **por
+ * nombre**, así que exigen una clave; las otras dos (`request_basename` y
+ * `request_extension`) se resuelven del camino y no la llevan.
+ *
+ * El tipo es la unión literal, no `string`, para que el compilador vigile los
+ * catálogos y el editor: una colección inventada no compila.
+ */
+export type Collection =
+  | "ip_address"
+  | "protocol"
+  | "fqdn"
+  | "path"
+  | "query"
+  | "city_name"
+  | "country_name"
+  | "country_code"
+  | "user_agent"
+  | "method"
+  | "referer"
+  | "content_type"
+  | "accept_language"
+  | "x_request_id"
+  | "request_cookies"
+  | "request_headers"
+  | "args_get"
+  | "request_basename"
+  | "request_extension";
+
+/**
+ * Las 14 colecciones de campo, **en el orden canónico de evaluación**.
+ *
+ * El orden no es decorativo: es el orden en que el backend recorre los campos al
+ * proyectar una regla simple y, por tanto, el orden en que se emiten las
+ * condiciones. `projectConditions()` lo respeta para que cambiar de modo no
+ * reordene el conjunto persistido.
+ */
+export const FIELD_COLLECTIONS: readonly Collection[] = [
+  "ip_address",
+  "protocol",
+  "fqdn",
+  "path",
+  "query",
+  "city_name",
+  "country_name",
+  "country_code",
+  "user_agent",
+  "method",
+  "referer",
+  "content_type",
+  "accept_language",
+  "x_request_id",
+];
+
+/**
+ * Las 19 colecciones, con las 14 de campo primero —en orden canónico— y las cinco
+ * de F2b-2a después.
+ *
+ * Es el catálogo que ofrece el selector del editor: un orden estable y predecible
+ * facilita localizar una colección a mano, aunque el test evite elegir por clic
+ * las que antd virtualiza al final de la lista.
+ */
+export const CONDITION_COLLECTIONS: readonly Collection[] = [
+  ...FIELD_COLLECTIONS,
+  "request_cookies",
+  "request_headers",
+  "args_get",
+  "request_basename",
+  "request_extension",
+];
+
+/**
+ * Las tres colecciones cuyo valor se resuelve por nombre y, por tanto, exigen
+ * clave. Vive fuera de `collectionRequiresKey` para poder reutilizarse en
+ * validaciones sin volver a enumerarlas.
+ */
+const KEYED_COLLECTIONS: readonly Collection[] = [
+  "request_cookies",
+  "request_headers",
+  "args_get",
+];
+
+/**
+ * ¿La colección exige clave?
+ *
+ * Verdadero exactamente para `request_cookies`, `request_headers` y `args_get`:
+ * son las únicas cuyo valor se identifica por el nombre de la cookie, de la
+ * cabecera o del argumento del query. El editor lo usa para mostrar —y exigir—
+ * el Input «Key» sólo donde tiene sentido, y el serializador lo usa para decidir
+ * si `key` viaja con la clave o como `null`.
+ */
+export function collectionRequiresKey(collection: Collection): boolean {
+  return KEYED_COLLECTIONS.includes(collection);
+}
+
+/**
+ * Una condición ya compilada, en su forma serializada: la misma que lee y escribe
+ * la API.
+ *
+ * `key` es `null` —no `undefined`— en las colecciones sin clave, de modo que el
+ * cuerpo JSON lleva la clave **presente** y nula, que es lo que el backend espera
+ * deserializar. `operator` es opcional porque la API lo omite cuando vale `@rx`
+ * —hoy su único operador—, y el editor lo fija siempre a `@rx`. F2c lo ampliará
+ * a una unión de operadores.
+ */
+export interface Condition {
+  collection: Collection;
+  key?: string | null;
+  transformations: string;
+  operator?: "@rx";
+  pattern: string;
+}
+
+/**
+ * La forma proyectable de una regla: los 14 campos de campo más la pipeline de
+ * transformaciones.
+ *
+ * Se declara como `Partial<Record<…>>` y no como `Rule` para que la proyección
+ * pueda invocarse también con los valores sueltos del formulario, que son
+ * `Record<string, unknown>`. `is_tor` **no** forma parte: no es una colección de
+ * campo y nunca proyecta.
+ */
+export type ProjectableFields = Partial<Record<Collection | "transformations", string>>;
+
+/**
+ * Proyecta los 14 campos planos al conjunto ordenado de condiciones, con el
+ * **mismo criterio que la API**.
+ *
+ * Recorre las 14 colecciones de campo en su orden canónico —no las claves del
+ * objeto, que vienen en el orden en que se escribieron— y emite una condición por
+ * cada campo con patrón no vacío tras `trim`. El patrón se copia **tal cual** se
+ * escribió: el `trim` sólo decide si el campo participa, no recorta el valor.
+ *
+ * `is_tor` queda fuera por construcción: no es ninguna de las 14 colecciones, así
+ * que una regla que sólo restrinja Tor proyecta el conjunto vacío. Es lo correcto:
+ * el predicado de Tor se combina aparte en el backend, no como condición.
+ *
+ * La pipeline de transformaciones se copia en cada condición, y la cadena vacía
+ * es el valor por defecto cuando la regla no declara ninguna.
+ */
+export function projectConditions(rule: ProjectableFields): Condition[] {
+  const transformations = rule.transformations ?? "";
+  const conditions: Condition[] = [];
+  for (const collection of FIELD_COLLECTIONS) {
+    const pattern = rule[collection];
+    if (typeof pattern !== "string" || pattern.trim() === "") {
+      continue;
+    }
+    conditions.push({
+      collection,
+      key: null,
+      transformations,
+      operator: "@rx",
+      pattern,
+    });
+  }
+  return conditions;
 }
 
 /**
