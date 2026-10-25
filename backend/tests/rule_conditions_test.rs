@@ -281,12 +281,10 @@ fn new_rule_from_template(template: &RuleTemplate) -> NewRule {
     rule
 }
 
-/// El patrón fuente de un operador, para compararlo sin exponer el `Regex`.
-fn operator_pattern(operator: &Operator) -> &str {
-    match operator {
-        Operator::Rx(regex) => regex.as_str(),
-        Operator::Truthy => "@truthy",
-    }
+/// El patrón canónico de un operador (D1), como `String` para poder compararlo
+/// con las expectativas de estos tests.
+fn operator_pattern(operator: &Operator) -> String {
+    operator.pattern().into_owned()
 }
 
 /// El conjunto observable de una regla: `(collection, pattern)` de cada
@@ -297,7 +295,7 @@ fn observable(conditions: &[backend::models::condition::Condition]) -> Vec<(Stri
         .map(|condition| {
             (
                 condition.collection.field_name().to_string(),
-                operator_pattern(&condition.operator).to_string(),
+                operator_pattern(&condition.operator),
             )
         })
         .collect()
@@ -313,14 +311,10 @@ fn serialized(conditions: &[Condition]) -> Vec<(String, String, String)> {
     conditions
         .iter()
         .map(|condition| {
-            let pattern = match &condition.operator {
-                Operator::Rx(regex) => regex.as_str(),
-                Operator::Truthy => "",
-            };
             (
                 condition.collection.field_name().to_string(),
                 condition.operator.name().to_string(),
-                pattern.to_string(),
+                condition.operator.pattern().into_owned(),
             )
         })
         .collect()
@@ -1711,10 +1705,14 @@ async fn test_reading_reconstructs_the_operator_from_the_column() {
         .expect("la regla debe estar en la caché");
 
     assert_eq!(
-        observable(&cached.conditions),
+        serialized(&cached.conditions),
         vec![
-            ("path".to_string(), "^/admin$".to_string()),
-            ("is_tor".to_string(), "@truthy".to_string()),
+            (
+                "path".to_string(),
+                "@rx".to_string(),
+                "^/admin$".to_string(),
+            ),
+            ("is_tor".to_string(), "@truthy".to_string(), String::new(),),
         ],
         "la lectura debe reconstruir el operador de cada fila; obtenidas: {:?}",
         cached.conditions
@@ -2034,4 +2032,597 @@ async fn test_http_create_rejects_rx_on_is_tor() {
         .await
         .expect("contar reglas");
     assert_eq!(count, 0, "la regla rechazada NO debe almacenarse");
+}
+
+// ---------------------------------------------------------------------------
+// F2c-1 (waf-string-operators) — operadores de cadena y selector de operador
+// ---------------------------------------------------------------------------
+//
+// Contrato verificado:
+// - Los seis operadores de cadena se aceptan en la autoría avanzada con patrón
+//   no vacío y se persisten con su nombre y su patrón canónicos.
+// - El patrón de `@within` se canoniza a elementos recortados unidos por coma.
+// - `@unconditionalMatch` exige patrón vacío.
+// - Un operador fuera del vocabulario y una combinación incoherente con la
+//   colección se rechazan con 400 (escritura) o se descartan con diagnóstico
+//   (lectura).
+// - El modo simple sigue produciendo solo `@rx` y `@truthy`.
+
+/// Una condición serializable con el operador indicado, para los cuerpos JSON.
+fn condition_with_operator_json(collection: &str, operator: &str, pattern: &str) -> Value {
+    json!({
+        "collection": collection,
+        "key": null,
+        "transformations": "",
+        "operator": operator,
+        "pattern": pattern,
+    })
+}
+
+/// 1.11 los operadores de cadena se persisten y el round-trip es estable.
+#[tokio::test]
+async fn test_advanced_rule_persists_string_operators_and_round_trips() {
+    let pool = create_migrated_pool().await;
+    let state = build_app_state(pool.clone());
+
+    let payload = json!({
+        "name": "so-round-trip",
+        "description": "",
+        "weight": 100,
+        "mode": "enforce",
+        "pipeline": "waf",
+        "allow": false,
+        "active": true,
+        "conditions": [
+            condition_with_operator_json("method", "@streq", "POST"),
+            condition_with_operator_json("user_agent", "@contains", "Nikto"),
+            condition_with_operator_json("path", "@endsWith", ".php"),
+        ],
+    });
+
+    let (status, response) = call_rules_api(&state, Method::POST, "/", Some(payload)).await;
+    assert_eq!(
+        status,
+        StatusCode::CREATED,
+        "la creación con operadores de cadena debe aceptarse; respuesta: {response}"
+    );
+
+    let rule_id: i32 = sqlx::query_scalar("SELECT id FROM rules WHERE name = ?")
+        .bind("so-round-trip")
+        .fetch_one(&pool)
+        .await
+        .expect("id de so-round-trip");
+
+    let rows = stored_conditions(&pool, rule_id).await;
+    assert_eq!(
+        rows.len(),
+        3,
+        "deben persistirse las tres condiciones; almacenadas: {rows:?}"
+    );
+    assert_eq!(
+        (
+            rows[0].position,
+            rows[0].collection.as_str(),
+            rows[0].operator.as_str(),
+            rows[0].pattern.as_str(),
+        ),
+        (0, "method", "@streq", "POST"),
+        "la primera fila debe llevar el operador y el patrón canónicos"
+    );
+    assert_eq!(
+        (
+            rows[1].position,
+            rows[1].collection.as_str(),
+            rows[1].operator.as_str(),
+            rows[1].pattern.as_str(),
+        ),
+        (1, "user_agent", "@contains", "Nikto"),
+        "la segunda fila debe llevar el operador y el patrón canónicos"
+    );
+    assert_eq!(
+        (
+            rows[2].position,
+            rows[2].collection.as_str(),
+            rows[2].operator.as_str(),
+            rows[2].pattern.as_str(),
+        ),
+        (2, "path", "@endsWith", ".php"),
+        "la tercera fila debe llevar el operador y el patrón canónicos"
+    );
+
+    // Round-trip: la lectura devuelve las mismas condiciones, en el mismo orden.
+    let (status, read) =
+        call_rules_api(&state, Method::GET, &format!("/?id={rule_id}"), None).await;
+    assert_eq!(status, StatusCode::OK, "lectura: {read}");
+    let conditions = read["data"]["conditions"].as_array().unwrap_or_else(|| {
+        panic!("la representación de la regla debe incluir `conditions`: {read}")
+    });
+    assert_eq!(
+        conditions.len(),
+        3,
+        "la lectura debe devolver las tres condiciones; leídas: {conditions:?}"
+    );
+    for (index, (operator, pattern)) in [
+        ("@streq", "POST"),
+        ("@contains", "Nikto"),
+        ("@endsWith", ".php"),
+    ]
+    .iter()
+    .enumerate()
+    {
+        assert_eq!(
+            conditions[index]["operator"], *operator,
+            "la condición {index} debe releerse con su operador"
+        );
+        assert_eq!(
+            conditions[index]["pattern"], *pattern,
+            "la condición {index} debe releerse con su patrón canónico"
+        );
+    }
+}
+
+/// 1.11 el patrón de `@within` se canoniza al persistirse y al releerse.
+#[tokio::test]
+async fn test_advanced_rule_canonicalizes_within_pattern_on_persist() {
+    let pool = create_migrated_pool().await;
+    let state = build_app_state(pool.clone());
+
+    let payload = json!({
+        "name": "so-within-canonical",
+        "conditions": [condition_with_operator_json("method", "@within", "GET, POST")],
+    });
+
+    let (status, response) = call_rules_api(&state, Method::POST, "/", Some(payload)).await;
+    assert_eq!(
+        status,
+        StatusCode::CREATED,
+        "la condición `@within` debe aceptarse; respuesta: {response}"
+    );
+
+    let rule_id: i32 = sqlx::query_scalar("SELECT id FROM rules WHERE name = ?")
+        .bind("so-within-canonical")
+        .fetch_one(&pool)
+        .await
+        .expect("id de so-within-canonical");
+
+    let rows = stored_conditions(&pool, rule_id).await;
+    assert_eq!(
+        rows.len(),
+        1,
+        "la condición debe persistirse; almacenadas: {rows:?}"
+    );
+    assert_eq!(
+        rows[0].operator, "@within",
+        "el operador debe ser `@within`"
+    );
+    assert_eq!(
+        rows[0].pattern, "GET,POST",
+        "el patrón almacenado debe unir los elementos recortados por coma sin espacios"
+    );
+
+    let (status, read) =
+        call_rules_api(&state, Method::GET, &format!("/?id={rule_id}"), None).await;
+    assert_eq!(status, StatusCode::OK, "lectura: {read}");
+    let conditions = read["data"]["conditions"]
+        .as_array()
+        .unwrap_or_else(|| panic!("la lectura debe incluir `conditions`: {read}"));
+    assert_eq!(
+        conditions[0]["pattern"], "GET,POST",
+        "la lectura debe devolver el patrón canónico"
+    );
+}
+
+/// 1.11 y 5.5 una fila con operador irresoluble se descarta con diagnóstico.
+///
+/// Este test verifica el **efecto** del descarte —la fila no forma parte del
+/// conjunto de su regla—, que es lo observable sin montar un subscriber de
+/// `tracing`. La emisión del **diagnóstico** (`warn!` que nombra la colección y
+/// el operador) se verifica en los tests unitarios de `operator_from_row`
+/// (`models::rule::tests::test_operator_from_row_discard_emits_warn_diagnostic`),
+/// que sí capturan los eventos con `capture_debug`; montar un subscriber en
+/// integración sería invasivo y no aportaría cobertura nueva.
+#[tokio::test]
+async fn test_unresolvable_operator_row_is_discarded_with_diagnostic() {
+    let pool = create_migrated_pool().await;
+    let rule_id = insert_legacy_rule(&pool, "so-unresolvable", 0, None).await;
+
+    // Operador fuera del vocabulario de esta sub-entrega (F2c-2).
+    insert_raw_condition(
+        &pool,
+        rule_id,
+        0,
+        "ip_address",
+        "",
+        "@ipMatch",
+        "10.0.0.0/8",
+    )
+    .await;
+    // Operador de cadena con patrón vacío: incoherente.
+    insert_raw_condition(&pool, rule_id, 1, "path", "", "@contains", "").await;
+    // Operador de cadena sobre la colección booleana: incoherente.
+    insert_raw_condition(&pool, rule_id, 2, "is_tor", "", "@contains", "x").await;
+    // Filas resolubles: la histórica y una de cadena.
+    insert_raw_condition(&pool, rule_id, 3, "query", "", "@rx", "union").await;
+    insert_raw_condition(&pool, rule_id, 4, "method", "", "@contains", "GET").await;
+
+    let cache = CacheRule::read_all_active(&pool)
+        .await
+        .expect("leer las reglas activas");
+    let cached = cache
+        .iter()
+        .find(|cache_rule| cache_rule.rule.id == rule_id)
+        .expect("la regla debe seguir cargando pese a las filas irresolubles");
+
+    let survivors: Vec<(&str, &str)> = cached
+        .conditions
+        .iter()
+        .map(|condition| (condition.collection.field_name(), condition.operator.name()))
+        .collect();
+    assert_eq!(
+        survivors,
+        vec![("query", "@rx"), ("method", "@contains")],
+        "solo las filas resolubles deben sobrevivir; obtenidas: {:?}",
+        cached.conditions
+    );
+}
+
+/// 1.10 un operador de cadena con patrón vacío se rechaza con 400.
+#[tokio::test]
+async fn test_advanced_rule_rejects_empty_pattern_for_string_operator() {
+    let pool = create_migrated_pool().await;
+    let state = build_app_state(pool.clone());
+
+    let rejected = json!({
+        "name": "so-empty-pattern",
+        "conditions": [condition_with_operator_json("method", "@contains", "")],
+    });
+    let (status, response) = call_rules_api(&state, Method::POST, "/", Some(rejected)).await;
+    assert_eq!(
+        status,
+        StatusCode::BAD_REQUEST,
+        "un operador de cadena con patrón vacío debe rechazarse con 400; respuesta: {response}"
+    );
+    let count: i64 = sqlx::query_scalar("SELECT count(*) FROM rules WHERE name = ?")
+        .bind("so-empty-pattern")
+        .fetch_one(&pool)
+        .await
+        .expect("contar reglas");
+    assert_eq!(count, 0, "la regla rechazada NO debe almacenarse");
+
+    let accepted = json!({
+        "name": "so-non-empty-pattern",
+        "conditions": [condition_with_operator_json("method", "@contains", "OS")],
+    });
+    let (status, response) = call_rules_api(&state, Method::POST, "/", Some(accepted)).await;
+    assert_eq!(
+        status,
+        StatusCode::CREATED,
+        "el mismo cuerpo con patrón no vacío debe aceptarse; respuesta: {response}"
+    );
+}
+
+/// 1.10 `@unconditionalMatch` exige patrón vacío.
+#[tokio::test]
+async fn test_advanced_rule_rejects_pattern_for_unconditional_match() {
+    let pool = create_migrated_pool().await;
+    let state = build_app_state(pool.clone());
+
+    let rejected = json!({
+        "name": "so-unconditional-pattern",
+        "conditions": [condition_with_operator_json("path", "@unconditionalMatch", "x")],
+    });
+    let (status, response) = call_rules_api(&state, Method::POST, "/", Some(rejected)).await;
+    assert_eq!(
+        status,
+        StatusCode::BAD_REQUEST,
+        "`@unconditionalMatch` con patrón debe rechazarse con 400; respuesta: {response}"
+    );
+    let count: i64 = sqlx::query_scalar("SELECT count(*) FROM rules WHERE name = ?")
+        .bind("so-unconditional-pattern")
+        .fetch_one(&pool)
+        .await
+        .expect("contar reglas");
+    assert_eq!(count, 0, "la regla rechazada NO debe almacenarse");
+
+    let accepted = json!({
+        "name": "so-unconditional-empty",
+        "conditions": [condition_with_operator_json("path", "@unconditionalMatch", "")],
+    });
+    let (status, response) = call_rules_api(&state, Method::POST, "/", Some(accepted)).await;
+    assert_eq!(
+        status,
+        StatusCode::CREATED,
+        "`@unconditionalMatch` con patrón vacío debe aceptarse; respuesta: {response}"
+    );
+}
+
+/// 1.10 un operador fuera del vocabulario se rechaza con 400.
+#[tokio::test]
+async fn test_advanced_rule_rejects_unknown_operator() {
+    let pool = create_migrated_pool().await;
+    let state = build_app_state(pool.clone());
+
+    let payload = json!({
+        "name": "so-unknown-operator",
+        "conditions": [condition_with_operator_json("ip_address", "@ipMatch", "10.0.0.0/8")],
+    });
+
+    let (status, response) = call_rules_api(&state, Method::POST, "/", Some(payload)).await;
+    assert_eq!(
+        status,
+        StatusCode::BAD_REQUEST,
+        "un operador fuera del vocabulario debe rechazarse con 400; respuesta: {response}"
+    );
+
+    let count: i64 = sqlx::query_scalar("SELECT count(*) FROM rules WHERE name = ?")
+        .bind("so-unknown-operator")
+        .fetch_one(&pool)
+        .await
+        .expect("contar reglas");
+    assert_eq!(count, 0, "la regla rechazada NO debe almacenarse");
+}
+
+/// 1.12 el modo simple nunca produce un operador de cadena.
+#[tokio::test]
+async fn test_simple_mode_never_produces_a_string_operator() {
+    let pool = create_migrated_pool().await;
+
+    let mut rule = blank_new_rule("so-simple-mode");
+    rule.ip_address = Some("10.0.0.0/8".to_string());
+    rule.protocol = Some("http".to_string());
+    rule.fqdn = Some("example.com".to_string());
+    rule.path = Some("^/admin$".to_string());
+    rule.query = Some("union".to_string());
+    rule.city_name = Some("Madrid".to_string());
+    rule.country_name = Some("Spain".to_string());
+    rule.country_code = Some("ES".to_string());
+    rule.user_agent = Some("curl".to_string());
+    rule.method = Some("GET".to_string());
+    rule.referer = Some("https://example.com".to_string());
+    rule.content_type = Some("application/json".to_string());
+    rule.accept_language = Some("es-ES".to_string());
+    rule.x_request_id = Some("req-1".to_string());
+    rule.is_tor = Some(true);
+
+    let created = Rule::create(&pool, rule)
+        .await
+        .expect("crear la regla en modo simple");
+    let rows = stored_conditions(&pool, created.id).await;
+    assert_eq!(
+        rows.len(),
+        15,
+        "los 14 campos y `is_tor` deben persistir quince condiciones; almacenadas: {rows:?}"
+    );
+
+    for row in &rows {
+        if row.collection == "is_tor" {
+            assert_eq!(
+                row.operator, "@truthy",
+                "la columna `is_tor` se proyecta con `@truthy`"
+            );
+        } else {
+            assert_eq!(
+                row.operator, "@rx",
+                "el campo «{}» se proyecta con `@rx`",
+                row.collection
+            );
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Remediación de la auditoría de F2c-1 — cobertura de los huecos del informe
+// ---------------------------------------------------------------------------
+
+/// Escenario (rules/spec): «Un operador de cadena con patrón vacío se rechaza
+/// (400)».
+///
+/// Un patrón de `@within` formado **solo por espacios** se canoniza a la cadena
+/// vacía: validar el crudo lo aceptaría y la lectura lo descartaría después,
+/// dejando la regla sin condiciones —neutral, casaría toda petición—. La API
+/// debe rechazarlo con 400 por el **canónico**.
+#[tokio::test]
+async fn test_advanced_rule_rejects_within_pattern_of_only_spaces() {
+    let pool = create_migrated_pool().await;
+    let state = build_app_state(pool.clone());
+
+    let payload = json!({
+        "name": "so-within-spaces",
+        "conditions": [condition_with_operator_json("method", "@within", " ")],
+    });
+
+    let (status, response) = call_rules_api(&state, Method::POST, "/", Some(payload)).await;
+    assert_eq!(
+        status,
+        StatusCode::BAD_REQUEST,
+        "`@within` con patrón de solo espacios debe rechazarse con 400; respuesta: {response}"
+    );
+
+    let count: i64 = sqlx::query_scalar("SELECT count(*) FROM rules WHERE name = ?")
+        .bind("so-within-spaces")
+        .fetch_one(&pool)
+        .await
+        .expect("contar reglas");
+    assert_eq!(count, 0, "la regla rechazada NO debe almacenarse");
+}
+
+/// Escenario (rules/spec): «`@rx` y los operadores de cadena SHALL exigir un
+/// patrón **no vacío**».
+///
+/// `Regex::new("")` compila y casaría cualquier valor presente —un
+/// `@unconditionalMatch` encubierto—, así que `@rx` con patrón vacío debe
+/// rechazarse con 400 por la API.
+#[tokio::test]
+async fn test_advanced_rule_rejects_empty_rx_pattern() {
+    let pool = create_migrated_pool().await;
+    let state = build_app_state(pool.clone());
+
+    let payload = json!({
+        "name": "so-rx-empty",
+        "conditions": [condition_with_operator_json("path", "@rx", "")],
+    });
+
+    let (status, response) = call_rules_api(&state, Method::POST, "/", Some(payload)).await;
+    assert_eq!(
+        status,
+        StatusCode::BAD_REQUEST,
+        "`@rx` con patrón vacío debe rechazarse con 400; respuesta: {response}"
+    );
+
+    let count: i64 = sqlx::query_scalar("SELECT count(*) FROM rules WHERE name = ?")
+        .bind("so-rx-empty")
+        .fetch_one(&pool)
+        .await
+        .expect("contar reglas");
+    assert_eq!(count, 0, "la regla rechazada NO debe almacenarse");
+}
+
+/// Escenario (rules/spec): «Una fila incoherente con su operador se descarta con
+/// diagnóstico».
+///
+/// La lectura descarta una fila `@rx` con patrón **vacío** —incoherente con un
+/// operador que lo exige— y una fila `@unconditionalMatch` con patrón **no**
+/// vacío, conservando la fila de control válida.
+#[tokio::test]
+async fn test_reading_discards_rx_empty_and_unconditional_with_pattern() {
+    let pool = create_migrated_pool().await;
+    let rule_id = insert_legacy_rule(&pool, "so-read-incoherent", 0, None).await;
+
+    // `@rx` con patrón vacío: incoherente (compilaría y casaría todo).
+    insert_raw_condition(&pool, rule_id, 0, "path", "", "@rx", "").await;
+    // `@unconditionalMatch` con patrón no vacío: incoherente.
+    insert_raw_condition(&pool, rule_id, 1, "referer", "", "@unconditionalMatch", "x").await;
+    // Fila de control válida.
+    insert_raw_condition(&pool, rule_id, 2, "query", "", "@rx", "union").await;
+
+    let cache = CacheRule::read_all_active(&pool)
+        .await
+        .expect("leer las reglas activas");
+    let cached = cache
+        .iter()
+        .find(|cache_rule| cache_rule.rule.id == rule_id)
+        .expect("la regla debe seguir cargando pese a las filas irresolubles");
+
+    assert_eq!(
+        serialized(&cached.conditions),
+        vec![("query".to_string(), "@rx".to_string(), "union".to_string(),)],
+        "solo la fila de control debe sobrevivir; obtenidas: {:?}",
+        cached.conditions
+    );
+}
+
+/// Escenario (rules/spec): «Cada operador de cadena sobrevive el ciclo
+/// escritura-lectura».
+///
+/// GIVEN una regla avanzada con una condición **por cada** operador de cadena
+/// WHEN se crea y se recarga
+/// THEN cada fila SHALL llevar su nombre canónico en `operator` y su patrón
+///      canónico en `pattern`
+/// AND el operador y el patrón leídos SHALL ser los mismos que los escritos.
+///
+/// `@within` canoniza `GET, POST` a `GET,POST`; `@unconditionalMatch` se
+/// persiste con `pattern = ''` y se reconstruye como `@unconditionalMatch` al
+/// releer.
+#[tokio::test]
+async fn test_advanced_rule_round_trips_all_six_string_operators() {
+    let pool = create_migrated_pool().await;
+    let state = build_app_state(pool.clone());
+
+    let written: [(&str, &str, &str); 6] = [
+        ("method", "@streq", "POST"),
+        ("user_agent", "@contains", "Nikto"),
+        ("path", "@beginsWith", "/admin"),
+        ("request_basename", "@endsWith", ".exe"),
+        ("method", "@within", "GET, POST"),
+        ("referer", "@unconditionalMatch", ""),
+    ];
+
+    let conditions: Vec<Value> = written
+        .iter()
+        .map(|(collection, operator, pattern)| {
+            condition_with_operator_json(collection, operator, pattern)
+        })
+        .collect();
+
+    let payload = json!({
+        "name": "so-all-six",
+        "conditions": conditions,
+    });
+
+    let (status, response) = call_rules_api(&state, Method::POST, "/", Some(payload)).await;
+    assert_eq!(
+        status,
+        StatusCode::CREATED,
+        "la creación con los seis operadores debe aceptarse; respuesta: {response}"
+    );
+
+    let rule_id: i32 = sqlx::query_scalar("SELECT id FROM rules WHERE name = ?")
+        .bind("so-all-six")
+        .fetch_one(&pool)
+        .await
+        .expect("id de so-all-six");
+
+    let rows = stored_conditions(&pool, rule_id).await;
+    assert_eq!(
+        rows.len(),
+        6,
+        "deben persistirse las seis condiciones; almacenadas: {rows:?}"
+    );
+
+    let canonical: [(&str, &str, &str); 6] = [
+        ("method", "@streq", "POST"),
+        ("user_agent", "@contains", "Nikto"),
+        ("path", "@beginsWith", "/admin"),
+        ("request_basename", "@endsWith", ".exe"),
+        ("method", "@within", "GET,POST"),
+        ("referer", "@unconditionalMatch", ""),
+    ];
+    let positions: Vec<i32> = rows.iter().map(|row| row.position).collect();
+    assert_eq!(
+        positions,
+        vec![0, 1, 2, 3, 4, 5],
+        "las posiciones deben ser contiguas desde 0, en el orden de la lista"
+    );
+    for (row, (collection, operator, pattern)) in rows.iter().zip(canonical.iter()) {
+        assert_eq!(
+            (
+                row.collection.as_str(),
+                row.operator.as_str(),
+                row.pattern.as_str(),
+            ),
+            (*collection, *operator, *pattern),
+            "cada fila debe llevar el operador y el patrón canónicos"
+        );
+    }
+    assert_eq!(
+        rows[5].pattern, "",
+        "la fila de `@unconditionalMatch` debe persistirse con patrón vacío"
+    );
+
+    // Round-trip: la lectura devuelve las mismas condiciones, en el mismo orden.
+    let (status, read) =
+        call_rules_api(&state, Method::GET, &format!("/?id={rule_id}"), None).await;
+    assert_eq!(status, StatusCode::OK, "lectura: {read}");
+    let read_conditions = read["data"]["conditions"].as_array().unwrap_or_else(|| {
+        panic!("la representación de la regla debe incluir `conditions`: {read}")
+    });
+    assert_eq!(
+        read_conditions.len(),
+        6,
+        "la lectura debe devolver las seis condiciones; leídas: {read_conditions:?}"
+    );
+    for (index, (_, operator, pattern)) in canonical.iter().enumerate() {
+        assert_eq!(
+            read_conditions[index]["operator"], *operator,
+            "la condición {index} debe releerse con su operador"
+        );
+        assert_eq!(
+            read_conditions[index]["pattern"], *pattern,
+            "la condición {index} debe releerse con su patrón canónico"
+        );
+    }
+    assert_eq!(
+        read_conditions[5]["operator"], "@unconditionalMatch",
+        "`@unconditionalMatch` debe reconstruirse como tal al releer"
+    );
 }

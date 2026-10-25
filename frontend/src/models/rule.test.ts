@@ -5,11 +5,13 @@ import {
   projectConditions,
   FIELD_COLLECTIONS,
   CONDITION_COLLECTIONS,
+  CONDITION_OPERATORS,
 } from "./rule";
 import type Rule from "./rule";
 import type {
   Collection,
   Condition,
+  ConditionOperator,
   ProjectableFields,
   RejectedRule,
   RuleImportResult,
@@ -248,6 +250,35 @@ describe("los catálogos de colecciones", () => {
   });
 });
 
+// ─── Operadores: el catálogo editable y la neutralidad del modo simple ───────
+// F2c-1 abre el vocabulario de operadores con los seis operadores de cadena de
+// Coraza. El editor ofrece **siete** —`@rx` por defecto más los seis nuevos— y
+// `@truthy` queda fuera: es el operador **fijo** de la colección booleana
+// `is_tor`, no una elección. El modo simple, en cambio, no cambia: `project()`
+// compila siempre `@rx` —y `@truthy` para la columna `is_tor`—, así que ninguna
+// regla proyectada desde los 14 campos alcanza un operador de cadena.
+describe("los catálogos de operadores", () => {
+  it("CONDITION_OPERATORS son los siete editables, con `@rx` primero y sin `@truthy`", () => {
+    const expected: readonly ConditionOperator[] = [
+      "@rx",
+      "@contains",
+      "@streq",
+      "@beginsWith",
+      "@endsWith",
+      "@within",
+      "@unconditionalMatch",
+    ];
+
+    expect([...CONDITION_OPERATORS]).toEqual([...expected]);
+    expect(CONDITION_OPERATORS).toHaveLength(7);
+    expect(new Set(CONDITION_OPERATORS).size).toBe(7);
+
+    // `@truthy` no es una elección del editor: la fila `is_tor` lo fija.
+    const catalog: readonly string[] = CONDITION_OPERATORS;
+    expect(catalog).not.toContain("@truthy");
+  });
+});
+
 describe("projectConditions", () => {
   it("proyecta los campos rellenos en orden canónico, no en orden de escritura", () => {
     // Escrito a la inversa del canónico a propósito: `user_agent` va después de
@@ -365,5 +396,53 @@ describe("projectConditions", () => {
         pattern: "/admin",
       },
     ]);
+  });
+
+  it("con los 14 campos rellenos y `is_tor` activo produce sólo `@rx` y `@truthy`: ningún operador de cadena", () => {
+    // Los 14 campos rellenos, con un patrón distinto en cada uno para que ninguna
+    // condición pueda confundirse con otra.
+    const rule: ProjectableFields = {
+      ip_address: "10.0.0.1",
+      protocol: "http",
+      fqdn: "example.com",
+      path: "/admin",
+      query: "a=1",
+      city_name: "Madrid",
+      country_name: "Spain",
+      country_code: "ES",
+      user_agent: "curl/8.0",
+      method: "POST",
+      referer: "https://example.com/",
+      content_type: "application/json",
+      accept_language: "es-ES",
+      x_request_id: "abc-123",
+      transformations: "lowercase",
+      is_tor: true,
+    };
+
+    const conditions = projectConditions(rule);
+
+    // Una condición por campo —en orden canónico— y la de `is_tor` al final.
+    expect(conditions).toHaveLength(15);
+    expect(conditions.map((condition) => condition.operator)).toEqual([
+      ...FIELD_COLLECTION_NAMES.map(() => "@rx"),
+      "@truthy",
+    ]);
+
+    // Y ninguna lleva un operador de cadena: la proyección no los alcanza.
+    const stringOperators: readonly string[] = [
+      "@contains",
+      "@streq",
+      "@beginsWith",
+      "@endsWith",
+      "@within",
+      "@unconditionalMatch",
+    ];
+    const operators: readonly string[] = conditions.map(
+      (condition) => condition.operator ?? "",
+    );
+    for (const operator of stringOperators) {
+      expect(operators).not.toContain(operator);
+    }
   });
 });
