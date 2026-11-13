@@ -1,4 +1,9 @@
 # Changelog
+## [0.25.1] - 2026-11-13
+
+### Documentation
+
+- Añado licencia MIT
 ## [0.25.0] - 2026-10-25
 
 ### Documentation
@@ -9,6 +14,10 @@
 ### Features
 
 - *(waf)* Persiste las condiciones de la regla en rule_conditions
+
+### Miscellaneous Tasks
+
+- Release v0.25.0
 ## [0.24.1] - 2026-10-25
 
 ### Documentation
